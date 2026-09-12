@@ -46,3 +46,13 @@ function formatAccount(t) {
 function isCreditCard(t) {
   return t.accountType === "credit"
 }
+
+// Colored-emoji glyphs give the plain-text rows real color without needing
+// rich text: 🟢/🔴 for income vs spend, 🟠/🔵 for credit card vs checking.
+function signGlyph(t) {
+  return t.amount < 0 ? "🔴" : "🟢"
+}
+
+function typeGlyph(t) {
+  return isCreditCard(t) ? "🟠" : "🔵"
+}

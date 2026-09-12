@@ -182,8 +182,8 @@ Panel {
             delegate: Toggle {
               required property var modelData
               width: parent.width
-              label: modelData.merchant + "  ·  " + Model.formatAmount(modelData)
-              description: modelData.date + "  ·  " + Model.formatAccount(modelData)
+              label: Model.signGlyph(modelData) + " " + modelData.merchant + "  ·  " + Model.formatAmount(modelData)
+              description: modelData.date + "  ·  " + Model.typeGlyph(modelData) + " " + Model.formatAccount(modelData)
               checked: modelData.tracked
               foreground: root.foreground
               onClicked: store.setTracked(modelData.id, !modelData.tracked)
@@ -262,8 +262,9 @@ Panel {
     implicitHeight: Style.space(44)
     implicitWidth: Style.space(240)
     radius: Style.cornerRadius
-    color: rowEnabled ? Style.controlFill(false, _hot, root.foreground, Color.accent) : "transparent"
-    borderSpec: Border.controlSpec(_hot ? "hover-cursor" : "normal", root.foreground, Color.accent)
+    // Accent-toned so the action stands out from the plain rows above/below.
+    color: rowEnabled ? Style.controlFill(false, _hot, Color.accent, Color.accent) : "transparent"
+    borderSpec: Border.controlSpec(_hot ? "hover-cursor" : "normal", Color.accent, Color.accent)
 
     Behavior on color { ColorAnimation { duration: 100 } }
 
@@ -271,7 +272,7 @@ Panel {
       anchors.centerIn: parent
       textFormat: Text.PlainText
       text: actionRow.label
-      color: actionRow.rowEnabled ? root.foreground : Qt.darker(root.foreground, 2.0)
+      color: actionRow.rowEnabled ? Color.accent : Qt.darker(root.foreground, 2.0)
       font.family: Style.font.family
       font.pixelSize: Style.font.body
       font.bold: true
@@ -304,7 +305,7 @@ Panel {
       Text {
         textFormat: Text.PlainText
         width: parent.width
-        text: archivedRow.txn ? (archivedRow.txn.merchant + "  ·  " + Model.formatAmount(archivedRow.txn)) : ""
+        text: archivedRow.txn ? (Model.signGlyph(archivedRow.txn) + " " + archivedRow.txn.merchant + "  ·  " + Model.formatAmount(archivedRow.txn)) : ""
         color: root.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.subtitle
@@ -315,7 +316,7 @@ Panel {
       Text {
         textFormat: Text.PlainText
         width: parent.width
-        text: archivedRow.txn ? (archivedRow.txn.date + "  ·  " + Model.formatAccount(archivedRow.txn)) : ""
+        text: archivedRow.txn ? (archivedRow.txn.date + "  ·  " + Model.typeGlyph(archivedRow.txn) + " " + Model.formatAccount(archivedRow.txn)) : ""
         color: Qt.darker(root.foreground, 1.5)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
