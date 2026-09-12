@@ -28,6 +28,11 @@ Panel {
   readonly property int archivedCount: archivedList.length
   property bool showArchived: false
 
+  // Row background tint: green for income, red (theme's urgent tone) for spend.
+  readonly property color creditBg: Util.alpha("#3ea34d", 0.20)
+  readonly property color debitBg: Util.alpha(Color.urgent, 0.20)
+  function rowBg(t) { return t.amount < 0 ? root.debitBg : root.creditBg }
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -182,10 +187,11 @@ Panel {
             delegate: Toggle {
               required property var modelData
               width: parent.width
-              label: Model.signGlyph(modelData) + " " + modelData.merchant + "  ·  " + Model.formatAmount(modelData)
-              description: modelData.date + "  ·  " + Model.typeGlyph(modelData) + " " + Model.formatAccount(modelData)
+              label: modelData.merchant + "  ·  " + Model.formatAmount(modelData)
+              description: modelData.date + "  ·  " + Model.formatAccount(modelData)
               checked: modelData.tracked
               foreground: root.foreground
+              color: root.rowBg(modelData)
               onClicked: store.setTracked(modelData.id, !modelData.tracked)
             }
           }
@@ -289,23 +295,30 @@ Panel {
   }
 
   // Read-only row for an archived transaction: merchant/amount, then
-  // date + bank + checking/credit-card info.
-  component ArchivedRow: Item {
+  // date + bank + checking/credit-card info. Same green/red background
+  // tint as the RECENT rows.
+  component ArchivedRow: BorderSurface {
     id: archivedRow
     property var txn: null
+
     implicitHeight: content.implicitHeight + Style.spacing.rowPaddingX
+    radius: Style.cornerRadius
+    color: txn ? root.rowBg(txn) : "transparent"
+    borderSpec: Border.none()
 
     Column {
       id: content
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.spacing.rowPaddingX
+      anchors.rightMargin: Style.spacing.rowPaddingX
       spacing: Style.spacing.xs
 
       Text {
         textFormat: Text.PlainText
         width: parent.width
-        text: archivedRow.txn ? (Model.signGlyph(archivedRow.txn) + " " + archivedRow.txn.merchant + "  ·  " + Model.formatAmount(archivedRow.txn)) : ""
+        text: archivedRow.txn ? (archivedRow.txn.merchant + "  ·  " + Model.formatAmount(archivedRow.txn)) : ""
         color: root.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.subtitle
@@ -316,7 +329,7 @@ Panel {
       Text {
         textFormat: Text.PlainText
         width: parent.width
-        text: archivedRow.txn ? (archivedRow.txn.date + "  ·  " + Model.typeGlyph(archivedRow.txn) + " " + Model.formatAccount(archivedRow.txn)) : ""
+        text: archivedRow.txn ? (archivedRow.txn.date + "  ·  " + Model.formatAccount(archivedRow.txn)) : ""
         color: Qt.darker(root.foreground, 1.5)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption

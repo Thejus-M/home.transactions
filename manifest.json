@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "home.transactions",
   "name": "Transactions",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": "iam033720+claude@gmail.com",
   "license": "MIT",
   "description": "Tracks bank transactions and lets you mark which ones you've already recorded in your budget app.",
