@@ -4,20 +4,30 @@ Omarchy bar widget (Quickshell/QML plugin) that reminds you which bank
 transactions you haven't logged into your budget tracker yet.
 
 Bar icon, top-right corner → click opens a popup listing recent
-transactions → each row has a toggle for "already recorded elsewhere".
+transactions → each row has a toggle for "already recorded elsewhere",
+plus a button to archive everything you've ticked and a checkbox to view
+the archive.
 
 ## Status: Phase 1 — dummy data
 
-Currently ships with 10 hardcoded sample transactions (`Model.js`). Toggle
-state persists to `~/.local/state/omarchy/transactions-tracked.json` so it
-survives a shell restart, but there's no real bank connection yet.
+Currently ships with 10 hardcoded sample transactions (`Model.js`), each
+tagged with its bank and whether it's a credit card or checking/debit.
+
+- **Toggle a row** — marks it tracked (already recorded elsewhere). Persists
+  to `~/.local/state/omarchy/transactions-tracked.json`.
+- **Archive tracked (N)** — moves every currently-tracked row out of the
+  RECENT list into an archive. Persists to
+  `~/.local/state/omarchy/transactions-archive.json`.
+- **Show archived** — checkbox that reveals the archived list below (read-only).
+
+There's no real bank connection yet.
 
 ## Files
 
 - `manifest.json` — plugin manifest (id `home.transactions`, kind `bar-widget`)
 - `Panel.qml` — bar icon + popup panel, entry point
 - `Icon.qml` — bar icon glyph + untracked-count badge
-- `Model.js` — dummy transaction data + amount formatting
+- `Model.js` — dummy transaction data + amount/account formatting
 
 ## Install (local dev)
 
@@ -40,5 +50,5 @@ place it automatically).
 - Credentials/scraping stay out of this QML code entirely; the panel will
   just read from wherever that process writes.
 - `Model.js`'s row shape (`id`, `date`, `merchant`, `amount`, `currency`,
-  `account`, `source`, `rawStatementRowId`, `tracked`) is already sized for
-  real data, so this is additive — no UI rework needed.
+  `bank`, `accountType`, `last4`, `source`, `rawStatementRowId`, `tracked`)
+  is already sized for real data, so this is additive — no UI rework needed.

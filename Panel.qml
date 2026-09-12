@@ -8,10 +8,12 @@ import "Model.js" as Model
 
 // Transactions widget: bar icon + click-to-open popup listing recent
 // transactions, each with a toggle for "already recorded elsewhere".
+// An "Archive tracked" button moves every currently-tracked row out of the
+// RECENT list into an archive; a "Show archived" toggle reveals them again.
 //
-// Phase 1: dummy data (Model.dummyTransactions()) + tracked-state persisted
-// to a local JSON file. Phase 2 will swap the backing store for a real
-// bank-scrape + DB pipeline without changing this UI — see README.md.
+// Phase 1: dummy data (Model.dummyTransactions()) + tracked/archived state
+// persisted to local JSON files. Phase 2 will swap the backing store for a
+// real bank-scrape + DB pipeline without changing this UI — see README.md.
 Panel {
   id: root
   moduleName: "home.transactions"
@@ -20,42 +22,77 @@ Panel {
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property var transactions: store.transactions
+  readonly property var archivedList: store.archivedList
   readonly property int untrackedCount: transactions.filter(function (t) { return !t.tracked }).length
+  readonly property int pendingTrackedCount: transactions.filter(function (t) { return t.tracked }).length
+  readonly property int archivedCount: archivedList.length
+  property bool showArchived: false
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  onOpenedChanged: if (opened) trackedFile.reload()
+  onOpenedChanged: if (opened) { trackedFile.reload(); archiveFile.reload() }
 
   QtObject {
     id: store
-    property var transactions: Model.dummyTransactions()
+    property var trackedOverrides: ({})
+    property var archivedList: []
+    property var transactions: []
 
-    function applyTrackedOverrides(overrides) {
+    // Rebuilds `transactions` from the dummy base, minus anything archived,
+    // with any locally-toggled tracked state applied on top.
+    function recompute() {
+      var archivedIds = {}
+      for (var i = 0; i < archivedList.length; i++) archivedIds[archivedList[i].id] = true
       var base = Model.dummyTransactions()
-      for (var i = 0; i < base.length; i++) {
-        if (Object.prototype.hasOwnProperty.call(overrides, base[i].id)) {
-          base[i] = Object.assign({}, base[i], { tracked: !!overrides[base[i].id] })
+      var list = []
+      for (var j = 0; j < base.length; j++) {
+        var row = base[j]
+        if (archivedIds[row.id]) continue
+        if (Object.prototype.hasOwnProperty.call(trackedOverrides, row.id)) {
+          row = Object.assign({}, row, { tracked: !!trackedOverrides[row.id] })
         }
+        list.push(row)
       }
-      transactions = base
+      transactions = list
+    }
+
+    function setTrackedOverrides(overrides) {
+      trackedOverrides = overrides || {}
+      recompute()
+    }
+
+    function setArchivedList(list) {
+      archivedList = list || []
+      recompute()
     }
 
     function setTracked(id, value) {
-      var list = transactions.slice()
-      for (var i = 0; i < list.length; i++) {
-        if (list[i].id === id) list[i] = Object.assign({}, list[i], { tracked: value })
-      }
-      transactions = list
-      persist()
+      var overrides = Object.assign({}, trackedOverrides)
+      if (value) overrides[id] = true
+      else delete overrides[id]
+      trackedOverrides = overrides
+      recompute()
+      writeTrackedFile()
     }
 
-    function persist() {
-      var overrides = {}
-      for (var i = 0; i < transactions.length; i++) {
-        if (transactions[i].tracked) overrides[transactions[i].id] = true
-      }
-      trackedFile.setText(JSON.stringify(overrides, null, 2) + "\n")
+    // Moves every currently-tracked row out of `transactions` and into the
+    // archive, persisting both files.
+    function archiveTracked() {
+      var toArchive = transactions.filter(function (t) { return t.tracked })
+      if (toArchive.length === 0) return
+      archivedList = archivedList.concat(toArchive)
+      recompute()
+      writeTrackedFile()
+      writeArchiveFile()
+    }
+
+    function writeTrackedFile() {
+      trackedFile.setText(JSON.stringify(trackedOverrides, null, 2) + "\n")
+    }
+
+    function writeArchiveFile() {
+      archiveFile.setText(JSON.stringify(archivedList, null, 2) + "\n")
     }
   }
 
@@ -65,8 +102,18 @@ Panel {
     watchChanges: true
     atomicWrites: true
     printErrors: false
-    onLoaded: store.applyTrackedOverrides(JSON.parse(text() || "{}"))
-    onLoadFailed: store.applyTrackedOverrides({})
+    onLoaded: store.setTrackedOverrides(JSON.parse(text() || "{}"))
+    onLoadFailed: store.setTrackedOverrides({})
+  }
+
+  FileView {
+    id: archiveFile
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/transactions-archive.json"
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: store.setArchivedList(JSON.parse(text() || "[]"))
+    onLoadFailed: store.setArchivedList([])
   }
 
   BarIconButton {
@@ -91,7 +138,7 @@ Panel {
     bar: root.bar
     open: root.opened
     contentWidth: panel.fittedContentWidth(Style.space(360))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(480))
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(520))
 
     Flickable {
       id: flick
@@ -116,6 +163,13 @@ Panel {
           foreground: root.foreground
         }
 
+        ActionRow {
+          width: parent.width
+          label: root.pendingTrackedCount > 0 ? ("Archive tracked (" + root.pendingTrackedCount + ")") : "Archive tracked"
+          rowEnabled: root.pendingTrackedCount > 0
+          onClicked: store.archiveTracked()
+        }
+
         PanelSeparator { foreground: root.foreground }
         PanelSectionHeader { text: "RECENT"; foreground: root.foreground }
 
@@ -129,13 +183,143 @@ Panel {
               required property var modelData
               width: parent.width
               label: modelData.merchant + "  ·  " + Model.formatAmount(modelData)
-              description: modelData.date
+              description: modelData.date + "  ·  " + Model.formatAccount(modelData)
               checked: modelData.tracked
               foreground: root.foreground
               onClicked: store.setTracked(modelData.id, !modelData.tracked)
             }
           }
+
+          Text {
+            visible: root.transactions.length === 0
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "Nothing pending."
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            horizontalAlignment: Text.AlignHCenter
+          }
         }
+
+        PanelSeparator { foreground: root.foreground }
+
+        Toggle {
+          width: parent.width
+          label: "Show archived"
+          description: root.archivedCount + " archived"
+          checked: root.showArchived
+          foreground: root.foreground
+          onClicked: root.showArchived = !root.showArchived
+        }
+
+        Column {
+          visible: root.showArchived
+          width: parent.width
+          spacing: Style.space(10)
+
+          PanelSectionHeader { text: "ARCHIVED"; foreground: root.foreground }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(4)
+
+            Repeater {
+              model: root.archivedList
+              delegate: ArchivedRow {
+                required property var modelData
+                width: parent.width
+                txn: modelData
+              }
+            }
+
+            Text {
+              visible: root.archivedList.length === 0
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Nothing archived yet."
+              color: Qt.darker(root.foreground, 1.5)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Full-width clickable row used for the "Archive tracked" action. Same
+  // hover/border language as Toggle.qml, without the switch.
+  component ActionRow: BorderSurface {
+    id: actionRow
+    property string label: ""
+    property bool rowEnabled: true
+    signal clicked()
+
+    readonly property bool _hot: rowEnabled && mouse.containsMouse
+
+    implicitHeight: Style.space(44)
+    implicitWidth: Style.space(240)
+    radius: Style.cornerRadius
+    color: rowEnabled ? Style.controlFill(false, _hot, root.foreground, Color.accent) : "transparent"
+    borderSpec: Border.controlSpec(_hot ? "hover-cursor" : "normal", root.foreground, Color.accent)
+
+    Behavior on color { ColorAnimation { duration: 100 } }
+
+    Text {
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: actionRow.label
+      color: actionRow.rowEnabled ? root.foreground : Qt.darker(root.foreground, 2.0)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.body
+      font.bold: true
+    }
+
+    MouseArea {
+      id: mouse
+      anchors.fill: parent
+      enabled: actionRow.rowEnabled
+      hoverEnabled: true
+      cursorShape: actionRow.rowEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: actionRow.clicked()
+    }
+  }
+
+  // Read-only row for an archived transaction: merchant/amount, then
+  // date + bank + checking/credit-card info.
+  component ArchivedRow: Item {
+    id: archivedRow
+    property var txn: null
+    implicitHeight: content.implicitHeight + Style.spacing.rowPaddingX
+
+    Column {
+      id: content
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.spacing.xs
+
+      Text {
+        textFormat: Text.PlainText
+        width: parent.width
+        text: archivedRow.txn ? (archivedRow.txn.merchant + "  ·  " + Model.formatAmount(archivedRow.txn)) : ""
+        color: root.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.subtitle
+        font.bold: true
+        elide: Text.ElideRight
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        width: parent.width
+        text: archivedRow.txn ? (archivedRow.txn.date + "  ·  " + Model.formatAccount(archivedRow.txn)) : ""
+        color: Qt.darker(root.foreground, 1.5)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
       }
     }
   }
