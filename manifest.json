@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "home.transactions",
+  "name": "Transactions",
+  "version": "0.1.0",
+  "author": "iam033720+claude@gmail.com",
+  "license": "MIT",
+  "description": "Tracks bank transactions and lets you mark which ones you've already recorded in your budget app.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "Panel.qml" },
+  "barWidget": {
+    "displayName": "Transactions",
+    "description": "Shows recent transactions and which ones still need to be logged elsewhere.",
+    "category": "Finance",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {},
+    "schema": []
+  }
+}
