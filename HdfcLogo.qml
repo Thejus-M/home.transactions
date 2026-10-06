@@ -48,13 +48,16 @@ Item {
   readonly property real overhang: full ? Math.round((barWidthFrac - 1) * s / 2) : 0
   readonly property real ox: overhang
 
-  // Centre square in whole pixels with an odd/even match to the icon side,
-  // so it sits exactly in the middle (an even square on an odd side is off by half a pixel).
+  // Whole-pixel grid: bracket thickness, then the gap inside the brackets.
+  // The blue square's side is chosen so the gap around it is the same whole
+  // number of pixels on all four sides.
+  readonly property real thickPx: Math.max(1, Math.round(thickFrac * s))
+  readonly property real innerPx: s - 2 * thickPx
   readonly property real squareSide: {
     var side = Math.round(s * squareFrac)
-    return (s - side) % 2 === 0 ? side : side + 1
+    return (innerPx - side) % 2 === 0 ? side : side + 1
   }
-  readonly property real squareOffset: (s - squareSide) / 2
+  readonly property real squareOffset: thickPx + (innerPx - squareSide) / 2
 
   // Letters, as one path in mark units (height of the letters about 0.106).
   readonly property string wordPath:
@@ -84,7 +87,7 @@ Item {
     var right = index === 1 || index === 2
     var bottom = index === 2 || index === 3
     var a = root.armFrac
-    var t = root.thickFrac
+    var t = root.thickPx / root.s
     var pts = [[0, 0], [a, 0], [a, t], [t, t], [t, a], [0, a]]
     var out = ""
     for (var i = 0; i < pts.length; i++) {
