@@ -665,7 +665,9 @@ Panel {
           }
 
           Text {
-            visible: (root.fetchStatus.message || "") !== ""
+            // Only while a fetch is running. The last message stays in
+            // output/fetch-status.json, but it isn't shown once its run is over.
+            visible: fetchProc.running && (root.fetchStatus.message || "") !== ""
             width: parent.width
             textFormat: Text.PlainText
             text: root.fetchStatus.message || ""
