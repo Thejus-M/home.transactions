@@ -43,7 +43,15 @@ Item {
   readonly property real s: Math.round(markSize)
 
   // Full variant: the bar is wider than the mark, so the mark is centred in it.
-  readonly property real ox: full ? (implicitWidth - s) / 2 : 0
+  readonly property real ox: full ? Math.round((implicitWidth - s) / 2) : 0
+
+  // Centre square in whole pixels with an odd/even match to the icon side,
+  // so it sits exactly in the middle (an even square on an odd side is off by half a pixel).
+  readonly property real squareSide: {
+    var side = Math.round(s * squareFrac)
+    return (s - side) % 2 === 0 ? side : side + 1
+  }
+  readonly property real squareOffset: (s - squareSide) / 2
 
   // Letters, as one path in mark units (height of the letters about 0.106).
   readonly property string wordPath:
@@ -134,10 +142,10 @@ Item {
 
   // Blue centre square, centred on the mark.
   Rectangle {
-    x: root.ox + root.s * (1 - root.squareFrac) / 2
-    y: root.s * (1 - root.squareFrac) / 2
-    width: root.s * root.squareFrac
-    height: root.s * root.squareFrac
+    x: root.ox + root.squareOffset
+    y: root.squareOffset
+    width: root.squareSide
+    height: root.squareSide
     color: root.squareColour
   }
 
