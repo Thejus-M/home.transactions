@@ -43,7 +43,10 @@ Item {
   readonly property real s: Math.round(markSize)
 
   // Full variant: the bar is wider than the mark, so the mark is centred in it.
-  readonly property real ox: full ? Math.round((implicitWidth - s) / 2) : 0
+  // Bar overhang on each side of the icon, in whole pixels, so the icon (and
+  // the blue square in it) sits exactly at the bar's centre.
+  readonly property real overhang: full ? Math.round((barWidthFrac - 1) * s / 2) : 0
+  readonly property real ox: overhang
 
   // Centre square in whole pixels with an odd/even match to the icon side,
   // so it sits exactly in the middle (an even square on an odd side is off by half a pixel).
@@ -64,7 +67,7 @@ Item {
     "M0.755 1.092 L0.803 1.092 L0.824 1.156 L0.824 1.092 L0.859 1.092 L0.859 1.198 L0.811 1.198 L0.79 1.135 L0.79 1.198 L0.755 1.198 Z" +
     "M0.88 1.092 L0.915 1.092 L0.915 1.137 L0.939 1.092 L0.992 1.092 L0.955 1.145 L0.992 1.198 L0.939 1.198 L0.915 1.154 L0.915 1.198 L0.88 1.198 Z"
 
-  implicitWidth: full ? Math.round(s * barWidthFrac) : s
+  implicitWidth: s + 2 * overhang
   implicitHeight: full ? Math.round(s * (barTopFrac + barHeightFrac)) : s
   width: implicitWidth
   height: implicitHeight
