@@ -135,8 +135,14 @@ function accountDisplayName(fallback, last4, accountNameOverrides) {
 // Credit cards take their real name from the billing overview (e.g. "MASTERCARD
 // MILLENNIA"), so several cards stay distinguishable; "Credit Card" only when
 // no overview is known for that last4.
-function cardFallbackName(accountType, last4, cardOverviewsByLast4) {
-  if (accountType !== "credit") return "Savings"
+// Fallback name for a bank account: "Savings" for HDFC, "Axis Savings" for
+// Axis, so the two are told apart in the filter, the pill and the balances.
+function savingsName(bank) {
+  return bank === "AXIS" ? "Axis Savings" : "Savings"
+}
+
+function cardFallbackName(accountType, last4, cardOverviewsByLast4, bank) {
+  if (accountType !== "credit") return savingsName(bank)
   var overview = cardOverviewsByLast4 && cardOverviewsByLast4[last4]
   return overview && overview.name ? overview.name : "Credit Card"
 }
@@ -148,7 +154,7 @@ function cardNetwork(t, cardOverviewsByLast4) {
 }
 
 function formatAccount(t, accountNameOverrides, cardOverviewsByLast4) {
-  var fallback = cardFallbackName(t.accountType, t.last4, cardOverviewsByLast4)
+  var fallback = cardFallbackName(t.accountType, t.last4, cardOverviewsByLast4, t.bank)
   return accountDisplayName(fallback, t.last4, accountNameOverrides) + " ••" + t.last4
 }
 
@@ -183,7 +189,7 @@ function accountOptions(transactions, cardOverviewsByLast4, accountNameOverrides
       var overview = cardOverviewsByLast4 && cardOverviewsByLast4[t.last4]
       fallback = overview && overview.name ? overview.name : "Credit Card"
     } else {
-      fallback = "Savings"
+      fallback = savingsName(t.bank)
     }
     var name = accountDisplayName(fallback, t.last4, accountNameOverrides)
     options.push({ key: key, label: cardBrandParts(name).label + " ••" + t.last4, network: cardBrandParts(name).network, bank: t.bank, accountType: t.accountType })
@@ -345,7 +351,7 @@ function monthSummary(transactions, referenceDateIso) {
 // for credit (in case a card's available-credit ever gets added to this
 // same file), overridable the same way via accountNameOverrides.
 function formatAccountBalance(entry, accountNameOverrides, cardOverviewsByLast4) {
-  var fallback = cardFallbackName(entry.accountType, entry.last4, cardOverviewsByLast4)
+  var fallback = cardFallbackName(entry.accountType, entry.last4, cardOverviewsByLast4, entry.bank)
   var name = accountDisplayName(fallback, entry.last4, accountNameOverrides)
   return name + " ••" + entry.last4 + ": " + currencySymbol(entry.currency) + formatGrouped(entry.balance)
 }
