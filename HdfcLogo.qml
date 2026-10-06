@@ -32,9 +32,9 @@ Item {
   readonly property color letterColour: "#D6E6F7"
 
   // Geometry as fractions of the mark side s (mark is 1 x 1 in these units).
-  readonly property real armFrac: 0.452
+  readonly property real armFrac: 0.42
   readonly property real thickFrac: 0.154
-  readonly property real squareFrac: 0.366
+  readonly property real squareFrac: 0.30
   readonly property real barWidthFrac: 1.125
   readonly property real barTopFrac: 1.036
   readonly property real barHeightFrac: 0.230
