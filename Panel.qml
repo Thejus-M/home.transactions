@@ -1740,49 +1740,12 @@ Panel {
           width: parent.width
           spacing: Style.space(6)
 
-          BrandMark {
-            network: Model.cardNetwork(card.txn, store.cardOverviews)
-            markHeight: Style.spaceReal(9)
-            anchors.verticalCenter: parent.verticalCenter
-          }
-
-          HdfcLogo {
-            variant: "icon"
-            visible: card.txn.accountType === "checking" && card.txn.bank === "HDFC"
-            markSize: Style.spaceReal(9)
-            anchors.verticalCenter: parent.verticalCenter
-          }
-
-          AxisLogo {
-            visible: card.txn.accountType === "checking" && card.txn.bank === "AXIS"
-            markSize: Style.spaceReal(9)
-            anchors.verticalCenter: parent.verticalCenter
-          }
-
-          Rectangle {
-            radius: Style.space(4)
-            color: Util.alpha(root.foreground, 0.12)
-            implicitWidth: pillText.implicitWidth + Style.space(10)
-            implicitHeight: pillText.implicitHeight + Style.space(4)
-
-            Text {
-              id: pillText
-              anchors.centerIn: parent
-              textFormat: Text.PlainText
-              // Axis savings show the Axis logo beside the number, not the name.
-              text: card.isAxisSavings ? "••" + card.txn.last4 : card.accountName
-              color: root.foreground
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-            }
-          }
-
           // The raw UPI remark (e.g. "FOR CC BILLS", "MF AND FD") shown as
           // a note beneath the merchant heading — skipped when it's just
           // boilerplate ("NO REMARK"/"UPI", see Model.transactionNote).
           Text {
             visible: card.note !== ""
-            width: Math.max(0, parent.width - pillText.implicitWidth - Style.space(16))
+            width: parent.width
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
             text: card.note
@@ -1790,6 +1753,55 @@ Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             elide: Text.ElideRight
+          }
+        }
+      }
+
+      // Account tag (bank/card mark and the ••NNNN number): sits at the lower
+      // right, its end just left of the rename pencil.
+      Row {
+        id: accountTag
+        visible: !card.editing
+        anchors.right: editBtn.left
+        anchors.rightMargin: Style.space(6)
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Style.space(4)
+        spacing: Style.space(6)
+
+        BrandMark {
+          network: Model.cardNetwork(card.txn, store.cardOverviews)
+          markHeight: Style.spaceReal(9)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+
+        HdfcLogo {
+          variant: "icon"
+          visible: card.txn.accountType === "checking" && card.txn.bank === "HDFC"
+          markSize: Style.spaceReal(9)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+
+        AxisLogo {
+          visible: card.txn.accountType === "checking" && card.txn.bank === "AXIS"
+          markSize: Style.spaceReal(9)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+
+        Rectangle {
+          radius: Style.space(4)
+          color: Util.alpha(root.foreground, 0.12)
+          implicitWidth: pillText.implicitWidth + Style.space(10)
+          implicitHeight: pillText.implicitHeight + Style.space(4)
+
+          Text {
+            id: pillText
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            // Axis savings show the Axis logo beside the number, not the name.
+            text: card.isAxisSavings ? "••" + card.txn.last4 : card.accountName
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
           }
         }
       }
