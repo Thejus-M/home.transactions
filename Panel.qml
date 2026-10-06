@@ -107,8 +107,14 @@ Panel {
   // — see the header Row replacing the old always-visible TextField.
   property bool searchVisible: false
   readonly property var accountOptions: Model.accountOptions(store.transactions, store.cardOverviews, store.accountNameOverrides)
+  // Tracking view from the Filter popover: "all", "tracked" or "untracked".
+  property string trackFilter: "all"
   readonly property var filteredTransactions: root.transactions
     .filter(function (t) { return root.accountFilters.length === 0 || root.accountFilters.indexOf(Model.accountKey(t)) !== -1 })
+    .filter(function (t) {
+      if (root.trackFilter === "all") return true
+      return (root.trackFilter === "tracked") === !!t.tracked
+    })
     .filter(function (t) {
       if (!root.searchQuery) return true
       return Model.transactionDisplayName(t, store.transactionNameOverrides)
@@ -1294,7 +1300,7 @@ Panel {
   // filter is active without opening it.
   component FilterMenuButton: BorderSurface {
     id: filterButton
-    readonly property bool filterActive: root.accountFilters.length > 0
+    readonly property bool filterActive: root.accountFilters.length > 0 || root.trackFilter !== "all"
     readonly property bool _hot: mouse.containsMouse || filterButton.activeFocus
 
     function currentLabel() {
@@ -1408,20 +1414,27 @@ Panel {
           color: Qt.darker(root.foreground, 1.8)
         }
 
-        // One-shot actions on the rows currently shown (the account pick and
-        // search above narrow them). They close the popover when used.
+        // Tracking view: which rows RECENT shows. The chosen one is highlighted
+        // like the account pick above, and the popover stays open while you pick.
         FilterMenuRow {
           width: parent.width
-          label: "Track shown (" + root.filteredTransactions.length + ")"
-          enabled: root.filteredTransactions.length > 0
-          onClicked: { store.setTrackedMany(root.filteredTransactions, true); filterPopup.close() }
+          label: "All transactions"
+          selected: root.trackFilter === "all"
+          onClicked: root.trackFilter = "all"
         }
 
         FilterMenuRow {
           width: parent.width
-          label: "Untrack shown (" + root.filteredTransactions.length + ")"
-          enabled: root.filteredTransactions.length > 0
-          onClicked: { store.setTrackedMany(root.filteredTransactions, false); filterPopup.close() }
+          label: "Tracked only"
+          selected: root.trackFilter === "tracked"
+          onClicked: root.trackFilter = "tracked"
+        }
+
+        FilterMenuRow {
+          width: parent.width
+          label: "Not tracked only"
+          selected: root.trackFilter === "untracked"
+          onClicked: root.trackFilter = "untracked"
         }
 
       }
@@ -1448,11 +1461,10 @@ Panel {
       : Style.controlFill(false, menuRow._hot, root.foreground, Color.accent)
     borderSpec: Border.none()
 
-    opacity: menuRow.enabled ? 1.0 : 0.4
     activeFocusOnTab: true
-    Keys.onReturnPressed: if (menuRow.enabled) menuRow.clicked()
-    Keys.onEnterPressed: if (menuRow.enabled) menuRow.clicked()
-    Keys.onSpacePressed: if (menuRow.enabled) menuRow.clicked()
+    Keys.onReturnPressed: menuRow.clicked()
+    Keys.onEnterPressed: menuRow.clicked()
+    Keys.onSpacePressed: menuRow.clicked()
 
     HdfcLogo {
       id: rowBankMark
@@ -1504,7 +1516,6 @@ Panel {
     MouseArea {
       id: mouse
       anchors.fill: parent
-      enabled: menuRow.enabled
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
       onClicked: menuRow.clicked()

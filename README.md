@@ -109,7 +109,10 @@ the popup, and are also explicitly reloaded whenever the popup opens.
 - **Filter** — a single compact popover (`FilterMenuButton`) replacing the
   old always-expanded account-chip row and the standalone "Show archived"
   row: an account list ("All accounts" + one per distinct account, from
-  `Model.accountOptions`, not hardcoded — click/Enter closes the popover).
+  `Model.accountOptions`, not hardcoded — click/Enter closes the popover),
+  and below a separator a tracking view: "All transactions", "Tracked
+  only" or "Not tracked only" (the chosen one is highlighted and narrows
+  RECENT).
   An accent dot on the trigger
   shows at a glance whether any non-default filter is active, without
   opening it. Costs one small row whether open or closed — it's a popover,
