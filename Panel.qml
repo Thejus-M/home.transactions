@@ -9,8 +9,6 @@ import "Model.js" as Model
 
 // Transactions widget: bar icon + click-to-open popup listing recent
 // transactions, each with a toggle for "already recorded elsewhere".
-// An "Archive tracked" button moves every currently-tracked row out of the
-// RECENT list into an archive; a "Show archived" toggle reveals them again.
 // A BILLS section shows each HDFC credit card's billing status with a
 // mark-as-paid toggle, and fires a desktop notification once per card per
 // day while a bill is still due. An account filter row narrows RECENT to
@@ -56,13 +54,10 @@ Panel {
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property var transactions: store.transactions
-  readonly property var archivedList: store.archivedList
   readonly property int untrackedCount: transactions.filter(function (t) { return !t.tracked }).length
   readonly property int pendingTrackedCount: transactions.filter(function (t) { return t.tracked }).length
-  readonly property int archivedCount: archivedList.length
-  property bool showArchived: false
   // Rows picked with their checkboxes (map: transaction id -> true). Separate
-  // from "tracked": selecting only prepares rows for Archive selected.
+  // from "tracked": Track / Untrack act on the selection.
   property var selectedIds: ({})
   // Checkboxes and the selection controls show only in selection mode, which
   // the check button beside search turns on.
@@ -130,8 +125,8 @@ Panel {
   readonly property var monthSummary: Model.monthSummary(root.transactions)
   readonly property var accountBalances: store.accountBalances
 
-  // Credit/debit colors — single source of truth; TransactionCard and
-  // ArchivedRow both derive their direction color from these rather than
+  // Credit/debit colors — single source of truth; TransactionCard derives
+  // its direction color from these rather than
   // each hardcoding their own.
   readonly property color creditColor: "#3ea34d"
   readonly property color debitColor: Color.urgent
@@ -142,7 +137,7 @@ Panel {
   readonly property color pendingColor: "#D9A441"
   readonly property color creditBg: Util.alpha(root.creditColor, 0.20)
   readonly property color debitBg: Util.alpha(root.debitColor, 0.20)
-  // Shared right inset for every row's amount, so BILLS, RECENT and ARCHIVED
+  // Shared right inset for every row's amount, so BILLS and RECENT
   // amounts line up in one column. Leaves room for the hover pencil and the
   // expand chevron that sit to the right of the amount.
   readonly property int amountInset: Style.spacing.rowPaddingX + Style.space(40)
@@ -175,7 +170,6 @@ Panel {
 
   onOpenedChanged: if (opened) {
     trackedFile.reload()
-    archiveFile.reload()
     realTransactionsFile.reload()
     cardOverviewFile.reload()
     accountBalancesFile.reload()
@@ -187,7 +181,6 @@ Panel {
   QtObject {
     id: store
     property var trackedOverrides: ({})
-    property var archivedList: []
     property var rawTransactions: []
     property var sourceTransactions: ({})   // map: source name -> rows
     property var sourceBalances: ({})       // map: source name -> balance rows
@@ -199,15 +192,12 @@ Panel {
     property var transactionNameOverrides: ({})   // map: Model.transactionGroupKey(t) -> user-set merchant name
 
     // Rebuilds `transactions` from the real fetched rows, minus anything
-    // archived, with any locally-toggled tracked state applied on top.
+    // with any locally-toggled tracked state applied on top.
     function recompute() {
-      var archivedIds = {}
-      for (var i = 0; i < archivedList.length; i++) archivedIds[archivedList[i].id] = true
       var base = rawTransactions
       var list = []
       for (var j = 0; j < base.length; j++) {
         var row = base[j]
-        if (archivedIds[row.id]) continue
         if (Object.prototype.hasOwnProperty.call(trackedOverrides, row.id)) {
           row = Object.assign({}, row, { tracked: !!trackedOverrides[row.id] })
         }
@@ -221,10 +211,6 @@ Panel {
       recompute()
     }
 
-    function setArchivedList(list) {
-      archivedList = list || []
-      recompute()
-    }
 
     // One list per source ("hdfc", "axis"); the merged list feeds RECENT.
     function setSourceTransactions(source, list) {
@@ -244,17 +230,6 @@ Panel {
       writeTrackedFile()
     }
 
-    // Moves every currently-tracked row out of `transactions` and into the
-    // archive, persisting both files.
-    function archiveTracked() {
-      var toArchive = transactions.filter(function (t) { return t.tracked })
-      if (toArchive.length === 0) return
-      archivedList = archivedList.concat(toArchive)
-      recompute()
-      writeTrackedFile()
-      writeArchiveFile()
-    }
-
     // Sets the tracked state of several rows at once (Track / Untrack selected).
     function setTrackedMany(rows, value) {
       if (!rows || rows.length === 0) return
@@ -270,19 +245,6 @@ Panel {
 
     function writeTrackedFile() {
       trackedFile.setText(JSON.stringify(trackedOverrides, null, 2) + "\n")
-    }
-
-    function writeArchiveFile() {
-      archiveFile.setText(JSON.stringify(archivedList, null, 2) + "\n")
-    }
-
-    // Moves one row back out of the archive (the archive used to be a
-    // one-way trip — this fixes that). Re-applies whatever tracked
-    // override still exists for its id, same as any other row.
-    function unarchive(id) {
-      archivedList = archivedList.filter(function (t) { return t.id !== id })
-      recompute()
-      writeArchiveFile()
     }
 
     // --- Bills ---
@@ -404,16 +366,6 @@ Panel {
     onFileChanged: reload()
   }
 
-  FileView {
-    id: archiveFile
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/transactions-archive.json"
-    watchChanges: true
-    atomicWrites: true
-    printErrors: false
-    onLoaded: store.setArchivedList(JSON.parse(text() || "[]"))
-    onLoadFailed: store.setArchivedList([])
-    onFileChanged: reload()
-  }
 
   FileView {
     id: realTransactionsFile
@@ -743,7 +695,6 @@ Panel {
 
               FetchControl {
                 id: hdfcControl
-                label: "HDFC"
                 bank: "hdfc"
                 running: fetchProc.running
                 allowed: !axisFetchProc.running
@@ -759,7 +710,6 @@ Panel {
 
               FetchControl {
                 id: axisControl
-                label: "Axis"
                 bank: "axis"
                 running: axisFetchProc.running
                 allowed: !fetchProc.running
@@ -1080,202 +1030,6 @@ Panel {
           }
         }
 
-        PanelSeparator { visible: root.showArchived; foreground: root.foreground }
-
-        Column {
-          visible: root.showArchived
-          width: parent.width
-          spacing: Style.spacing.lg
-
-          PanelSectionHeader { text: "ARCHIVED"; foreground: root.foreground }
-
-          Column {
-            width: parent.width
-            spacing: Style.spacing.xxs
-
-            Repeater {
-              model: root.archivedList
-              delegate: ArchivedRow {
-                required property var modelData
-                width: parent.width
-                txn: modelData
-              }
-            }
-
-            Text {
-              visible: root.archivedList.length === 0
-              width: parent.width
-              textFormat: Text.PlainText
-              text: "Nothing archived yet."
-              color: Qt.darker(root.foreground, 1.5)
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
-              horizontalAlignment: Text.AlignHCenter
-            }
-          }
-        }
-
-      }
-    }
-  }
-
-  // Full-width clickable row used for the "Archive tracked" action. Same
-  // hover/border language as Toggle.qml, without the switch.
-  component ActionRow: BorderSurface {
-    id: actionRow
-    property string label: ""
-    property bool rowEnabled: true
-    signal clicked()
-
-    readonly property bool _hot: rowEnabled && (mouse.containsMouse || actionRow.activeFocus)
-
-    implicitHeight: Style.space(44)
-    implicitWidth: Style.space(240)
-    radius: Style.cornerRadius
-    // Accent-toned so the action stands out from the plain rows above/below.
-    color: rowEnabled ? Style.controlFill(actionRow.activeFocus, _hot, Color.accent, Color.accent) : "transparent"
-    borderSpec: Border.controlSpec(actionRow.activeFocus ? "focus" : (_hot ? "hover-cursor" : "normal"), Color.accent, Color.accent)
-
-    activeFocusOnTab: actionRow.rowEnabled
-    Keys.onReturnPressed: if (actionRow.rowEnabled) actionRow.clicked()
-    Keys.onEnterPressed: if (actionRow.rowEnabled) actionRow.clicked()
-    Keys.onSpacePressed: if (actionRow.rowEnabled) actionRow.clicked()
-    Keys.onUpPressed: root.focusNext(actionRow, false)
-    Keys.onDownPressed: root.focusNext(actionRow, true)
-
-    Behavior on color { ColorAnimation { duration: 100 } }
-
-    Text {
-      anchors.centerIn: parent
-      textFormat: Text.PlainText
-      text: actionRow.label
-      color: actionRow.rowEnabled ? Color.accent : Qt.darker(root.foreground, 2.0)
-      font.family: Style.font.family
-      font.pixelSize: Style.font.body
-      font.bold: true
-    }
-
-    MouseArea {
-      id: mouse
-      anchors.fill: parent
-      enabled: actionRow.rowEnabled
-      hoverEnabled: true
-      cursorShape: actionRow.rowEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-      onClicked: actionRow.clicked()
-    }
-  }
-
-  // Card for an archived transaction, matching TransactionCard's visual
-  // language (dimmed, to read as "inert") but read-only otherwise, except
-  // for one action: hover OR keyboard focus reveals a "↩" to restore it
-  // back to RECENT (Enter/Space also restores) — archiving used to be a
-  // one-way trip with no keyboard path back at all, this fixes both.
-  component ArchivedRow: BorderSurface {
-    id: archivedRow
-    property var txn: null
-    readonly property bool _hot: archiveHover.hovered || archivedRow.activeFocus
-
-    implicitHeight: Style.space(52)
-    radius: Style.cornerRadius
-    color: "transparent"
-    opacity: 0.6
-    borderSpec: archivedRow.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
-
-    Behavior on opacity { NumberAnimation { duration: 100 } }
-
-    activeFocusOnTab: true
-    Keys.onReturnPressed: store.unarchive(archivedRow.txn.id)
-    Keys.onEnterPressed: store.unarchive(archivedRow.txn.id)
-    Keys.onSpacePressed: store.unarchive(archivedRow.txn.id)
-    Keys.onUpPressed: root.focusNext(archivedRow, false)
-    Keys.onDownPressed: root.focusNext(archivedRow, true)
-
-    HoverHandler {
-      id: archiveHover
-    }
-
-    Rectangle {
-      id: avatar
-      width: Style.space(36)
-      height: width
-      radius: width / 2
-      color: archivedRow.txn ? Util.alpha(root.directionColor(archivedRow.txn), 0.22) : "transparent"
-      anchors.left: parent.left
-      anchors.leftMargin: Style.spacing.rowPaddingX
-      anchors.verticalCenter: parent.verticalCenter
-
-      Text {
-        anchors.centerIn: parent
-        textFormat: Text.PlainText
-        text: archivedRow.txn && archivedRow.txn.amount < 0 ? "↓" : "↑"
-        color: archivedRow.txn ? root.directionColor(archivedRow.txn) : root.foreground
-        font.bold: true
-        font.pixelSize: Style.font.subtitle
-      }
-    }
-
-    Column {
-      anchors.left: avatar.right
-      anchors.leftMargin: Style.space(10)
-      anchors.right: amountText.left
-      anchors.rightMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
-      spacing: Style.space(3)
-
-      Text {
-        width: parent.width
-        textFormat: Text.PlainText
-        elide: Text.ElideRight
-        text: archivedRow.txn ? Model.transactionDisplayName(archivedRow.txn, store.transactionNameOverrides) : ""
-        color: root.foreground
-        font.family: Style.font.family
-        font.bold: true
-        font.pixelSize: Style.font.subtitle
-      }
-
-      Text {
-        width: parent.width
-        textFormat: Text.PlainText
-        elide: Text.ElideRight
-        text: archivedRow.txn ? (Model.formatRelativeDate(archivedRow.txn.date) + "  ·  " + Model.formatAccount(archivedRow.txn, store.accountNameOverrides, store.cardOverviews)) : ""
-        color: Qt.darker(root.foreground, 1.5)
-        font.family: Style.font.family
-        font.pixelSize: Style.font.caption
-      }
-    }
-
-    Text {
-      id: amountText
-      visible: !archivedRow._hot
-      textFormat: Text.PlainText
-      text: archivedRow.txn ? Model.formatAmount(archivedRow.txn) : ""
-      color: archivedRow.txn ? root.directionColor(archivedRow.txn) : root.foreground
-      font.family: Style.font.family
-      font.bold: true
-      font.pixelSize: Style.font.subtitle
-      anchors.right: parent.right
-      anchors.rightMargin: root.amountInset
-      anchors.verticalCenter: parent.verticalCenter
-    }
-
-    Text {
-      visible: archivedRow._hot
-      textFormat: Text.PlainText
-      text: "↩ restore"
-      color: Color.accent
-      font.family: Style.font.family
-      font.pixelSize: Style.font.caption
-      font.bold: true
-      anchors.right: parent.right
-      anchors.rightMargin: Style.spacing.rowPaddingX
-      anchors.verticalCenter: parent.verticalCenter
-
-      MouseArea {
-        anchors.fill: parent
-        anchors.margins: -Style.space(6)
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: store.unarchive(archivedRow.txn.id)
       }
     }
   }
@@ -1533,15 +1287,14 @@ Panel {
   }
 
   // Compact trigger + popover replacing the old always-expanded account
-  // FilterChip Flow and the standalone "Show archived" Toggle row — both
-  // just narrow what RECENT shows, so they're folded into one popover that
+  // FilterChip Flow — both just narrow what RECENT shows, so they're folded into one popover that
   // costs a single small row while closed AND while open (a popover floats
   // over the content below instead of pushing it down, unlike an inline
   // disclosure). The accent dot shows at a glance whether any non-default
   // filter is active without opening it.
   component FilterMenuButton: BorderSurface {
     id: filterButton
-    readonly property bool filterActive: root.accountFilters.length > 0 || root.showArchived
+    readonly property bool filterActive: root.accountFilters.length > 0
     readonly property bool _hot: mouse.containsMouse || filterButton.activeFocus
 
     function currentLabel() {
@@ -1649,39 +1402,6 @@ Panel {
           }
         }
 
-        Rectangle {
-          width: parent.width
-          height: Style.spacing.hairline
-          color: Qt.darker(root.foreground, 1.8)
-        }
-
-        // Stays open on click, like the account rows above — a boolean
-        // toggle, not an account pick.
-        Toggle {
-          width: parent.width
-          label: "Show archived"
-          description: root.archivedCount + " archived"
-          checked: root.showArchived
-          foreground: root.foreground
-          onClicked: root.showArchived = !root.showArchived
-        }
-
-        Rectangle {
-          width: parent.width
-          height: Style.spacing.hairline
-          color: Qt.darker(root.foreground, 1.8)
-        }
-
-        // One-shot data action (not a view filter), but still lives here
-        // rather than its own always-visible row — same reasoning as
-        // folding "Show archived" in: closes the popover on click, same
-        // as the account rows above.
-        ActionRow {
-          width: parent.width
-          label: root.pendingTrackedCount > 0 ? ("Archive tracked (" + root.pendingTrackedCount + ")") : "Archive tracked"
-          rowEnabled: root.pendingTrackedCount > 0
-          onClicked: { store.archiveTracked(); filterPopup.close() }
-        }
       }
     }
   }
@@ -1754,22 +1474,25 @@ Panel {
     }
   }
 
-  // Small outlined text button for the RECENT selection controls.
-  component TextAction: Rectangle {
+  // Text button for the RECENT selection controls, drawn with the same
+  // surface and border as the other controls in this widget.
+  component TextAction: BorderSurface {
     id: action
     property string label: ""
     signal triggered()
 
+    readonly property bool _hot: actionMouse.containsMouse || action.activeFocus
+
     width: actionText.implicitWidth + Style.space(18)
     height: Style.space(26)
     radius: Style.cornerRadius
-    color: actionHover.hovered ? Util.alpha(Color.accent, 0.22) : "transparent"
-    border.width: 1
-    border.color: Color.accent
+    color: Style.controlFill(action.activeFocus, action._hot, Color.accent, Color.accent)
+    borderSpec: Border.controlSpec(action.activeFocus ? "focus" : (action._hot ? "hover-cursor" : "normal"), Color.accent, Color.accent)
 
-    HoverHandler {
-      id: actionHover
-    }
+    activeFocusOnTab: true
+    Keys.onReturnPressed: action.triggered()
+    Keys.onEnterPressed: action.triggered()
+    Keys.onSpacePressed: action.triggered()
 
     Text {
       id: actionText
@@ -1783,7 +1506,9 @@ Panel {
     }
 
     MouseArea {
+      id: actionMouse
       anchors.fill: parent
+      hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
       onClicked: action.triggered()
     }
@@ -1798,14 +1523,14 @@ Panel {
   // Model.transactionGroupKey — not the transaction's own id — so it
   // applies to every past AND future transaction from the same
   // counterparty, not just this one row. Shown wherever a matching
-  // transaction appears (RECENT, archived) — it never changes the
+  // transaction appears (RECENT, the bills) — it never changes the
   // underlying data, only the display.
   component TransactionCard: BorderSurface {
     id: card
     required property var txn
 
     property bool editing: false
-    // RECENT rows get a checkbox; archived rows don't.
+    // RECENT rows get a checkbox in selection mode.
     property bool selectable: false
     readonly property bool selected: !!root.selectedIds[card.txn.id]
     // Expanded detail panel (raw merchant text, full date, full account,
@@ -1888,20 +1613,26 @@ Panel {
         width: Style.space(16)
         height: width
         radius: Style.space(3)
-        color: card.selected ? Util.alpha(Color.accent, 0.8) : "transparent"
+        color: card.selected ? Style.controlFill(false, true, Color.accent, Color.accent) : "transparent"
         border.width: 1
         border.color: card.selected ? Color.accent : Qt.darker(root.foreground, 1.8)
         anchors.left: parent.left
         anchors.leftMargin: Style.spacing.rowPaddingX
         anchors.verticalCenter: parent.verticalCenter
 
+        Behavior on color { ColorAnimation { duration: 120 } }
+
         Text {
+          id: checkMark
           anchors.centerIn: parent
-          visible: card.selected
           text: "✓"
-          color: root.foreground
+          color: Color.accent
           font.bold: true
           font.pixelSize: Style.font.caption
+          scale: card.selected ? 1.0 : 0.0
+          opacity: card.selected ? 1.0 : 0.0
+          Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutBack } }
+          Behavior on opacity { NumberAnimation { duration: 120 } }
         }
 
         MouseArea {

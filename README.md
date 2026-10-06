@@ -9,7 +9,7 @@ Bar icon, top-right corner → click opens a popup with: a compact
 month-spend/top-spenders line, a BILLS section (one row per credit card,
 click, or focus + Enter/Space, to see full details; click the status
 avatar specifically to mark it paid), a Filter popover (account
-selection + "Show archived" + "Archive tracked", see below), a RECENT
+selection, see below), a RECENT
 transactions list (each row toggles "already recorded elsewhere", and
 expands in place for more detail), and a search box hidden by default.
 Fully keyboard-operable — Tab between every control, arrow keys move
@@ -66,17 +66,13 @@ the popup, and are also explicitly reloaded whenever the popup opens.
   combined with the account filter. Escape (while it's focused), or "/"
   again, hides it. Ephemeral — not persisted, resets on every close
   (explicit or on popup reopen).
-- **Un-archive** — hover, or Tab to, an archived row to reveal "↩
-  restore" (and press Enter/Space while it's focused), moving it back
-  into RECENT (archiving used to be one-way).
 - **Keyboard navigation** — every interactive element (`BillRow`,
-  `FilterMenuButton`, `TransactionCard`, `ArchivedRow`, and everything
-  inside the Filter popover, including the `ActionRow` version of
-  "Archive tracked") is reachable via Tab, shows a focus ring
+  `FilterMenuButton`, `TransactionCard`, and everything inside the Filter
+  popover) is reachable via Tab, shows a focus ring
   (`Border.controlSpec("focus", ...)`, matching the rest of the shell),
   and activates on Enter/Space. Arrow keys move within whatever section
   is focused without leaving Tab order: Up/Down steps between rows in
-  BILLS, RECENT, and ARCHIVED; Left/Right expand/collapse a focused
+  BILLS and RECENT; Left/Right expand/collapse a focused
   BILLS or RECENT row's detail panel. "/" toggles the search box from
   anywhere. On a focused `TransactionCard`, F2 opens the rename field
   (Enter/Space are already claimed by "toggle
@@ -107,15 +103,14 @@ the popup, and are also explicitly reloaded whenever the popup opens.
   remark) that would otherwise make every payment to the same person look
   like a different vendor, so the key truncates at that reference number.
   The rename applies to every past *and future* transaction from that same
-  counterparty, and follows them into the archive too. Doesn't change the
+  counterparty. Doesn't change the
   underlying data — purely a display override. Persists to
   `~/.local/state/omarchy/transactions-custom-names.json`.
 - **Filter** — a single compact popover (`FilterMenuButton`) replacing the
   old always-expanded account-chip row and the standalone "Show archived"
   row: an account list ("All accounts" + one per distinct account, from
-  `Model.accountOptions`, not hardcoded — click/Enter closes the popover)
-  and, below a separator, the "Show archived" toggle (stays open on
-  click — it's a boolean, not a single pick). An accent dot on the trigger
+  `Model.accountOptions`, not hardcoded — click/Enter closes the popover).
+  An accent dot on the trigger
   shows at a glance whether any non-default filter is active, without
   opening it. Costs one small row whether open or closed — it's a popover,
   not an inline disclosure, so opening it doesn't push RECENT down.
@@ -124,11 +119,11 @@ the popup, and are also explicitly reloaded whenever the popup opens.
   hand-editing `~/.local/state/omarchy/transactions-account-names.json`
   (keyed by `last4`; no in-UI editor for this one, unlike per-transaction
   renames).
-- **Archive tracked (N)** — moves every currently-tracked row out of the
-  RECENT list into an archive. Persists to
-  `~/.local/state/omarchy/transactions-archive.json`. A one-shot data
-  action (not a view filter), so it stays its own button rather than
-  living inside the Filter popover.
+- **Select and track in bulk** — the ☑ button beside search turns on
+  selection mode: each RECENT card gets a checkbox, the header shows
+  "Select all" / "Clear" (for the rows currently shown), and "Track (N)" /
+  "Untrack (N)" set the tracked state of every selected row. The **X** key
+  toggles the focused row. Leaving selection mode clears the selection.
 - **BILLS + full details** — one compact row per credit card from the
   overview file: a status-colored avatar, a brand mark next to the card
   name (Mastercard's twin circles / RuPay's own fast-forward double-
