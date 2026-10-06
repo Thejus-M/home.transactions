@@ -39,6 +39,20 @@ Panel {
   }
   readonly property bool showQr: fetchStatus.stage === "qr-ready" && !!fetchStatus.qr
   readonly property string fetcherOutputDir: fetcherDir + "/output"
+  // Second source: the Axis fetcher writes the same shapes into its output/
+  // folder (balances, transactions) and its own status file.
+  readonly property string axisDir: "/home/pc/Work/axis-statement-fetcher"
+  readonly property string axisOutputDir: axisDir + "/output"
+  property var axisFetchStatus: ({})
+  readonly property bool axisOtpNeeded: axisFetchProc.running && axisFetchStatus.stage === "otp-needed"
+  readonly property string activeStatusText: fetchProc.running
+    ? ((fetchStatus.message || "") !== "" ? "HDFC: " + fetchStatus.message : "")
+    : (axisFetchProc.running && (axisFetchStatus.message || "") !== "" ? "Axis: " + axisFetchStatus.message : "")
+  readonly property color activeStatusColor: (fetchProc.running ? fetchStatus.stage : axisFetchStatus.stage) === "error"
+    ? Color.urgent : Color.accent
+  function parseList(text) {
+    try { return JSON.parse(text || "[]") } catch (e) { return [] }
+  }
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property var transactions: store.transactions
@@ -139,6 +153,8 @@ Panel {
     property var trackedOverrides: ({})
     property var archivedList: []
     property var rawTransactions: []
+    property var sourceTransactions: ({})   // map: source name -> rows
+    property var sourceBalances: ({})       // map: source name -> balance rows
     property var transactions: []
     property var cardOverviews: ({})   // map: last4 -> overview entry
     property var accountBalances: []   // list of {bank, accountType, last4, balance, currency}
@@ -174,8 +190,12 @@ Panel {
       recompute()
     }
 
-    function setRealTransactions(list) {
-      rawTransactions = list || []
+    // One list per source ("hdfc", "axis"); the merged list feeds RECENT.
+    function setSourceTransactions(source, list) {
+      var map = Object.assign({}, sourceTransactions)
+      map[source] = list || []
+      sourceTransactions = map
+      rawTransactions = [].concat(map.hdfc || [], map.axis || [])
       recompute()
     }
 
@@ -228,8 +248,11 @@ Panel {
       checkBillReminders()
     }
 
-    function setAccountBalances(list) {
-      accountBalances = list || []
+    function setSourceBalances(source, list) {
+      var map = Object.assign({}, sourceBalances)
+      map[source] = list || []
+      sourceBalances = map
+      accountBalances = [].concat(map.hdfc || [], map.axis || [])
     }
 
     function setBillOverrides(overrides) {
@@ -348,8 +371,18 @@ Panel {
     path: root.fetcherOutputDir + "/hdfc_transactions.json"
     watchChanges: true
     printErrors: false
-    onLoaded: store.setRealTransactions(JSON.parse(text() || "[]"))
-    onLoadFailed: store.setRealTransactions([])
+    onLoaded: store.setSourceTransactions("hdfc", root.parseList(text()))
+    onLoadFailed: store.setSourceTransactions("hdfc", [])
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: axisTransactionsFile
+    path: root.axisOutputDir + "/axis_transactions.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: store.setSourceTransactions("axis", root.parseList(text()))
+    onLoadFailed: store.setSourceTransactions("axis", [])
     onFileChanged: reload()
   }
 
@@ -382,6 +415,42 @@ Panel {
     }
   }
 
+  property bool axisFetchCancelled: false
+
+  Process {
+    id: axisCancelProc
+    command: ["bash", "-c", "cd '" + root.axisDir + "' && mkdir -p output && PID=$(cat output/fetch.pid 2>/dev/null); [ -n \"$PID\" ] && kill -TERM -- -$PID 2>/dev/null; printf '%s' '{\"stage\": \"cancelled\", \"message\": \"Fetch cancelled.\", \"qr\": \"\", \"card\": \"\", \"step\": \"\", \"updated\": \"\"}' > output/axis-fetch-status.json"]
+  }
+
+  // Runs the Axis fetcher. stdinEnabled keeps its stdin open: the OTP the
+  // user types goes down that pipe (see otpRow), never into a file.
+  Process {
+    id: axisFetchProc
+    stdinEnabled: true
+    command: ["setsid", "bash", "-c", "cd '" + root.axisDir + "' && mkdir -p output && echo $$ > output/fetch.pid && exec .venv/bin/python -m src.main > output/widget-fetch.log 2>&1"]
+    onExited: function (exitCode) {
+      if (root.axisFetchCancelled) { root.axisFetchCancelled = false; return }
+      Quickshell.execDetached([
+        Quickshell.env("OMARCHY_PATH") + "/bin/omarchy-notification-send",
+        "--app-name", "home.transactions",
+        exitCode === 0 ? "Axis fetch finished" : "Axis fetch failed",
+        exitCode === 0 ? "Data refreshed" : "See output/widget-fetch.log in axis-statement-fetcher"
+      ])
+    }
+  }
+
+  FileView {
+    id: axisFetchStatusFile
+    path: root.axisOutputDir + "/axis-fetch-status.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      try { root.axisFetchStatus = JSON.parse(text() || "{}") } catch (e) { root.axisFetchStatus = {} }
+    }
+    onLoadFailed: root.axisFetchStatus = ({})
+    onFileChanged: reload()
+  }
+
   FileView {
     id: fetchStatusFile
     path: root.fetcherOutputDir + "/fetch-status.json"
@@ -409,8 +478,18 @@ Panel {
     path: root.fetcherOutputDir + "/hdfc_account_balances.json"
     watchChanges: true
     printErrors: false
-    onLoaded: store.setAccountBalances(JSON.parse(text() || "[]"))
-    onLoadFailed: store.setAccountBalances([])
+    onLoaded: store.setSourceBalances("hdfc", root.parseList(text()))
+    onLoadFailed: store.setSourceBalances("hdfc", [])
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: axisBalancesFile
+    path: root.axisOutputDir + "/axis_account_balances.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: store.setSourceBalances("axis", root.parseList(text()))
+    onLoadFailed: store.setSourceBalances("axis", [])
     onFileChanged: reload()
   }
 
@@ -553,12 +632,12 @@ Panel {
           // lines rather than truncating.
           Item {
             width: parent.width
-            height: Math.max(balanceFlow.implicitHeight, fetchButton.size)
+            height: Math.max(balanceFlow.implicitHeight, Style.space(28))
 
             Text {
               visible: root.accountBalances.length === 0
               anchors.left: parent.left
-              anchors.right: fetchProc.running ? cancelButton.left : fetchButton.left
+              anchors.right: fetchControls.left
               anchors.rightMargin: Style.spacing.md
               anchors.verticalCenter: parent.verticalCenter
               textFormat: Text.PlainText
@@ -584,7 +663,7 @@ Panel {
               visible: root.accountBalances.length > 0
               anchors.left: balanceBankMark.visible ? balanceBankMark.right : parent.left
               anchors.leftMargin: balanceBankMark.visible ? Style.spacing.xs : 0
-              anchors.right: fetchProc.running ? cancelButton.left : fetchButton.left
+              anchors.right: fetchControls.left
               anchors.rightMargin: Style.spacing.md
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.spacing.xs
@@ -604,62 +683,42 @@ Panel {
               }
             }
 
-            // Runs the HDFC fetcher in a visible browser window (a QR scan
-            // on your phone is needed every run). Its log goes to
-            // output/widget-fetch.log; the button is disabled while running.
-            PanelActionButton {
-              id: fetchButton
+            // One reload per bank. HDFC opens a browser for the QR scan; Axis
+            // asks for its OTP in the otpRow below. Only one runs at a time, so
+            // each control is disabled while the other one is running.
+            Row {
+              id: fetchControls
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              size: Style.space(28)
-              fontSize: Style.font.bodySmall
-              iconText: "⟳"
-              tooltipText: fetchProc.running ? "Fetching HDFC data…" : "Fetch HDFC data (opens browser, scan QR)"
-              foreground: root.foreground
-              hoverColor: Color.accent
-              bordered: true
-              focusable: true
-              enabled: !fetchProc.running
-              visible: !fetchProc.running
-              onClicked: {
-                fetchProc.running = true
-              }
-            }
+              spacing: Style.spacing.md
 
-            Rectangle {
-              id: cancelButton
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              width: cancelLabel.implicitWidth + Style.space(20)
-              height: Style.space(28)
-              radius: Style.cornerRadius
-              color: cancelHover.hovered ? Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.25) : "transparent"
-              border.width: 1
-              border.color: Color.urgent
-              visible: fetchProc.running
-
-              HoverHandler {
-                id: cancelHover
-              }
-
-              Text {
-                id: cancelLabel
-                anchors.centerIn: parent
-                textFormat: Text.PlainText
-                text: "Cancel"
-                color: Color.urgent
-                font.family: Style.font.family
-                font.pixelSize: Style.font.caption
-                font.bold: true
-              }
-
-              MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
+              FetchControl {
+                id: hdfcControl
+                label: "HDFC"
+                running: fetchProc.running
+                allowed: !axisFetchProc.running
+                idleTooltip: "Fetch HDFC data (opens browser, scan QR)"
+                foreground: root.foreground
+                onFetch: fetchProc.running = true
+                onCancel: {
                   root.fetchCancelled = true
                   cancelProc.running = true
                   fetchProc.running = false
+                }
+              }
+
+              FetchControl {
+                id: axisControl
+                label: "Axis"
+                running: axisFetchProc.running
+                allowed: !fetchProc.running
+                idleTooltip: "Fetch Axis data (asks for the OTP here)"
+                foreground: root.foreground
+                onFetch: axisFetchProc.running = true
+                onCancel: {
+                  root.axisFetchCancelled = true
+                  axisCancelProc.running = true
+                  axisFetchProc.running = false
                 }
               }
             }
@@ -668,14 +727,77 @@ Panel {
           Text {
             // Only while a fetch is running. The last message stays in
             // output/fetch-status.json, but it isn't shown once its run is over.
-            visible: fetchProc.running && (root.fetchStatus.message || "") !== ""
+            visible: root.activeStatusText !== ""
             width: parent.width
             textFormat: Text.PlainText
-            text: root.fetchStatus.message || ""
-            color: root.fetchStatus.stage === "error" ? Color.urgent : Color.accent
+            text: root.activeStatusText
+            color: root.activeStatusColor
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
+          }
+
+          // Axis OTP: shown while the Axis fetcher waits for the code. The
+          // code goes down the fetcher's stdin and the box clears; it is not
+          // stored. Empty or wrong codes make the fetcher ask again here.
+          Item {
+            id: otpRow
+            visible: root.axisOtpNeeded
+            width: parent.width
+            height: Style.space(28)
+
+            function sendOtp() {
+              if (!axisFetchProc.running) return
+              axisFetchProc.write(otpField.text.trim() + "\n")
+              otpField.text = ""
+            }
+
+            TextField {
+              id: otpField
+              anchors.left: parent.left
+              anchors.right: otpSend.left
+              anchors.rightMargin: Style.spacing.xs
+              height: parent.height
+              placeholderText: "Login OTP from your Axis app"
+              inputMethodHints: Qt.ImhDigitsOnly
+              maximumLength: 8
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              onAccepted: otpRow.sendOtp()
+            }
+
+            Rectangle {
+              id: otpSend
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              width: otpSendLabel.implicitWidth + Style.space(20)
+              height: Style.space(28)
+              radius: Style.cornerRadius
+              color: otpSendHover.hovered ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.25) : "transparent"
+              border.width: 1
+              border.color: Color.accent
+
+              HoverHandler {
+                id: otpSendHover
+              }
+
+              Text {
+                id: otpSendLabel
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: "Send"
+                color: Color.accent
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: otpRow.sendOtp()
+              }
+            }
           }
 
           // The QR popup: shown while the fetcher waits for your scan, and
