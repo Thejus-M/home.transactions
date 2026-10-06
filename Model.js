@@ -24,14 +24,18 @@ function currencySymbol(currency) {
 
 // Indian digit grouping: 1,00,000.00 / 12,68,339.40 — the last three
 // integer digits group together, then pairs (lakh/crore style).
+// Indian digit grouping. Two decimals only when there are paise (1,234.50),
+// and a whole amount shows none (1,234).
 function formatGrouped(n) {
-  var fixed = Math.abs(Number(n)).toFixed(2)
+  var value = Math.abs(Number(n))
+  var fixed = value.toFixed(2)
   var parts = fixed.split(".")
   var int = parts[0]
   var last3 = int.slice(-3)
   var rest = int.slice(0, -3)
   if (rest !== "") last3 = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ",") + "," + last3
-  return last3 + "." + parts[1]
+  var hasPaise = parts[1] !== "00"
+  return hasPaise ? last3 + "." + parts[1] : last3
 }
 
 function formatAmount(t) {
