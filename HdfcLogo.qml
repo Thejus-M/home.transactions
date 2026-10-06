@@ -59,6 +59,8 @@ Item {
   }
   // Visual nudge: the square reads right of centre, so it sits one pixel left.
   readonly property real squareNudge: -0.5
+  // Visual nudge: the square reads high, so it sits half a pixel lower.
+  readonly property real squareNudgeY: 0.5
   readonly property real squareOffset: thickPx + (innerPx - squareSide) / 2 + squareNudge
 
   // Letters, as one path in mark units (height of the letters about 0.106).
@@ -79,9 +81,11 @@ Item {
 
   // Centre square in mark units (the icon side is 1).
   function squarePath() {
-    var a = root.squareOffset / root.s
-    var b = (root.squareOffset + root.squareSide) / root.s
-    return "M " + a + " " + a + " L " + b + " " + a + " L " + b + " " + b + " L " + a + " " + b + " Z"
+    var x0 = root.squareOffset / root.s
+    var x1 = (root.squareOffset + root.squareSide) / root.s
+    var y0 = (root.squareOffset + root.squareNudgeY) / root.s
+    var y1 = (root.squareOffset + root.squareSide + root.squareNudgeY) / root.s
+    return "M " + x0 + " " + y0 + " L " + x1 + " " + y0 + " L " + x1 + " " + y1 + " L " + x0 + " " + y1 + " Z"
   }
 
   // One corner bracket in mark units. index: 0 TL, 1 TR, 2 BR, 3 BL.
