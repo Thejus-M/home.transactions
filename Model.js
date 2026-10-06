@@ -192,7 +192,7 @@ function accountOptions(transactions, cardOverviewsByLast4, accountNameOverrides
       fallback = savingsName(t.bank)
     }
     var name = accountDisplayName(fallback, t.last4, accountNameOverrides)
-    options.push({ key: key, label: cardBrandParts(name).label + " ••" + t.last4, network: cardBrandParts(name).network, bank: t.bank, accountType: t.accountType })
+    options.push({ key: key, label: cardBrandParts(name).label + " ••" + t.last4, network: cardBrandParts(name).network, bank: t.bank, accountType: t.accountType, last4: t.last4 })
   }
   // Cards with no settled transactions this cycle still deserve a filter
   // entry — the billing overview lists every card, transactions don't.

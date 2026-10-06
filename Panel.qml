@@ -1400,7 +1400,8 @@ Panel {
           delegate: FilterMenuRow {
             required property var modelData
             width: parent.width
-            label: modelData.label
+            // Axis savings: the logo stands in for the name, so just the number.
+            label: modelData.bank === "AXIS" ? "••" + modelData.last4 : modelData.label
             network: modelData.network || ""
             bank: modelData.accountType === "checking" ? modelData.bank : ""
             selected: root.accountFilters.indexOf(modelData.key) !== -1
@@ -1590,6 +1591,7 @@ Panel {
     readonly property bool showDetails: card.expanded && !card.editing
     readonly property string groupKey: Model.transactionGroupKey(txn)
     readonly property string displayMerchant: Model.transactionDisplayName(txn, store.transactionNameOverrides)
+    readonly property bool isAxisSavings: card.txn.accountType === "checking" && card.txn.bank === "AXIS"
     readonly property string accountName: Model.cardBrandParts(Model.formatAccount(txn, store.accountNameOverrides, store.cardOverviews).split(" ••")[0]).label + " ••" + txn.last4
     readonly property string note: Model.transactionNote(txn)
     readonly property bool isDebit: txn.amount < 0
@@ -1766,7 +1768,8 @@ Panel {
               id: pillText
               anchors.centerIn: parent
               textFormat: Text.PlainText
-              text: card.accountName
+              // Axis savings show the Axis logo beside the number, not the name.
+              text: card.isAxisSavings ? "••" + card.txn.last4 : card.accountName
               color: root.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
