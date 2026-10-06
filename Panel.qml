@@ -1441,17 +1441,30 @@ Panel {
       anchors.verticalCenter: parent.verticalCenter
     }
 
+    AxisLogo {
+      id: rowAxisMark
+      visible: menuRow.bank === "AXIS"
+      markSize: Style.spaceReal(9)
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    // Whichever bank mark this row shows (none for cards and "All accounts").
+    readonly property bool hasBankMark: menuRow.bank === "HDFC" || menuRow.bank === "AXIS"
+    readonly property Item bankMark: menuRow.bank === "AXIS" ? rowAxisMark : rowBankMark
+
     BrandMark {
       id: rowMark
       network: menuRow.network
       markHeight: Style.spaceReal(9)
-      anchors.left: rowBankMark.visible ? rowBankMark.right : parent.left
-      anchors.leftMargin: rowBankMark.visible ? Style.space(4) : Style.space(8)
+      anchors.left: menuRow.hasBankMark ? menuRow.bankMark.right : parent.left
+      anchors.leftMargin: menuRow.hasBankMark ? Style.space(4) : Style.space(8)
       anchors.verticalCenter: parent.verticalCenter
     }
 
     Text {
-      anchors.left: rowMark.visible ? rowMark.right : (rowBankMark.visible ? rowBankMark.right : parent.left)
+      anchors.left: rowMark.visible ? rowMark.right : (menuRow.hasBankMark ? menuRow.bankMark.right : parent.left)
       anchors.leftMargin: Style.space(6)
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
@@ -1698,6 +1711,12 @@ Panel {
           HdfcLogo {
             variant: "icon"
             visible: card.txn.accountType === "checking" && card.txn.bank === "HDFC"
+            markSize: Style.spaceReal(9)
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          AxisLogo {
+            visible: card.txn.accountType === "checking" && card.txn.bank === "AXIS"
             markSize: Style.spaceReal(9)
             anchors.verticalCenter: parent.verticalCenter
           }
