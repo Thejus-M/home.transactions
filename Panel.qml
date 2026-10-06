@@ -913,7 +913,7 @@ Panel {
             PanelActionButton {
               size: Style.space(28)
               fontSize: Style.font.bodySmall
-              iconText: "☑"
+              iconText: "󰄹"
               tooltipText: root.selectionMode ? "Done selecting" : "Select transactions"
               foreground: root.foreground
               hoverColor: Color.accent
@@ -1673,7 +1673,7 @@ Panel {
         Text {
           id: checkMark
           anchors.centerIn: parent
-          text: "✓"
+          text: ""
           color: Color.accent
           font.bold: true
           font.pixelSize: Style.font.caption
