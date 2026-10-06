@@ -881,33 +881,6 @@ Panel {
           }
 
           Row {
-            id: selectionRow
-            anchors.right: filterRow.left
-            anchors.rightMargin: Style.spacing.md
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.spacing.xs
-            visible: root.selectionMode
-
-            TextAction {
-              visible: root.selectedCount > 0
-              label: "Track (" + root.selectedCount + ")"
-              onTriggered: root.trackSelected(true)
-            }
-
-            TextAction {
-              visible: root.selectedCount > 0
-              label: "Untrack (" + root.selectedCount + ")"
-              onTriggered: root.trackSelected(false)
-            }
-
-            TextAction {
-              visible: root.filteredTransactions.length > 0
-              label: root.allVisibleSelected ? "Clear" : "Select all"
-              onTriggered: root.toggleSelectAll()
-            }
-          }
-
-          Row {
             id: filterRow
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
@@ -942,6 +915,33 @@ Panel {
               focusable: true
               onClicked: root.setSelectionMode(!root.selectionMode)
             }
+          }
+        }
+
+        // Selection controls get their own line under RECENT's header, so a
+        // long label wraps instead of running into the section title.
+        Flow {
+          id: selectionRow
+          width: parent.width
+          spacing: Style.spacing.xs
+          visible: root.selectionMode
+
+          TextAction {
+            visible: root.selectedCount > 0
+            label: "Track (" + root.selectedCount + ")"
+            onTriggered: root.trackSelected(true)
+          }
+
+          TextAction {
+            visible: root.selectedCount > 0
+            label: "Untrack (" + root.selectedCount + ")"
+            onTriggered: root.trackSelected(false)
+          }
+
+          TextAction {
+            visible: root.filteredTransactions.length > 0
+            label: root.allVisibleSelected ? "Clear" : "Select all"
+            onTriggered: root.toggleSelectAll()
           }
         }
 
