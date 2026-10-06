@@ -61,6 +61,34 @@ Panel {
   readonly property int pendingTrackedCount: transactions.filter(function (t) { return t.tracked }).length
   readonly property int archivedCount: archivedList.length
   property bool showArchived: false
+  // Rows picked with their checkboxes (map: transaction id -> true). Separate
+  // from "tracked": selecting only prepares rows for Archive selected.
+  property var selectedIds: ({})
+  readonly property var selectedRows: transactions.filter(function (t) { return !!root.selectedIds[t.id] })
+  readonly property int selectedCount: selectedRows.length
+  readonly property bool allVisibleSelected: filteredTransactions.length > 0
+    && filteredTransactions.every(function (t) { return !!root.selectedIds[t.id] })
+  function toggleSelected(id) {
+    var map = Object.assign({}, selectedIds)
+    if (map[id]) delete map[id]
+    else map[id] = true
+    selectedIds = map
+  }
+  // Selects every row currently shown (after filters and search); when they
+  // are all selected already, clears them instead.
+  function toggleSelectAll() {
+    var on = !allVisibleSelected
+    var map = Object.assign({}, selectedIds)
+    filteredTransactions.forEach(function (t) {
+      if (on) map[t.id] = true
+      else delete map[t.id]
+    })
+    selectedIds = map
+  }
+  function archiveSelected() {
+    store.archiveRows(selectedRows)
+    selectedIds = ({})
+  }
 
   // Selected account keys (Model.accountKey); empty means "all accounts".
   property var accountFilters: []
@@ -216,6 +244,14 @@ Panel {
       archivedList = archivedList.concat(toArchive)
       recompute()
       writeTrackedFile()
+      writeArchiveFile()
+    }
+
+    // Moves the given rows into the archive (used by Archive selected).
+    function archiveRows(rows) {
+      if (!rows || rows.length === 0) return
+      archivedList = archivedList.concat(rows)
+      recompute()
       writeArchiveFile()
     }
 
@@ -880,6 +916,26 @@ Panel {
           }
 
           Row {
+            id: selectionRow
+            anchors.right: filterRow.left
+            anchors.rightMargin: Style.spacing.md
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.spacing.xs
+
+            TextAction {
+              visible: root.selectedCount > 0
+              label: "Archive (" + root.selectedCount + ")"
+              onTriggered: root.archiveSelected()
+            }
+
+            TextAction {
+              visible: root.filteredTransactions.length > 0
+              label: root.allVisibleSelected ? "Clear" : "Select all"
+              onTriggered: root.toggleSelectAll()
+            }
+          }
+
+          Row {
             id: filterRow
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
@@ -971,6 +1027,7 @@ Panel {
                     required property var modelData
                     width: parent.width
                     txn: modelData
+                    selectable: true
                   }
                 }
               }
@@ -1663,6 +1720,41 @@ Panel {
     }
   }
 
+  // Small outlined text button for the RECENT selection controls.
+  component TextAction: Rectangle {
+    id: action
+    property string label: ""
+    signal triggered()
+
+    width: actionText.implicitWidth + Style.space(18)
+    height: Style.space(26)
+    radius: Style.cornerRadius
+    color: actionHover.hovered ? Util.alpha(Color.accent, 0.22) : "transparent"
+    border.width: 1
+    border.color: Color.accent
+
+    HoverHandler {
+      id: actionHover
+    }
+
+    Text {
+      id: actionText
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: action.label
+      color: Color.accent
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: action.triggered()
+    }
+  }
+
   // One RECENT row, card-style: a circular direction icon, merchant name +
   // account pill, amount on the right — clicking the row toggles "tracked"
   // (shown as a tinted background instead of a switch), and hovering
@@ -1679,6 +1771,9 @@ Panel {
     required property var txn
 
     property bool editing: false
+    // RECENT rows get a checkbox; archived rows don't.
+    property bool selectable: false
+    readonly property bool selected: !!root.selectedIds[card.txn.id]
     // Expanded detail panel (raw merchant text, full date, full account,
     // explicit tracked state) below the collapsed row — separate from the
     // row-click/Enter/Space "toggle tracked" action so neither takes over
@@ -1698,7 +1793,9 @@ Panel {
     implicitHeight: card.collapsedHeight + (card.showDetails ? detailsPanel.implicitHeight + Style.space(10) : 0)
     radius: Style.cornerRadius
     opacity: cardMouse.pressed ? 0.75 : 1.0
-    color: card.txn.tracked ? root.rowBg(card.txn) : (card._hot ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent")
+    color: card.selected ? Util.alpha(Color.accent, 0.16)
+      : card.txn.tracked ? root.rowBg(card.txn)
+      : (card._hot ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent")
     borderSpec: card.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
 
     Behavior on implicitHeight { NumberAnimation { duration: 120 } }
@@ -1719,7 +1816,12 @@ Panel {
     // F2 for rename — Enter/Space already toggles tracked, so rename
     // needs its own key (F2 is the standard rename shortcut elsewhere;
     // confirmed no Hyprland keybind collision on this system).
-    Keys.onPressed: if (!card.editing && event.key === Qt.Key_F2) { card.editing = true; event.accepted = true }
+    // X toggles the row's selection (for keyboard users; the checkbox does the same).
+    Keys.onPressed: function (event) {
+      if (card.editing) return
+      if (event.key === Qt.Key_F2) { card.editing = true; event.accepted = true }
+      else if (event.key === Qt.Key_X && card.selectable) { root.toggleSelected(card.txn.id); event.accepted = true }
+    }
     Keys.onUpPressed: if (!card.editing) root.focusNext(card, false)
     Keys.onDownPressed: if (!card.editing) root.focusNext(card, true)
     // Left/Right collapse/expand the detail panel — unused by this
@@ -1747,6 +1849,36 @@ Panel {
       }
 
       Rectangle {
+        id: checkBox
+        visible: card.selectable && !card.editing
+        width: Style.space(16)
+        height: width
+        radius: Style.space(3)
+        color: card.selected ? Util.alpha(Color.accent, 0.8) : "transparent"
+        border.width: 1
+        border.color: card.selected ? Color.accent : Qt.darker(root.foreground, 1.8)
+        anchors.left: parent.left
+        anchors.leftMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+
+        Text {
+          anchors.centerIn: parent
+          visible: card.selected
+          text: "✓"
+          color: root.foreground
+          font.bold: true
+          font.pixelSize: Style.font.caption
+        }
+
+        MouseArea {
+          anchors.fill: parent
+          anchors.margins: -Style.space(6)
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.toggleSelected(card.txn.id)
+        }
+      }
+
+      Rectangle {
         id: avatar
         visible: !card.editing
         width: Style.space(36)
@@ -1754,7 +1886,7 @@ Panel {
         radius: width / 2
         color: Util.alpha(card.directionColor, 0.22)
         anchors.left: parent.left
-        anchors.leftMargin: Style.spacing.rowPaddingX
+        anchors.leftMargin: Style.spacing.rowPaddingX + (card.selectable ? Style.space(24) : 0)
         anchors.verticalCenter: parent.verticalCenter
 
         Text {
