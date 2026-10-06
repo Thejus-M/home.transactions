@@ -570,10 +570,11 @@ Panel {
               elide: Text.ElideRight
             }
 
-            HdfcMark {
+            HdfcLogo {
               id: balanceBankMark
-              bank: root.accountBalances.length > 0 ? root.accountBalances[0].bank : ""
-              markHeight: Style.spaceReal(11)
+              variant: "icon"
+              visible: root.accountBalances.length > 0 && root.accountBalances[0].bank === "HDFC"
+              markSize: Style.spaceReal(11)
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
             }
@@ -1471,10 +1472,11 @@ Panel {
     Keys.onEnterPressed: menuRow.clicked()
     Keys.onSpacePressed: menuRow.clicked()
 
-    HdfcMark {
+    HdfcLogo {
       id: rowBankMark
-      bank: menuRow.bank
-      markHeight: Style.spaceReal(9)
+      variant: "icon"
+      visible: menuRow.bank === "HDFC"
+      markSize: Style.spaceReal(9)
       anchors.left: parent.left
       anchors.leftMargin: Style.space(8)
       anchors.verticalCenter: parent.verticalCenter
