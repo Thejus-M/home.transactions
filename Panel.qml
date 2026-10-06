@@ -1402,6 +1402,28 @@ Panel {
           }
         }
 
+        Rectangle {
+          width: parent.width
+          height: Style.spacing.hairline
+          color: Qt.darker(root.foreground, 1.8)
+        }
+
+        // One-shot actions on the rows currently shown (the account pick and
+        // search above narrow them). They close the popover when used.
+        FilterMenuRow {
+          width: parent.width
+          label: "Track shown (" + root.filteredTransactions.length + ")"
+          enabled: root.filteredTransactions.length > 0
+          onClicked: { store.setTrackedMany(root.filteredTransactions, true); filterPopup.close() }
+        }
+
+        FilterMenuRow {
+          width: parent.width
+          label: "Untrack shown (" + root.filteredTransactions.length + ")"
+          enabled: root.filteredTransactions.length > 0
+          onClicked: { store.setTrackedMany(root.filteredTransactions, false); filterPopup.close() }
+        }
+
       }
     }
   }
@@ -1426,10 +1448,11 @@ Panel {
       : Style.controlFill(false, menuRow._hot, root.foreground, Color.accent)
     borderSpec: Border.none()
 
+    opacity: menuRow.enabled ? 1.0 : 0.4
     activeFocusOnTab: true
-    Keys.onReturnPressed: menuRow.clicked()
-    Keys.onEnterPressed: menuRow.clicked()
-    Keys.onSpacePressed: menuRow.clicked()
+    Keys.onReturnPressed: if (menuRow.enabled) menuRow.clicked()
+    Keys.onEnterPressed: if (menuRow.enabled) menuRow.clicked()
+    Keys.onSpacePressed: if (menuRow.enabled) menuRow.clicked()
 
     HdfcLogo {
       id: rowBankMark
@@ -1481,6 +1504,7 @@ Panel {
     MouseArea {
       id: mouse
       anchors.fill: parent
+      enabled: menuRow.enabled
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
       onClicked: menuRow.clicked()
