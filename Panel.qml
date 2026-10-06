@@ -1803,8 +1803,10 @@ Panel {
         font.family: Style.font.family
         font.bold: true
         font.pixelSize: Style.font.subtitle
-        anchors.right: parent.right
-        anchors.rightMargin: root.amountInset
+        // Sits just left of the rename pencil's slot (which is reserved even
+        // while the pencil is hidden), so the amount stays clear of it.
+        anchors.right: editBtn.left
+        anchors.rightMargin: Style.space(6)
         anchors.verticalCenter: parent.verticalCenter
       }
 
