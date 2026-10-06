@@ -88,8 +88,8 @@ the popup, and are also explicitly reloaded whenever the popup opens.
   green (credit). Click a card (or Enter/Space while it's focused) to
   mark it tracked (already recorded elsewhere) — tracked cards get a
   tinted background instead of a switch. Persists to
-  `~/.local/state/omarchy/transactions-tracked.json`. A chevron (or
-  Left/Right while focused) expands the card in place to show the raw
+  `~/.local/state/omarchy/transactions-tracked.json`. Clicking the
+  circle on the left (or Left/Right while focused) expands the card in place to show the raw
   (pre-rename) merchant text, the full date + full account name, and an
   explicit tracked checkbox — separate from the row-click/Enter/Space
   toggle, so expanding a card never changes its tracked state by itself.

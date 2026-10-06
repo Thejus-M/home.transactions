@@ -1125,7 +1125,7 @@ Panel {
       // the full detail panel below. The avatar's own MouseArea (below)
       // sits on top of this one (declared later = higher z) and claims
       // just that icon for "mark as paid" instead, same precedent as
-      // TransactionCard's editBtn/expandBtn overriding cardMouse beneath.
+      // TransactionCard's editBtn overriding cardMouse beneath.
       MouseArea {
         id: rowMouse
         anchors.fill: parent
@@ -1705,6 +1705,15 @@ Panel {
         anchors.leftMargin: Style.spacing.rowPaddingX + (card.selectable && root.selectionMode ? Style.space(24) : 0)
         anchors.verticalCenter: parent.verticalCenter
 
+        // Clicking the circle expands or collapses the details below.
+        MouseArea {
+          anchors.fill: parent
+          anchors.margins: -Style.space(4)
+          enabled: !card.editing
+          cursorShape: Qt.PointingHandCursor
+          onClicked: card.expanded = !card.expanded
+        }
+
         Text {
           anchors.centerIn: parent
           textFormat: Text.PlainText
@@ -1815,8 +1824,8 @@ Panel {
       Text {
         id: editBtn
         visible: !card.editing && card._hot
-        anchors.right: expandBtn.left
-        anchors.rightMargin: Style.space(6)
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
         text: "✎"
@@ -1829,31 +1838,6 @@ Panel {
           hoverEnabled: true
           cursorShape: Qt.PointingHandCursor
           onClicked: card.editing = true
-        }
-      }
-
-      // Expand/collapse the detail panel below — always visible (not
-      // hover-gated like the rename pencil), since "more detail on click"
-      // is a primary feature here, not a rare secondary one. Its own
-      // MouseArea consumes the click before it reaches cardMouse behind
-      // it, same precedent as editBtn.
-      Text {
-        id: expandBtn
-        visible: !card.editing
-        anchors.right: parent.right
-        anchors.rightMargin: Style.spacing.rowPaddingX
-        anchors.verticalCenter: parent.verticalCenter
-        textFormat: Text.PlainText
-        text: card.expanded ? "▴" : "▾"
-        color: card._hot ? root.foreground : Qt.darker(root.foreground, 1.4)
-        font.pixelSize: Style.font.caption
-
-        MouseArea {
-          anchors.fill: parent
-          anchors.margins: -Style.space(6)
-          hoverEnabled: true
-          cursorShape: Qt.PointingHandCursor
-          onClicked: card.expanded = !card.expanded
         }
       }
 
