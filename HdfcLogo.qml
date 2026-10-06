@@ -32,12 +32,12 @@ Item {
   readonly property color letterColour: "#D6E6F7"
 
   // Geometry as fractions of the mark side s (mark is 1 x 1 in these units).
-  readonly property real armFrac: 0.454
-  readonly property real thickFrac: 0.155
-  readonly property real squareFrac: 0.364
+  readonly property real armFrac: 0.452
+  readonly property real thickFrac: 0.154
+  readonly property real squareFrac: 0.366
   readonly property real barWidthFrac: 1.125
-  readonly property real barTopFrac: 1.030
-  readonly property real barHeightFrac: 0.2283
+  readonly property real barTopFrac: 1.036
+  readonly property real barHeightFrac: 0.230
 
   // Whole-pixel side so the blue square and bar edges stay crisp.
   readonly property real s: Math.round(markSize)
