@@ -1501,7 +1501,8 @@ Panel {
 
     Text {
       anchors.left: rowMark.visible ? rowMark.right : (menuRow.hasBankMark ? menuRow.bankMark.right : parent.left)
-      anchors.leftMargin: Style.space(6)
+      // Axis rows show only "••NNNN" after the logo, so give it more room.
+      anchors.leftMargin: menuRow.bank === "AXIS" ? Style.space(12) : Style.space(6)
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
       anchors.rightMargin: Style.space(8)
