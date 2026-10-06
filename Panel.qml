@@ -64,6 +64,9 @@ Panel {
   // Rows picked with their checkboxes (map: transaction id -> true). Separate
   // from "tracked": selecting only prepares rows for Archive selected.
   property var selectedIds: ({})
+  // Checkboxes and the selection controls show only in selection mode, which
+  // the check button beside search turns on.
+  property bool selectionMode: false
   readonly property var selectedRows: transactions.filter(function (t) { return !!root.selectedIds[t.id] })
   readonly property int selectedCount: selectedRows.length
   readonly property bool allVisibleSelected: filteredTransactions.length > 0
@@ -85,8 +88,13 @@ Panel {
     })
     selectedIds = map
   }
-  function archiveSelected() {
-    store.archiveRows(selectedRows)
+  function setSelectionMode(on) {
+    selectionMode = on
+    if (!on) selectedIds = ({})
+  }
+  // Marks every selected row tracked (or untracked), then clears the selection.
+  function trackSelected(value) {
+    store.setTrackedMany(selectedRows, value)
     selectedIds = ({})
   }
 
@@ -247,12 +255,17 @@ Panel {
       writeArchiveFile()
     }
 
-    // Moves the given rows into the archive (used by Archive selected).
-    function archiveRows(rows) {
+    // Sets the tracked state of several rows at once (Track / Untrack selected).
+    function setTrackedMany(rows, value) {
       if (!rows || rows.length === 0) return
-      archivedList = archivedList.concat(rows)
+      var overrides = Object.assign({}, trackedOverrides)
+      for (var i = 0; i < rows.length; i++) {
+        if (value) overrides[rows[i].id] = true
+        else delete overrides[rows[i].id]
+      }
+      trackedOverrides = overrides
       recompute()
-      writeArchiveFile()
+      writeTrackedFile()
     }
 
     function writeTrackedFile() {
@@ -731,6 +744,7 @@ Panel {
               FetchControl {
                 id: hdfcControl
                 label: "HDFC"
+                bank: "hdfc"
                 running: fetchProc.running
                 allowed: !axisFetchProc.running
                 idleTooltip: "Fetch HDFC data (opens browser, scan QR)"
@@ -746,6 +760,7 @@ Panel {
               FetchControl {
                 id: axisControl
                 label: "Axis"
+                bank: "axis"
                 running: axisFetchProc.running
                 allowed: !fetchProc.running
                 idleTooltip: "Fetch Axis data (asks for the OTP here)"
@@ -921,11 +936,18 @@ Panel {
             anchors.rightMargin: Style.spacing.md
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.spacing.xs
+            visible: root.selectionMode
 
             TextAction {
               visible: root.selectedCount > 0
-              label: "Archive (" + root.selectedCount + ")"
-              onTriggered: root.archiveSelected()
+              label: "Track (" + root.selectedCount + ")"
+              onTriggered: root.trackSelected(true)
+            }
+
+            TextAction {
+              visible: root.selectedCount > 0
+              label: "Untrack (" + root.selectedCount + ")"
+              onTriggered: root.trackSelected(false)
             }
 
             TextAction {
@@ -957,6 +979,18 @@ Panel {
                 if (root.searchVisible) Qt.callLater(function () { searchField.forceActiveFocus() })
                 else { root.searchQuery = ""; searchField.focus = false }
               }
+            }
+
+            PanelActionButton {
+              size: Style.space(28)
+              fontSize: Style.font.bodySmall
+              iconText: "☑"
+              tooltipText: root.selectionMode ? "Done selecting" : "Select transactions"
+              foreground: root.foreground
+              hoverColor: Color.accent
+              bordered: true
+              focusable: true
+              onClicked: root.setSelectionMode(!root.selectionMode)
             }
           }
         }
@@ -1820,7 +1854,7 @@ Panel {
     Keys.onPressed: function (event) {
       if (card.editing) return
       if (event.key === Qt.Key_F2) { card.editing = true; event.accepted = true }
-      else if (event.key === Qt.Key_X && card.selectable) { root.toggleSelected(card.txn.id); event.accepted = true }
+      else if (event.key === Qt.Key_X && card.selectable && root.selectionMode) { root.toggleSelected(card.txn.id); event.accepted = true }
     }
     Keys.onUpPressed: if (!card.editing) root.focusNext(card, false)
     Keys.onDownPressed: if (!card.editing) root.focusNext(card, true)
@@ -1850,7 +1884,7 @@ Panel {
 
       Rectangle {
         id: checkBox
-        visible: card.selectable && !card.editing
+        visible: card.selectable && root.selectionMode && !card.editing
         width: Style.space(16)
         height: width
         radius: Style.space(3)
@@ -1886,7 +1920,7 @@ Panel {
         radius: width / 2
         color: Util.alpha(card.directionColor, 0.22)
         anchors.left: parent.left
-        anchors.leftMargin: Style.spacing.rowPaddingX + (card.selectable ? Style.space(24) : 0)
+        anchors.leftMargin: Style.spacing.rowPaddingX + (card.selectable && root.selectionMode ? Style.space(24) : 0)
         anchors.verticalCenter: parent.verticalCenter
 
         Text {

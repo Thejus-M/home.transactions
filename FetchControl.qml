@@ -1,14 +1,16 @@
 import QtQuick
+import QtQuick.Controls
 import qs.Commons
-import qs.Ui
 
-// One bank's reload control: the bank's name, then a ⟳ button while idle or a
-// Cancel button while that bank's own fetch runs. Each bank has its own, so
-// the two reloads stay apart.
+// One bank's reload control: the bank's name, then the bank's logo as the
+// reload button while idle, or a Cancel button while that bank's own fetch
+// runs. Each bank has its own, so the two reloads stay apart.
 Item {
   id: root
 
   property string label: ""
+  // "hdfc" or "axis": which logo the idle button shows.
+  property string bank: "hdfc"
   property bool running: false
   // False while the other bank's fetch runs (only one fetch at a time).
   property bool allowed: true
@@ -17,7 +19,8 @@ Item {
   signal fetch()
   signal cancel()
 
-  readonly property real controlWidth: running ? cancelBox.width : Style.space(28)
+  readonly property real logoSize: Style.space(22)
+  readonly property real controlWidth: running ? cancelBox.width : logoSize
 
   implicitWidth: nameText.implicitWidth + Style.spacing.xs + controlWidth
   implicitHeight: Style.space(28)
@@ -33,20 +36,43 @@ Item {
     font.pixelSize: Style.font.caption
   }
 
-  PanelActionButton {
+  // The bank's logo is the reload button: click it to fetch.
+  Item {
+    id: logoButton
     visible: !root.running
     anchors.right: parent.right
     anchors.verticalCenter: parent.verticalCenter
-    size: Style.space(28)
-    fontSize: Style.font.bodySmall
-    iconText: "⟳"
-    tooltipText: root.idleTooltip
-    foreground: root.foreground
-    hoverColor: Color.accent
-    bordered: true
-    focusable: true
-    enabled: root.allowed
-    onClicked: root.fetch()
+    width: root.logoSize
+    height: width
+    opacity: root.allowed ? 1.0 : 0.35
+
+    HdfcLogo {
+      visible: root.bank === "hdfc"
+      anchors.centerIn: parent
+      variant: "icon"
+      markSize: root.logoSize
+    }
+
+    AxisLogo {
+      visible: root.bank === "axis"
+      anchors.centerIn: parent
+      markSize: root.logoSize
+    }
+
+    HoverHandler {
+      id: logoHover
+    }
+
+    ToolTip.visible: logoHover.hovered && root.idleTooltip !== ""
+    ToolTip.text: root.idleTooltip
+    ToolTip.delay: 400
+
+    MouseArea {
+      anchors.fill: parent
+      enabled: root.allowed
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.fetch()
+    }
   }
 
   Rectangle {
