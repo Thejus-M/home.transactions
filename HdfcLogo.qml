@@ -72,6 +72,13 @@ Item {
   width: implicitWidth
   height: implicitHeight
 
+  // Centre square in mark units (the icon side is 1).
+  function squarePath() {
+    var a = root.squareOffset / root.s
+    var b = (root.squareOffset + root.squareSide) / root.s
+    return "M " + a + " " + a + " L " + b + " " + a + " L " + b + " " + b + " L " + a + " " + b + " Z"
+  }
+
   // One corner bracket in mark units. index: 0 TL, 1 TR, 2 BR, 3 BL.
   function bracketPath(index) {
     var right = index === 1 || index === 2
@@ -141,16 +148,18 @@ Item {
 
       PathSvg { path: root.bracketPath(3) }
     }
+
+    // Blue centre square, drawn in the same shape as the brackets so both use
+    // one rasteriser and stay aligned with each other.
+    ShapePath {
+      fillColor: root.squareColour
+      strokeColor: "transparent"
+      strokeWidth: 0
+
+      PathSvg { path: root.squarePath() }
+    }
   }
 
-  // Blue centre square, centred on the mark.
-  Rectangle {
-    x: root.ox + root.squareOffset
-    y: root.squareOffset
-    width: root.squareSide
-    height: root.squareSide
-    color: root.squareColour
-  }
 
   // Pale wordmark letters, full variant only.
   Shape {
