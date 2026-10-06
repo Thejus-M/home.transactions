@@ -737,65 +737,91 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
-          // Axis OTP: shown while the Axis fetcher waits for the code. The
-          // code goes down the fetcher's stdin and the box clears; it is not
-          // stored. Empty or wrong codes make the fetcher ask again here.
+          // Axis OTP: one box per digit, like the bank's own screen. Typing
+          // moves on to the next box, Backspace on an empty box goes back, and
+          // a pasted code fills the row. The code goes down the fetcher's
+          // stdin once every box is filled (or on Enter, for an empty or short
+          // try, which the fetcher answers by asking again). Never stored.
           Item {
             id: otpRow
             visible: root.axisOtpNeeded
             width: parent.width
-            height: Style.space(28)
+            height: Style.space(34)
+            readonly property int digitCount: root.axisFetchStatus.digits || 6
+
+            onVisibleChanged: if (visible) Qt.callLater(function () { otpRow.boxAt(0).forceActiveFocus() })
+
+            function boxAt(i) { return otpRepeater.itemAt(i).input }
+
+            function digitsTyped(index, value) {
+              var digits = value.replace(/\D/g, "")
+              for (var k = 0; k < digits.length && index + k < digitCount; k++) {
+                boxAt(index + k).text = digits.charAt(k)
+              }
+              var next = Math.min(index + digits.length, digitCount - 1)
+              boxAt(next).forceActiveFocus()
+              if (allFilled()) sendOtp()
+            }
+
+            function allFilled() {
+              for (var i = 0; i < digitCount; i++) {
+                if (boxAt(i).text === "") return false
+              }
+              return true
+            }
 
             function sendOtp() {
               if (!axisFetchProc.running) return
-              axisFetchProc.write(otpField.text.trim() + "\n")
-              otpField.text = ""
+              var code = ""
+              for (var i = 0; i < digitCount; i++) code += boxAt(i).text
+              axisFetchProc.write(code + "\n")
+              for (var j = 0; j < digitCount; j++) boxAt(j).text = ""
+              boxAt(0).forceActiveFocus()
             }
 
-            TextField {
-              id: otpField
-              anchors.left: parent.left
-              anchors.right: otpSend.left
-              anchors.rightMargin: Style.spacing.xs
-              height: parent.height
-              placeholderText: "Login OTP from your Axis app"
-              inputMethodHints: Qt.ImhDigitsOnly
-              maximumLength: 8
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-              onAccepted: otpRow.sendOtp()
-            }
+            Row {
+              id: otpBoxes
+              anchors.horizontalCenter: parent.horizontalCenter
+              spacing: Style.spacing.xs
 
-            Rectangle {
-              id: otpSend
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              width: otpSendLabel.implicitWidth + Style.space(20)
-              height: Style.space(28)
-              radius: Style.cornerRadius
-              color: otpSendHover.hovered ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.25) : "transparent"
-              border.width: 1
-              border.color: Color.accent
+              Repeater {
+                id: otpRepeater
+                model: otpRow.digitCount
 
-              HoverHandler {
-                id: otpSendHover
-              }
+                Rectangle {
+                  id: cell
+                  required property int index
+                  readonly property alias input: box
+                  width: Style.space(34)
+                  height: Style.space(34)
+                  radius: Style.cornerRadius
+                  color: "transparent"
+                  border.width: 1
+                  border.color: box.activeFocus ? Color.accent : Qt.darker(root.foreground, 2)
 
-              Text {
-                id: otpSendLabel
-                anchors.centerIn: parent
-                textFormat: Text.PlainText
-                text: "Send"
-                color: Color.accent
-                font.family: Style.font.family
-                font.pixelSize: Style.font.caption
-                font.bold: true
-              }
-
-              MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: otpRow.sendOtp()
+                  TextInput {
+                    id: box
+                    anchors.fill: parent
+                    horizontalAlignment: TextInput.AlignHCenter
+                    verticalAlignment: TextInput.AlignVCenter
+                    color: root.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    onActiveFocusChanged: if (activeFocus) selectAll()
+                    onTextEdited: otpRow.digitsTyped(cell.index, text)
+                    Keys.onPressed: function (event) {
+                      if (event.key === Qt.Key_Backspace && text === "" && cell.index > 0) {
+                        otpRow.boxAt(cell.index - 1).forceActiveFocus()
+                        event.accepted = true
+                      } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        otpRow.sendOtp()
+                        event.accepted = true
+                      }
+                    }
+                  }
+                }
               }
             }
           }
