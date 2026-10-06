@@ -58,7 +58,7 @@ Item {
     return (innerPx - side) % 2 === 0 ? side : side + 1
   }
   // Visual nudge: the square reads right of centre, so it sits one pixel left.
-  readonly property real squareNudge: -1
+  readonly property real squareNudge: -0.5
   readonly property real squareOffset: thickPx + (innerPx - squareSide) / 2 + squareNudge
 
   // Letters, as one path in mark units (height of the letters about 0.106).
