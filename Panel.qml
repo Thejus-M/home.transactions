@@ -1650,6 +1650,13 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
           }
 
+          HdfcLogo {
+            variant: "icon"
+            visible: card.txn.accountType === "checking" && card.txn.bank === "HDFC"
+            markSize: Style.spaceReal(9)
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
           Rectangle {
             radius: Style.space(4)
             color: Util.alpha(root.foreground, 0.12)
