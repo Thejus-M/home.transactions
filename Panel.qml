@@ -395,6 +395,31 @@ Panel {
 
   property bool fetchCancelled: false
 
+  function startFetch(bank) {
+    if (bank === "axis") axisFetchProc.running = true
+    else fetchProc.running = true
+  }
+
+  function cancelFetch(bank) {
+    if (bank === "axis") {
+      axisFetchCancelled = true
+      axisCancelProc.running = true
+      axisFetchProc.running = false
+    } else {
+      fetchCancelled = true
+      cancelProc.running = true
+      fetchProc.running = false
+    }
+  }
+
+  // The balance text for one bank's accounts ("HDFC" or "AXIS"), joined.
+  function balanceTextFor(bank) {
+    return root.accountBalances
+      .filter(function (b) { return b.bank === bank })
+      .map(function (b) { return Model.formatAccountBalance(b, store.accountNameOverrides, store.cardOverviews) })
+      .join("  ·  ")
+  }
+
   // Stops the running fetch: signals its whole process group, removes the
   // login QR, and records the cancelled stage for the widget.
   Process {
@@ -631,103 +656,22 @@ Panel {
             }
           }
 
-          // Account balances (checking/savings — see hdfc-statement-
-          // fetcher's hdfc_account_balances.json) replacing the old "Top
-          // spenders" line. A Flow, not one elided Text: only one account
-          // exists today, but this needs to hold 4-5 once more
-          // accounts/banks are added to the fetcher, wrapping to further
-          // lines rather than truncating.
-          Item {
+          // One chip per bank: the bank's logo (click it to reload that bank)
+          // then its balance. A Flow, so the chips wrap rather than truncate.
+          Flow {
             width: parent.width
-            height: Math.max(balanceFlow.implicitHeight, Style.space(28))
+            spacing: Style.spacing.md
 
-            Text {
-              visible: root.accountBalances.length === 0
-              anchors.left: parent.left
-              anchors.right: fetchControls.left
-              anchors.rightMargin: Style.spacing.md
-              anchors.verticalCenter: parent.verticalCenter
-              textFormat: Text.PlainText
-              text: "No balances yet — press ⟳ to fetch"
-              color: Qt.darker(root.foreground, 1.7)
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-              font.italic: true
-              elide: Text.ElideRight
+            BankBalance {
+              bank: "hdfc"
+              tooltip: "Fetch HDFC data (opens browser, scan QR)"
+              balanceText: root.balanceTextFor("HDFC")
             }
 
-            HdfcLogo {
-              id: balanceBankMark
-              variant: "icon"
-              visible: root.accountBalances.length > 0 && root.accountBalances[0].bank === "HDFC"
-              markSize: Style.spaceReal(11)
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Flow {
-              id: balanceFlow
-              visible: root.accountBalances.length > 0
-              anchors.left: balanceBankMark.visible ? balanceBankMark.right : parent.left
-              anchors.leftMargin: balanceBankMark.visible ? Style.spacing.xs : 0
-              anchors.right: fetchControls.left
-              anchors.rightMargin: Style.spacing.md
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.spacing.xs
-
-              Repeater {
-                model: root.accountBalances
-                delegate: Text {
-                  required property var modelData
-                  required property int index
-                  textFormat: Text.PlainText
-                  text: Model.formatAccountBalance(modelData, store.accountNameOverrides, store.cardOverviews)
-                    + (index < root.accountBalances.length - 1 ? "  ·" : "")
-                  color: Qt.darker(root.foreground, 1.3)
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                }
-              }
-            }
-
-            // One reload per bank. HDFC opens a browser for the QR scan; Axis
-            // asks for its OTP in the otpRow below. Only one runs at a time, so
-            // each control is disabled while the other one is running.
-            Row {
-              id: fetchControls
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.spacing.md
-
-              FetchControl {
-                id: hdfcControl
-                bank: "hdfc"
-                running: fetchProc.running
-                allowed: !axisFetchProc.running
-                idleTooltip: "Fetch HDFC data (opens browser, scan QR)"
-                foreground: root.foreground
-                onFetch: fetchProc.running = true
-                onCancel: {
-                  root.fetchCancelled = true
-                  cancelProc.running = true
-                  fetchProc.running = false
-                }
-              }
-
-              FetchControl {
-                id: axisControl
-                bank: "axis"
-                running: axisFetchProc.running
-                allowed: !fetchProc.running
-                idleTooltip: "Fetch Axis data (asks for the OTP here)"
-                foreground: root.foreground
-                onFetch: axisFetchProc.running = true
-                onCancel: {
-                  root.axisFetchCancelled = true
-                  axisCancelProc.running = true
-                  axisFetchProc.running = false
-                }
-              }
+            BankBalance {
+              bank: "axis"
+              tooltip: "Fetch Axis data (asks for the OTP here)"
+              balanceText: root.balanceTextFor("AXIS")
             }
           }
 
@@ -1361,6 +1305,9 @@ Panel {
 
     Popup {
       id: filterPopup
+      // Clicks on the trigger are handled by its own onClicked (which toggles).
+      // Without this, the press closes the popup and the click reopens it.
+      closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
       y: filterButton.height + Style.space(4)
       x: filterButton.width - width
       width: Style.space(200)
@@ -1521,6 +1468,48 @@ Panel {
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
       onClicked: menuRow.clicked()
+    }
+  }
+
+  // One bank in the balance row: its logo (the reload button) then its balance.
+  component BankBalance: Item {
+    id: chip
+    property string bank: "hdfc"
+    property string tooltip: ""
+    property string balanceText: ""
+    readonly property bool isAxis: chip.bank === "axis"
+    readonly property bool running: chip.isAxis ? axisFetchProc.running : fetchProc.running
+    readonly property bool allowed: chip.isAxis ? !fetchProc.running : !axisFetchProc.running
+
+    implicitWidth: control.width + Style.spacing.xs + balanceLabel.implicitWidth
+    implicitHeight: Style.space(28)
+    width: implicitWidth
+    height: implicitHeight
+
+    FetchControl {
+      id: control
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      bank: chip.bank
+      running: chip.running
+      allowed: chip.allowed
+      idleTooltip: chip.tooltip
+      foreground: root.foreground
+      onFetch: root.startFetch(chip.bank)
+      onCancel: root.cancelFetch(chip.bank)
+    }
+
+    Text {
+      id: balanceLabel
+      anchors.left: control.right
+      anchors.leftMargin: Style.spacing.xs
+      anchors.verticalCenter: parent.verticalCenter
+      textFormat: Text.PlainText
+      text: chip.balanceText !== "" ? chip.balanceText : "no balance yet"
+      color: chip.balanceText !== "" ? Qt.darker(root.foreground, 1.3) : Qt.darker(root.foreground, 1.7)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.italic: chip.balanceText === ""
     }
   }
 

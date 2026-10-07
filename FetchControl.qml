@@ -24,6 +24,8 @@ Item {
 
   implicitWidth: logoSize + (running ? gap + cancelBox.width : 0)
   implicitHeight: Style.space(28)
+  width: implicitWidth
+  height: implicitHeight
 
   // Stop the logo level when the run ends, wherever the spin had reached.
   onRunningChanged: if (!running) logoButton.rotation = 0
