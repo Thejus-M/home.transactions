@@ -166,7 +166,27 @@ Panel {
     for (var i = 0; i < 64 && next; i++) {
       next = next.nextItemInFocusChain(forward)
       if (!next || next === item) return
-      if (next.activeFocusOnTab) { next.forceActiveFocus(); return }
+      if (next.activeFocusOnTab) {
+        next.forceActiveFocus()
+        root.scrollIntoView(next)
+        return
+      }
+    }
+  }
+
+  // Scrolls the popup's Flickable just enough to bring `item` fully into
+  // view — Up/Down moving focus doesn't move the scroll position on its
+  // own, so without this the newly focused row could land off-screen.
+  function scrollIntoView(item) {
+    if (!item) return
+    var pos = item.mapToItem(column, 0, 0)
+    var margin = Style.spacing.sm
+    var top = pos.y - margin
+    var bottom = pos.y + item.height + margin
+    if (top < flick.contentY) {
+      flick.contentY = Math.max(0, top)
+    } else if (bottom > flick.contentY + flick.height) {
+      flick.contentY = Math.min(Math.max(0, flick.contentHeight - flick.height), bottom - flick.height)
     }
   }
 
