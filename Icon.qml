@@ -2,9 +2,15 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 
-// Bar icon for the Transactions widget: a receipt glyph with a small badge
-// showing how many transactions are still untracked. Mirrors the badge
-// pattern used by TailscaleIcon.qml's warning indicator.
+// Bar icon for the Transactions widget: a coin with a dollar sign, plus a
+// small badge showing how many transactions are still untracked. Mirrors
+// the badge pattern used by TailscaleIcon.qml's warning indicator.
+//
+// A simplified, monochrome take on a coin-in-hand/pie-chart reference image:
+// at the actual bar size (16-24px) the hand and the pie-chart divisions
+// collapsed into noise when tried (checked by rendering both at real size),
+// so just the coin and the $ survive — legible is more important than
+// matching every detail of the reference at this size.
 Item {
   id: root
   property real iconSize: Style.font.icon
@@ -16,12 +22,24 @@ Item {
   width: iconSize
   height: iconSize
 
+  Rectangle {
+    width: root.iconSize * 0.92
+    height: width
+    radius: width / 2
+    anchors.centerIn: parent
+    color: "transparent"
+    border.width: Math.max(1, Math.round(root.iconSize * 0.09))
+    border.color: root.color
+  }
+
   Text {
     anchors.centerIn: parent
+    anchors.verticalCenterOffset: -root.iconSize * 0.02
     textFormat: Text.PlainText
-    text: "󰧾"
+    text: "$"
     color: root.color
-    font.pixelSize: root.iconSize
+    font.bold: true
+    font.pixelSize: root.iconSize * 0.56
   }
 
   // Bottom-right: numeric untracked-count badge.
