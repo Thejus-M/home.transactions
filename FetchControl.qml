@@ -23,13 +23,22 @@ Item {
   readonly property real logoSize: Style.space(16)
 
   // Same bounded focus-chain walk as Panel.qml's root.focusNext — this file
-  // can't reach that one, so it keeps its own copy for Up/Down.
+  // can't reach that one, so it keeps its own copy for Up/Down. Scrolling
+  // the popup's Flickable into view is Panel.qml's job too (it owns
+  // column/flick, which this file can't see), so the caller wires its own
+  // root.scrollIntoView in here — without it, Up/Down from the bank
+  // logo/cancel box moved focus but never scrolled the row into view.
+  property var scrollIntoView: null
   function focusNext(item, forward) {
     var next = item
     for (var i = 0; i < 64 && next; i++) {
       next = next.nextItemInFocusChain(forward)
       if (!next || next === item) return
-      if (next.activeFocusOnTab) { next.forceActiveFocus(); return }
+      if (next.activeFocusOnTab) {
+        next.forceActiveFocus()
+        if (root.scrollIntoView) root.scrollIntoView(next)
+        return
+      }
     }
   }
   readonly property real gap: Style.spacing.xs
@@ -97,10 +106,21 @@ Item {
     radius: width / 2
     opacity: root.allowed || root.running ? 1.0 : 0.35
     scale: logoMouse.pressed ? 0.8 : 1.0
+    // Disabled (other bank fetching, or this one already running) stays
+    // visually dead on hover too — logoHover itself stays enabled so the
+    // idle tooltip still works, but a button that does nothing on click
+    // shouldn't look clickable just because the pointer is over it.
+    readonly property bool hoverActive: logoHover.hovered && root.allowed && !root.running
     color: logoButton.activeFocus
       ? Style.controlFill(true, false, root.foreground, Color.accent)
-      : (logoHover.hovered ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent")
-    borderSpec: logoButton.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+      : (logoButton.hoverActive ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent")
+    // Hover-only previously got the fill with no border at all while focus
+    // got fill + a focus ring — the two states looked unrelated. Give
+    // hover the same graduated hover-cursor border every other control in
+    // this widget uses (FilterMenuButton, TextAction, …).
+    borderSpec: logoButton.activeFocus
+      ? Border.controlSpec("focus", root.foreground, Color.accent)
+      : (logoButton.hoverActive ? Border.controlSpec("hover-cursor", root.foreground, Color.accent) : Border.none())
     Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
     Behavior on opacity { NumberAnimation { duration: 120 } }
     Behavior on color { ColorAnimation { duration: 100 } }

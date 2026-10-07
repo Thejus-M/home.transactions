@@ -789,8 +789,18 @@ Panel {
                     // Plain TextInput (unlike QtQuick.Controls TextField)
                     // defaults activeFocusOnTab to false — without this,
                     // Tab/Shift+Tab would skip every box but the first and
-                    // jump straight out of the OTP row.
-                    activeFocusOnTab: true
+                    // jump straight out of the OTP row. Gated on the row's
+                    // own visibility so Tab can't land here while the OTP
+                    // row is hidden (not needed) — same idiom as
+                    // FetchControl.qml's cancelBox gating activeFocusOnTab
+                    // on root.running instead of leaving it unconditional.
+                    activeFocusOnTab: otpRow.visible
+                    // BeforeItem: TextInput's own key handling always
+                    // accepts Backspace — even with nothing to delete —
+                    // which otherwise swallows it before this handler ever
+                    // runs, silently breaking "Backspace on an empty box
+                    // goes back a box".
+                    Keys.priority: Keys.BeforeItem
                     onActiveFocusChanged: if (activeFocus) selectAll()
                     onTextEdited: otpRow.digitsTyped(cell.index, text)
                     Keys.onPressed: function (event) {
@@ -921,19 +931,29 @@ Panel {
           visible: root.selectionMode
 
           TextAction {
-            visible: root.selectedCount > 0
+            // selectionMode is also covered by selectionRow's own
+            // `visible` above, but TextAction's activeFocusOnTab mirrors
+            // its own `visible` (see component below) — without
+            // selectionMode here too, this stays a live tab stop with
+            // selectedCount still > 0 even after selection mode is turned
+            // back off, as long as something stays selected.
+            visible: root.selectionMode && root.selectedCount > 0
             label: "Track (" + root.selectedCount + ")"
             onTriggered: root.trackSelected(true)
           }
 
           TextAction {
-            visible: root.selectedCount > 0
+            visible: root.selectionMode && root.selectedCount > 0
             label: "Untrack (" + root.selectedCount + ")"
             onTriggered: root.trackSelected(false)
           }
 
           TextAction {
-            visible: root.filteredTransactions.length > 0
+            // filteredTransactions.length > 0 stays true regardless of
+            // selectionMode, so this one needs the explicit guard too —
+            // otherwise it's a live tab stop even while selectionRow (and
+            // this button with it) is hidden.
+            visible: root.selectionMode && root.filteredTransactions.length > 0
             label: root.allVisibleSelected ? "Clear" : "Select all"
             onTriggered: root.toggleSelectAll()
           }
@@ -1328,6 +1348,14 @@ Panel {
 
       Text {
         textFormat: Text.PlainText
+        text: "󰈳"
+        color: root.foreground
+        font.pixelSize: Style.font.caption
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        textFormat: Text.PlainText
         text: filterButton.currentLabel()
         color: root.foreground
         font.family: Style.font.family
@@ -1384,7 +1412,39 @@ Panel {
         spacing: Style.space(2)
         focus: true
 
-        Keys.onEscapePressed: function (event) { filterPopup.close(); event.accepted = true }
+        // Escape closes the popover, but a now-hidden row/column keeps
+        // activeFocus until something else explicitly takes it (same
+        // class of bug as searchField's and editField's own Escape
+        // handlers) — without restoring it to filterButton, Tab/arrow
+        // keys go nowhere until the user clicks something.
+        Keys.onEscapePressed: function (event) {
+          filterPopup.close()
+          Qt.callLater(function () { filterButton.forceActiveFocus() })
+          event.accepted = true
+        }
+
+        // Confined stand-in for root.focusNext, for the rows in this
+        // popover. root.focusNext also calls root.scrollIntoView, which
+        // maps the item into `column` — meaningless for a row floating in
+        // this popup, since it's never actually inside column/flick — and
+        // its whole-scene walk could step straight out of the still-open
+        // popover into the list behind it. This aborts instead of
+        // following `next` once it leaves filterMenuColumn.
+        function focusNext(item, forward) {
+          var next = item
+          for (var i = 0; i < 64 && next; i++) {
+            next = next.nextItemInFocusChain(forward)
+            if (!next || next === item) return
+            var scan = next
+            var inMenu = false
+            while (scan) {
+              if (scan === filterMenuColumn) { inMenu = true; break }
+              scan = scan.parent
+            }
+            if (!inMenu) return
+            if (next.activeFocusOnTab) { next.forceActiveFocus(); return }
+          }
+        }
 
         FilterMenuRow {
           width: parent.width
@@ -1464,6 +1524,13 @@ Panel {
     Keys.onReturnPressed: menuRow.clicked()
     Keys.onEnterPressed: menuRow.clicked()
     Keys.onSpacePressed: menuRow.clicked()
+    // Every other focusable control in this widget wires Up/Down to a
+    // focusNext — this one didn't, so arrow keys silently did nothing
+    // while a filter-popover row was focused (Tab/Shift+Tab still
+    // worked). filterMenuColumn's own confined focusNext, not
+    // root.focusNext (see its definition for why).
+    Keys.onDownPressed: filterMenuColumn.focusNext(menuRow, true)
+    Keys.onUpPressed: filterMenuColumn.focusNext(menuRow, false)
 
     HdfcLogo {
       id: rowBankMark
@@ -1546,6 +1613,7 @@ Panel {
       allowed: chip.allowed
       idleTooltip: chip.tooltip
       foreground: root.foreground
+      scrollIntoView: root.scrollIntoView
       onFetch: root.startFetch(chip.bank)
       onCancel: root.cancelFetch(chip.bank)
     }
@@ -1579,7 +1647,10 @@ Panel {
     color: Style.controlFill(action.activeFocus, action._hot, Color.accent, Color.accent)
     borderSpec: Border.controlSpec(action.activeFocus ? "focus" : (action._hot ? "hover-cursor" : "normal"), Color.accent, Color.accent)
 
-    activeFocusOnTab: true
+    // Tab-stop only while actually shown — every call site's `visible`
+    // already means "selectionMode on AND relevant" (see selectionRow),
+    // so this can't stay a live tab stop once the row it's in is hidden.
+    activeFocusOnTab: action.visible
     Keys.onReturnPressed: action.triggered()
     Keys.onEnterPressed: action.triggered()
     Keys.onSpacePressed: action.triggered()
@@ -1898,8 +1969,25 @@ Panel {
         font.family: Style.font.family
         font.pixelSize: Style.font.body
         onVisibleChanged: if (visible) { selectAll(); forceActiveFocus() }
-        onEditingFinished: { store.setTransactionName(card.groupKey, text); card.editing = false }
-        Keys.onEscapePressed: card.editing = false
+        // card.editing = false hides this field, but a hidden item keeps
+        // activeFocus until something else explicitly takes it (QtQuick
+        // doesn't reassign focus just because the focused item went
+        // invisible) — without restoring it to the card, the row's own
+        // Up/Down/Enter/F2/X/Left/Right stop responding after a rename
+        // until the user clicks or Tabs away and back. Deferred via
+        // callLater for the same reason searchField's own Escape handler
+        // defers it below — handing focus to a different item from inside
+        // the currently-focused item's own key/edit event doesn't reliably
+        // stick otherwise.
+        onEditingFinished: {
+          store.setTransactionName(card.groupKey, text)
+          card.editing = false
+          Qt.callLater(function () { card.forceActiveFocus() })
+        }
+        Keys.onEscapePressed: {
+          card.editing = false
+          Qt.callLater(function () { card.forceActiveFocus() })
+        }
       }
     }
 
