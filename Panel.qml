@@ -146,7 +146,6 @@ Panel {
   // Shared right inset for every row's amount, so BILLS and RECENT
   // amounts line up in one column. Leaves room for the hover pencil and the
   // expand chevron that sit to the right of the amount.
-  readonly property int amountInset: Style.spacing.rowPaddingX + Style.space(40)
   function rowBg(t) { return t.amount < 0 ? root.debitBg : root.creditBg }
   function directionColor(t) { return t.amount < 0 ? root.debitColor : root.creditColor }
 
@@ -1174,8 +1173,10 @@ Panel {
         font.family: Style.font.family
         font.bold: true
         font.pixelSize: Style.font.subtitle
+        // The chevron that used to take this space is gone, so the amount sits
+        // at the row's normal padding, flush with the card's right edge.
         anchors.right: parent.right
-        anchors.rightMargin: root.amountInset
+        anchors.rightMargin: Style.spacing.rowPaddingX
         anchors.verticalCenter: parent.verticalCenter
       }
     }
