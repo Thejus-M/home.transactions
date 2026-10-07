@@ -605,6 +605,12 @@ Panel {
         // the popup from anywhere inside it.
         Keys.onEscapePressed: root.close()
 
+        // Focus lands here when the popup opens (panel.focusTarget: column)
+        // and whenever it's released back here (search close, Escape from a
+        // row). Without these, the very first Down/Up press did nothing.
+        Keys.onDownPressed: root.focusNext(column, true)
+        Keys.onUpPressed: root.focusNext(column, false)
+
         // "/" toggles the search box (hidden by default — see the header
         // Row below). Only reaches here when no focused child already
         // claimed it: a focused TextField (search or rename) consumes the
@@ -844,6 +850,7 @@ Panel {
             FilterMenuButton { id: filterMenuButton }
 
             PanelActionButton {
+              id: searchToggleBtn
               size: Style.space(28)
               fontSize: Style.font.bodySmall
               iconText: "⌕"
@@ -852,6 +859,8 @@ Panel {
               hoverColor: Color.accent
               bordered: true
               focusable: true
+              Keys.onDownPressed: root.focusNext(searchToggleBtn, true)
+              Keys.onUpPressed: root.focusNext(searchToggleBtn, false)
               onClicked: {
                 root.searchVisible = !root.searchVisible
                 if (root.searchVisible) Qt.callLater(function () { searchField.forceActiveFocus() })
@@ -860,6 +869,7 @@ Panel {
             }
 
             PanelActionButton {
+              id: selectToggleBtn
               size: Style.space(28)
               fontSize: Style.font.bodySmall
               iconText: "󰄹"
@@ -868,6 +878,8 @@ Panel {
               hoverColor: Color.accent
               bordered: true
               focusable: true
+              Keys.onDownPressed: root.focusNext(selectToggleBtn, true)
+              Keys.onUpPressed: root.focusNext(selectToggleBtn, false)
               onClicked: root.setSelectionMode(!root.selectionMode)
             }
           }
@@ -1277,6 +1289,8 @@ Panel {
     Keys.onReturnPressed: filterPopup.opened ? filterPopup.close() : filterPopup.open()
     Keys.onEnterPressed: filterPopup.opened ? filterPopup.close() : filterPopup.open()
     Keys.onSpacePressed: filterPopup.opened ? filterPopup.close() : filterPopup.open()
+    Keys.onDownPressed: root.focusNext(filterButton, true)
+    Keys.onUpPressed: root.focusNext(filterButton, false)
 
     Behavior on color { ColorAnimation { duration: 100 } }
 
@@ -1542,6 +1556,8 @@ Panel {
     Keys.onReturnPressed: action.triggered()
     Keys.onEnterPressed: action.triggered()
     Keys.onSpacePressed: action.triggered()
+    Keys.onDownPressed: root.focusNext(action, true)
+    Keys.onUpPressed: root.focusNext(action, false)
 
     Text {
       id: actionText

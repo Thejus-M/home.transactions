@@ -21,6 +21,17 @@ Item {
   signal cancel()
 
   readonly property real logoSize: Style.space(16)
+
+  // Same bounded focus-chain walk as Panel.qml's root.focusNext — this file
+  // can't reach that one, so it keeps its own copy for Up/Down.
+  function focusNext(item, forward) {
+    var next = item
+    for (var i = 0; i < 64 && next; i++) {
+      next = next.nextItemInFocusChain(forward)
+      if (!next || next === item) return
+      if (next.activeFocusOnTab) { next.forceActiveFocus(); return }
+    }
+  }
   readonly property real gap: Style.spacing.xs
 
   implicitWidth: logoSize + (running ? gap + cancelBox.width : 0)
@@ -52,6 +63,8 @@ Item {
     Keys.onReturnPressed: root.cancel()
     Keys.onEnterPressed: root.cancel()
     Keys.onSpacePressed: root.cancel()
+    Keys.onDownPressed: root.focusNext(cancelBox, true)
+    Keys.onUpPressed: root.focusNext(cancelBox, false)
 
     HoverHandler {
       id: cancelHover
@@ -98,6 +111,8 @@ Item {
     Keys.onReturnPressed: if (root.allowed && !root.running) root.fetch()
     Keys.onEnterPressed: if (root.allowed && !root.running) root.fetch()
     Keys.onSpacePressed: if (root.allowed && !root.running) root.fetch()
+    Keys.onDownPressed: root.focusNext(logoButton, true)
+    Keys.onUpPressed: root.focusNext(logoButton, false)
 
     // One full turn on click; keeps turning while the fetch runs.
     NumberAnimation on rotation {
