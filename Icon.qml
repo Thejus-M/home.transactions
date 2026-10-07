@@ -23,12 +23,12 @@ Item {
   height: iconSize
 
   Rectangle {
-    width: root.iconSize * 0.92
+    width: root.iconSize
     height: width
     radius: width / 2
     anchors.centerIn: parent
     color: "transparent"
-    border.width: Math.max(1, Math.round(root.iconSize * 0.09))
+    border.width: Math.max(1, Math.round(root.iconSize * 0.10))
     border.color: root.color
   }
 
@@ -39,7 +39,7 @@ Item {
     text: "$"
     color: root.color
     font.bold: true
-    font.pixelSize: root.iconSize * 0.56
+    font.pixelSize: root.iconSize * 0.66
   }
 
   // Bottom-right: numeric untracked-count badge.
