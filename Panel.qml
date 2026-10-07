@@ -412,11 +412,12 @@ Panel {
     }
   }
 
-  // The balance text for one bank's accounts ("HDFC" or "AXIS"), joined.
+  // The balance amount(s) for one bank ("HDFC" or "AXIS"), joined. Only the
+  // amount: the bank's logo already says which account it is.
   function balanceTextFor(bank) {
     return root.accountBalances
       .filter(function (b) { return b.bank === bank })
-      .map(function (b) { return Model.formatAccountBalance(b, store.accountNameOverrides, store.cardOverviews) })
+      .map(function (b) { return Model.currencySymbol(b.currency) + Model.formatGrouped(b.balance) })
       .join("  ·  ")
   }
 
