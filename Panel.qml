@@ -1122,11 +1122,25 @@ Panel {
           width: parent.width
           spacing: Style.space(6)
 
-          BrandMark {
-            id: billBrandMark
-            network: billRow.brand.network
-            markHeight: Style.spaceReal(9)
+          // The card logo opens the details (like the rest of the row).
+          Item {
+            id: billBrandSlot
+            width: billBrandMark.width
+            height: billBrandMark.height
             anchors.verticalCenter: parent.verticalCenter
+
+            BrandMark {
+              id: billBrandMark
+              network: billRow.brand.network
+              markHeight: Style.spaceReal(9)
+            }
+
+            MouseArea {
+              anchors.fill: parent
+              anchors.margins: -Style.space(4)
+              cursorShape: Qt.PointingHandCursor
+              onClicked: billRow.expanded = !billRow.expanded
+            }
           }
 
           Text {
@@ -1150,17 +1164,6 @@ Panel {
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
-      }
-
-      Text {
-        id: expandChevron
-        textFormat: Text.PlainText
-        text: billRow.expanded ? "▴" : "▾"
-        color: billRow._hot ? root.foreground : Qt.darker(root.foreground, 1.4)
-        font.pixelSize: Style.font.caption
-        anchors.right: parent.right
-        anchors.rightMargin: Style.spacing.rowPaddingX
-        anchors.verticalCenter: parent.verticalCenter
       }
 
       Text {
