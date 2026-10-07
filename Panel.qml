@@ -900,7 +900,14 @@ Panel {
               focusable: true
               Keys.onDownPressed: root.focusNext(selectToggleBtn, true)
               Keys.onUpPressed: root.focusNext(selectToggleBtn, false)
-              onClicked: root.setSelectionMode(!root.selectionMode)
+              // Moves focus into the list on turning selection on, so Space
+              // lands on a row instead of staying on this button (where it
+              // would just turn selection back off).
+              onClicked: {
+                var turningOn = !root.selectionMode
+                root.setSelectionMode(turningOn)
+                if (turningOn) root.focusNext(selectToggleBtn, true)
+              }
             }
           }
         }
@@ -1657,7 +1664,11 @@ Panel {
     activeFocusOnTab: !card.editing
     Keys.onReturnPressed: if (!card.editing) store.setTracked(card.txn.id, !card.txn.tracked)
     Keys.onEnterPressed: if (!card.editing) store.setTracked(card.txn.id, !card.txn.tracked)
-    Keys.onSpacePressed: if (!card.editing) store.setTracked(card.txn.id, !card.txn.tracked)
+    Keys.onSpacePressed: {
+      if (card.editing) return
+      if (root.selectionMode && card.selectable) root.toggleSelected(card.txn.id)
+      else store.setTracked(card.txn.id, !card.txn.tracked)
+    }
     // F2 for rename — Enter/Space already toggles tracked, so rename
     // needs its own key (F2 is the standard rename shortcut elsewhere;
     // confirmed no Hyprland keybind collision on this system).
@@ -1725,7 +1736,7 @@ Panel {
           anchors.fill: parent
           anchors.margins: -Style.space(6)
           cursorShape: Qt.PointingHandCursor
-          onClicked: root.toggleSelected(card.txn.id)
+          onClicked: { card.forceActiveFocus(); root.toggleSelected(card.txn.id) }
         }
       }
 
