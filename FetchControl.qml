@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import qs.Commons
+import qs.Ui
 
 // One bank's reload control: the bank's logo is the reload button. Clicking
 // it starts the fetch and the logo spins while the fetch runs; Cancel appears
@@ -39,9 +40,18 @@ Item {
     width: cancelLabel.implicitWidth + Style.space(20)
     height: Style.space(26)
     radius: Style.cornerRadius
-    color: cancelHover.hovered ? Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.25) : "transparent"
+    color: (cancelHover.hovered || cancelBox.activeFocus) ? Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.25) : "transparent"
     border.width: 1
     border.color: Color.urgent
+
+    Behavior on color { ColorAnimation { duration: 100 } }
+
+    // Only a tab stop while it's actually showing — matches the chevron
+    // hidden-row idiom used elsewhere (e.g. editBtn's visible-gated reach).
+    activeFocusOnTab: root.running
+    Keys.onReturnPressed: root.cancel()
+    Keys.onEnterPressed: root.cancel()
+    Keys.onSpacePressed: root.cancel()
 
     HoverHandler {
       id: cancelHover
@@ -61,20 +71,33 @@ Item {
     MouseArea {
       anchors.fill: parent
       cursorShape: Qt.PointingHandCursor
-      onClicked: root.cancel()
+      onClicked: { cancelBox.forceActiveFocus(); root.cancel() }
     }
   }
 
-  Item {
+  BorderSurface {
     id: logoButton
     anchors.right: parent.right
     anchors.verticalCenter: parent.verticalCenter
     width: root.logoSize
     height: width
+    radius: width / 2
     opacity: root.allowed || root.running ? 1.0 : 0.35
     scale: logoMouse.pressed ? 0.8 : 1.0
+    color: logoButton.activeFocus
+      ? Style.controlFill(true, false, root.foreground, Color.accent)
+      : (logoHover.hovered ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent")
+    borderSpec: logoButton.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
     Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
     Behavior on opacity { NumberAnimation { duration: 120 } }
+    Behavior on color { ColorAnimation { duration: 100 } }
+
+    // Skipped from Tab while disallowed (the other bank's fetch is
+    // running) or already running — matches logoMouse's own `enabled`.
+    activeFocusOnTab: root.allowed && !root.running
+    Keys.onReturnPressed: if (root.allowed && !root.running) root.fetch()
+    Keys.onEnterPressed: if (root.allowed && !root.running) root.fetch()
+    Keys.onSpacePressed: if (root.allowed && !root.running) root.fetch()
 
     // One full turn on click; keeps turning while the fetch runs.
     NumberAnimation on rotation {
@@ -112,7 +135,7 @@ Item {
       anchors.fill: parent
       enabled: root.allowed && !root.running
       cursorShape: Qt.PointingHandCursor
-      onClicked: root.fetch()
+      onClicked: { logoButton.forceActiveFocus(); root.fetch() }
     }
   }
 }

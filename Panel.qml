@@ -760,6 +760,11 @@ Panel {
                     font.pixelSize: Style.font.body
                     font.bold: true
                     inputMethodHints: Qt.ImhDigitsOnly
+                    // Plain TextInput (unlike QtQuick.Controls TextField)
+                    // defaults activeFocusOnTab to false — without this,
+                    // Tab/Shift+Tab would skip every box but the first and
+                    // jump straight out of the OTP row.
+                    activeFocusOnTab: true
                     onActiveFocusChanged: if (activeFocus) selectAll()
                     onTextEdited: otpRow.digitsTyped(cell.index, text)
                     Keys.onPressed: function (event) {
