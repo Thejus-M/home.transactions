@@ -157,6 +157,12 @@ Item {
       markSize: root.logoSize
     }
 
+    IciciLogo {
+      visible: root.bank === "icici"
+      anchors.centerIn: parent
+      markSize: root.logoSize
+    }
+
     SbiLogo {
       visible: root.bank === "sbi"
       anchors.centerIn: parent

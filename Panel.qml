@@ -45,11 +45,19 @@ Panel {
   readonly property bool axisOtpNeeded: axisFetchProc.running && axisFetchStatus.stage === "otp-needed"
   // Third source: the SBI fetcher, same shapes and its own status file. It
   // solves the login CAPTCHA itself and asks for the OTP like Axis does.
+  // Fourth source: the ICICI fetcher. A credit card only — that profile
+  // has no linked bank account — so it writes a card_cycles row and no
+  // transactions, and its chip shows the card rather than a balance.
+  readonly property string iciciDir: "/home/pc/Work/icici-statement-fetcher"
+  readonly property string iciciOutputDir: iciciDir + "/output"
+  property var iciciFetchStatus: ({})
+
   readonly property string sbiDir: "/home/pc/Work/sbi-statement-fetcher"
   readonly property string sbiOutputDir: sbiDir + "/output"
   property var sbiFetchStatus: ({})
   readonly property bool sbiOtpNeeded: sbiFetchProc.running && sbiFetchStatus.stage === "otp-needed"
-  readonly property bool anyFetchRunning: fetchProc.running || axisFetchProc.running || sbiFetchProc.running
+  readonly property bool anyFetchRunning: fetchProc.running || axisFetchProc.running
+    || sbiFetchProc.running || iciciFetchProc.running
   readonly property string activeStatusText: fetchProc.running
     ? ((fetchStatus.message || "") !== "" ? "HDFC: " + fetchStatus.message : "")
     : axisFetchProc.running
@@ -508,6 +516,7 @@ Panel {
     fetchStartedMs = Date.now()
     if (bank === "axis") axisFetchProc.running = true
     else if (bank === "sbi") sbiFetchProc.running = true
+    else if (bank === "icici") iciciFetchProc.running = true
     else fetchProc.running = true
   }
 
@@ -520,11 +529,29 @@ Panel {
       sbiFetchCancelled = true
       sbiCancelProc.running = true
       sbiFetchProc.running = false
+    } else if (bank === "icici") {
+      iciciFetchCancelled = true
+      iciciCancelProc.running = true
+      iciciFetchProc.running = false
     } else {
       fetchCancelled = true
       cancelProc.running = true
       fetchProc.running = false
     }
+  }
+
+  // What a credit-card-only bank's chip shows in place of a balance: what
+  // the card wants, or that it has nothing to pay.
+  function cardTextFor(bank) {
+    var cards = root.cardOverviewList.filter(function (c) { return (c.bank || "") === bank })
+    if (cards.length === 0) return ""
+    var parts = Model.billParts(cards[0])
+    if (parts.payNow > 0) {
+      return Model.currencySymbol("INR") + Model.formatGrouped(parts.payNow) + " due"
+    }
+    return parts.inCredit
+      ? Model.currencySymbol("INR") + Model.formatGrouped(Math.abs(parts.payNow)) + " in credit"
+      : "nothing to pay"
   }
 
   // The balance amount(s) for one bank ("HDFC", "AXIS" or "SBI"), joined. Only the
@@ -587,6 +614,36 @@ Panel {
     }
     onLoadFailed: root.axisFetchStatus = ({})
     onFileChanged: reload()
+  }
+
+  property bool iciciFetchCancelled: false
+
+  Process {
+    id: iciciCancelProc
+    command: ["bash", "-c", "cd '" + root.iciciDir + "' && mkdir -p output && PID=$(cat output/fetch.pid 2>/dev/null); [ -n \"$PID\" ] && grep -qa src.main /proc/$PID/cmdline 2>/dev/null && kill -TERM -- -$PID 2>/dev/null; rm -f output/qr.png; printf '%s' '{\"stage\": \"cancelled\", \"message\": \"Fetch cancelled.\", \"qr\": \"\", \"card\": \"\", \"step\": \"\", \"updated\": \"\"}' > output/.icici-fetch-status.json.tmp && mv output/.icici-fetch-status.json.tmp output/icici-fetch-status.json"]
+  }
+
+  // Runs the ICICI fetcher. Headless would be pointless here: the login
+  // is a QR you scan off the screen, so the browser window has to show.
+  Process {
+    id: iciciFetchProc
+    command: ["setsid", "bash", "-c", "cd '" + root.iciciDir + "' && mkdir -p output && echo $$ > output/fetch.pid && exec .venv/bin/python -m src.main > output/widget-fetch.log 2>&1"]
+    onExited: function (code) {
+      if (root.iciciFetchCancelled) { root.iciciFetchCancelled = false; return }
+      root.notifyFetchResult("ICICI")
+      store.reload()
+    }
+  }
+
+  FileView {
+    id: iciciFetchStatusFile
+    path: root.iciciOutputDir + "/icici-fetch-status.json"
+    watchChanges: true
+    onFileChanged: reload()
+    onLoaded: {
+      try { root.iciciFetchStatus = JSON.parse(text() || "{}") } catch (e) { root.iciciFetchStatus = {} }
+    }
+    onLoadFailed: root.iciciFetchStatus = ({})
   }
 
   property bool sbiFetchCancelled: false
@@ -758,6 +815,14 @@ Panel {
               bank: "sbi"
               tooltip: "Fetch SBI data (asks for the OTP here)"
               balanceText: root.balanceTextFor("SBI")
+            }
+
+            BankBalance {
+              bank: "icici"
+              tooltip: "Fetch ICICI card (opens browser, scan QR)"
+              // No bank account on this profile, so the chip carries the
+              // card's own line instead of a balance it will never have.
+              balanceText: root.cardTextFor("ICICI")
             }
           }
 
@@ -1642,12 +1707,14 @@ Panel {
           anchors.verticalCenter: parent.verticalCenter
           sourceComponent: billRow.bank === "HDFC" ? hdfcMark
             : (billRow.bank === "AXIS" ? axisMark
-              : (billRow.bank === "SBI" ? sbiMark : bankNameOnly))
+                : (billRow.bank === "SBI" ? sbiMark
+                : (billRow.bank === "ICICI" ? iciciMark : bankNameOnly)))
         }
 
         Component { id: hdfcMark; HdfcLogo { variant: "icon"; markSize: Style.spaceReal(12) } }
         Component { id: axisMark; AxisLogo { markSize: Style.spaceReal(12) } }
         Component { id: sbiMark; SbiLogo { markSize: Style.spaceReal(12) } }
+        Component { id: iciciMark; IciciLogo { markSize: Style.spaceReal(12) } }
         Component {
           id: bankNameOnly
           Text {
@@ -2027,7 +2094,8 @@ Panel {
     property string tooltip: ""
     property string balanceText: ""
     readonly property bool running: chip.bank === "axis" ? axisFetchProc.running
-      : (chip.bank === "sbi" ? sbiFetchProc.running : fetchProc.running)
+      : (chip.bank === "sbi" ? sbiFetchProc.running
+        : (chip.bank === "icici" ? iciciFetchProc.running : fetchProc.running))
     // Only one fetch at a time: allowed while no other bank's fetch runs.
     readonly property bool allowed: chip.running || !root.anyFetchRunning
 

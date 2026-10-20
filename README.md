@@ -245,6 +245,12 @@ Tests: `python3 -m unittest discover -s tests`.
   the bill-due reminder/badge below, for the "I paid through another
   channel and the scrape hasn't caught up yet" case. Persists to the
   `bills` table.
+- **A reload button per bank** — the balance row carries one chip per
+  bank: its logo is the button (click it, or Tab to it and press Enter,
+  to fetch that bank), and beside it the balance. ICICI is a credit card
+  only on this profile, so its chip reads what the card wants instead —
+  "₹X due", "₹40 in credit" or "nothing to pay". Only one fetch runs at a
+  time; the others grey out while one is going.
 - **Bill-due reminder** — while any card isn't paid, the bar icon shows a
   second "!" badge (top-right, alongside the existing untracked-count
   badge at bottom-right), and a desktop notification fires via
