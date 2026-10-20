@@ -19,33 +19,68 @@ search, Escape to close.
 
 ## Data source
 
-Real data is read directly from the sibling
-[`hdfc-statement-fetcher`](../hdfc-statement-fetcher) project's output
-files — a hardcoded path in `Panel.qml`'s `fetcherOutputDir` property,
-since this is a single-machine personal setup, not something that needs a
-settings UI:
+Everything the widget shows or remembers lives in one SQLite file,
+`data/transactions.db` (git-ignored, mode 600), managed by the stdlib-only
+`txdb/` package:
 
-- `output/hdfc_transactions.json` — all transactions, in exactly the row
-  shape `Model.js` expects (`id`, `date`, `merchant`, `amount`, `currency`,
-  `bank`, `accountType`, `last4`, `source`, `rawStatementRowId`, `tracked`).
-  Rewritten wholesale on every fetcher run — the widget just re-reads it,
-  no merge logic needed here.
-- `output/hdfc_creditcard_overview.json` — one entry per credit card
-  (`name`, `last4`, `payment_status`, `upcoming_payment_due`,
-  `total_outstanding`, `last_payment_amount`, `last_payment_date`, ...).
-  Also rewritten wholesale each run.
-- `output/hdfc_account_balances.json` — one entry per checking/savings
-  account (`bank`, `accountType`, `last4`, `balance`, `currency`), read
-  off the current balance HDFC already shows next to each transaction
-  (`fetch_savings.fetch_savings_balance()` in the fetcher — previously
-  scraped only to split it out of the transaction amount, never
-  persisted). Also rewritten wholesale each run. A list, not one object,
-  so more accounts (this bank or another) can be appended later without
-  a schema change here.
+- **Fetchers write it.** `hdfc-`, `axis-` and `sbi-statement-fetcher` import
+  `txdb.ingest` through their `src/store.py` (`TXDB_HOME` points at this
+  repo) and save transactions, balances and HDFC card billing cycles.
+  Each run is recorded in `fetch_runs`, and a successful run makes a backup
+  in `data/backups/` (14 kept).
+- **The widget reads a snapshot.** `python3 bin/txdb snapshot` prints one
+  JSON object (transactions newest first, balances, card overviews, bills,
+  account names, renames). Every write rewrites `data/.changed`; the widget
+  watches that file and reloads the snapshot, and also on popup open.
+- **The widget writes small changes.** `bin/txdb set-tracked`,
+  `set-tracked-many`, `rename`, `account-name`, `bill-paid`, `bill-notified`
+  run as argv commands, one at a time; the UI updates at once and the next
+  snapshot confirms.
+- **Live fetch signals stay files.** `output/*fetch-status.json`, the HDFC
+  QR (`output/qr.png`) and the OTP (sent on the fetcher's stdin).
 
-All three files are watched (`FileView` + `onFileChanged: reload()`), so
-the widget picks up a fresh fetcher run automatically without reopening
-the popup, and are also explicitly reloaded whenever the popup opens.
+The credit-card picture comes from two blocks on HDFC's Overview tab,
+both scraped into `card_cycles` / `hdfc_card_cycles_raw`: the Billing
+Summary ("Unbilled Amount", "Total Outstanding", "Upcoming Payment" and
+its status badge) and the Outstanding Summary, which splits the total
+into `last_statement_amount` (this month's bill), `unbilled_credits`
+(money already paid into the card, negative as the page prints it),
+`unbilled_purchases` (next month's bill so far) and `unsettled_amount`.
+They add up: `last statement - credits + purchases + unsettled = total
+outstanding`. The same scrape stores `credit_limit_total` and
+`available_limit`; both cards report the same pair, because the limit is
+one pool shared across the account.
+
+Tables: `accounts` (id `BANK|type|last4`, optional display name),
+`transactions` (shared row for every bank, with `group_key` /
+`counterparty` / `note` computed by `txdb/keys.py`), `tracked`,
+`merchant_names`, `balances` + `balance_history`, `card_cycles`, `bills`,
+`fetch_runs`, and per-bank raw tables with every scraped field
+(`sbi_transactions`, `axis_transactions`, `hdfc_savings_transactions`,
+`hdfc_card_transactions`, `hdfc_card_cycles_raw`) plus `sbi_view`,
+`axis_view`, `hdfc_view` for ad-hoc `sqlite3` queries.
+
+Rows scraped before the statement's balance was kept carry one **worked
+back** from the account's current balance instead (`txdb derive-balances`,
+`ingest.derive_balances`): the newest row ends at the account's balance, and
+each earlier row at the next row's balance less the next row's amount. It is
+arithmetic, not a reading — one missing transaction would shift every
+balance before it — so those rows are flagged (`balance_derived`), the
+expanded card says "worked out, not read from the statement", `txdb check`
+counts them, and the next fetch overwrites them with the statement's own
+figures, which the reconciliation below then checks.
+
+**Balances are checked, not trusted.** `txdb reconcile [BANK]` walks each
+checking/savings account in statement order and asserts two things: every
+running balance equals the one before it plus that row's amount, and the
+newest equals the account's saved current balance. `txdb check` prints the
+same verdict, and every fetch runs it on the way out (`guard.run_main`),
+appending any mismatch to its own "done" message rather than letting a
+misread amount quietly become a wrong balance in the widget.
+
+Other commands: `txdb check`, `txdb reconcile`, `txdb backup`, `txdb export-json <dir>`, and
+`txdb migrate-json` (one-off import of the old JSON files; safe to repeat).
+Tests: `python3 -m unittest discover -s tests`.
 
 ## Features
 
@@ -85,10 +120,15 @@ the popup, and are also explicitly reloaded whenever the popup opens.
   ↓/↑ icon (debit/credit — HDFC doesn't give us spend categories, so this
   isn't a "category" icon like a shopping-themed app's), the merchant
   name, a pill showing the account, and the amount in red (debit) or
-  green (credit). Click a card (or Enter/Space while it's focused) to
+  green (credit) — no raw remark beside the account pill any more, it
+  moved into the expanded card — with the balance the statement showed after that
+  transaction under it ("bal ₹6,016.89", dim). A credit card has no
+  running balance, and rows saved before it was scraped have none, so
+  that line simply disappears where there is nothing to show; the full
+  figure also appears in the expanded card. Click a card (or Enter/Space while it's focused) to
   mark it tracked (already recorded elsewhere) — tracked cards get a
-  tinted background instead of a switch. Persists to
-  `~/.local/state/omarchy/transactions-tracked.json`. Clicking the
+  tinted background instead of a switch. Persists to the
+  `tracked` table. Clicking the
   circle on the left (or Left/Right while focused) expands the card in place to show the raw
   (pre-rename) merchant text, the full date + full account name, and an
   explicit tracked checkbox — separate from the row-click/Enter/Space
@@ -104,8 +144,19 @@ the popup, and are also explicitly reloaded whenever the popup opens.
   like a different vendor, so the key truncates at that reference number.
   The rename applies to every past *and future* transaction from that same
   counterparty. Doesn't change the
-  underlying data — purely a display override. Persists to
-  `~/.local/state/omarchy/transactions-custom-names.json`.
+  underlying data — purely a display override. Persists to the
+  `merchant_names` table, keyed by `group_key`.
+
+  **One counterparty, one name.** The key is the person, not the string:
+  every UPI row of every bank resolves to `UPI|<NAME>`, so renaming
+  "LAKSHMI MOHAN" once covers the HDFC rows (masked VPA and unmasked),
+  the Axis row and the SBI row alike. It used to carry the bank and the
+  counterparty's bank code, which split one person into four groups that
+  each needed renaming. HDFC's own UPI format
+  (`UPI-<name>-<vpa>-<ifsc>-<ref>-<remark>`) was not parsed at all, so
+  those rows showed the whole raw string; it is parsed now. Rows nothing
+  can parse — bank charges, interest, card vendor names — keep a
+  bank-prefixed key, since their text is the only identity they have.
 - **Filter** — a single compact popover (`FilterMenuButton`) replacing the
   old always-expanded account-chip row and the standalone "Show archived"
   row: an account list ("All accounts" + one per distinct account, from
@@ -118,10 +169,9 @@ the popup, and are also explicitly reloaded whenever the popup opens.
   opening it. Costs one small row whether open or closed — it's a popover,
   not an inline disclosure, so opening it doesn't push RECENT down.
   Account display names: the card's real scraped name for credit
-  accounts, "Savings" for the checking account — overridable by
-  hand-editing `~/.local/state/omarchy/transactions-account-names.json`
-  (keyed by `last4`; no in-UI editor for this one, unlike per-transaction
-  renames).
+  accounts, "Savings" for the checking account — overridable with
+  `bin/txdb account-name <last4|BANK|type|last4> <name>` (no in-UI editor
+  for this one, unlike per-transaction renames).
 - **Select and track in bulk** — the ☑ button beside search turns on
   selection mode: each RECENT card gets a checkbox, the header shows
   "Select all" / "Clear" (for the rows currently shown), and "Track (N)" /
@@ -132,23 +182,58 @@ the popup, and are also explicitly reloaded whenever the popup opens.
   name (Mastercard's twin circles / RuPay's own fast-forward double-
   triangle mark in its real brand orange/green, drawn with
   `QtQuick.Shapes`, when that network is detected in the scraped card
-  name), the card name, and the
-  outstanding amount — denser than the old toggle-switch-plus-
-  description-line layout, same information. Three states, purely
-  numeric (not tied to the scrape's own "FULLY PAID"/"NO DUES" text,
-  which can say paid while new unbilled spend still sits there): green
-  ✓ when outstanding is zero or negative (bank owes you); amber ● when
-  there's a positive outstanding/unbilled amount but nothing has
-  actually come due yet (`upcoming_payment_due` is still ₹0); red ! once
-  an amount has actually come due. Click anywhere on a row, or focus it
-  and press Enter/Space, to expand full details below it (unbilled
-  amount, total outstanding, upcoming due, spend/credit this cycle, last
+  name) and the card name; under the status disc, a pill saying where
+  the bill stands — "NOT PAID" in red, "OVERDUE" once the due date has
+  passed, "IN CREDIT" in green, "PAID" when you flipped it by hand —
+  and beside the name the last day to pay, "Due 1 Nov · 12 days left",
+  in red at three days or less. At the right edge, two figures stacked
+  so they are never mistaken for one: the amount still owed on the bill
+  already generated, and under it this cycle's spend — next month's
+  bill — or "no spend yet" when the card has not been used this cycle.
+  Three fixed columns (status, name, figures) give every row the same
+  name budget, so the figures and the state can never be squeezed out
+  by a long card name; the name itself is the only thing that elides.
+  The numbers come from `Model.billParts` (see "Data source"). Next
+  month's bill counts both settled unbilled spend *and* HDFC's "loans
+  and unsettled transactions" figure: a purchase the merchant has not
+  settled yet is this cycle's spend, not money the statement already
+  asked for. That split makes pay-now agree with the bank to the rupee
+  — outstanding ₹1,241.38 − ₹646.38 unsettled is the ₹595.00 HDFC
+  asks for.
+- **Section header and the shared limit** — the BILLS header carries the
+  totals on its right: "to pay ₹16,600.77" across every card that is not
+  marked paid (red; "all paid" in green at zero) and "next ₹3,127" for
+  what this cycle has spent into next month's bills
+  (`Model.billsDueTotal` / `Model.billsNextTotal`). Under it, the credit
+  limit as one line and a slim meter: "limit ₹19,728 of ₹1,38,000 used"
+  with the percentage green under 30% utilisation, amber past it and
+  red past 50%. The bar carries one segment per card — accent, then the
+  same accent at 55% — with a key under it ("••0220 ₹19,132   ••7462
+  ₹1,241"), since at low utilisation a small card's segment is only a
+  pixel or two wide. Before a fetch has read the limit the strip keeps
+  its height and reads "limit not read yet", so the block never jumps.
+  The limit is one **shared pool, not a limit per card** — both
+  cards print the same total and the same available figure, and total
+  minus available is the two cards' outstanding added together — so it
+  belongs to the section, and each card's detail panel says "shared with
+  1 other card" rather than implying the card has ₹1,38,000 of its own
+  (`Model.creditLimitSummary`). The line is hidden until a fetch has
+  scraped the limit. Three states, purely numeric (not tied
+  to the scrape's own "FULLY PAID"/"PARTIALLY PAID" text, which says
+  paid while ₹595 is still owed and partly paid while nothing is):
+  green ✓ when there is nothing to pay and no unbilled spend (or the
+  bank owes you); amber ● when nothing is due yet and only this cycle's
+  spend is building up; red ! while a bill is unpaid. Click anywhere on
+  a row, or focus it and press Enter/Space, to expand full details
+  below it (the bank's own mark, bill this month, paid into the card,
+  left to pay, the cycle dates, next bill so far, total outstanding,
+  unsettled / loans, the shared limit with available and used, last
   payment, raw status) — or Left/Right while focused. Click (mouse only)
   the status avatar specifically to flip the manual "mark as paid"
   override, independent of the row's own color/glyph — it still drives
   the bill-due reminder/badge below, for the "I paid through another
-  channel and the scrape hasn't caught up yet" case. Persists to
-  `~/.local/state/omarchy/transactions-bills.json`.
+  channel and the scrape hasn't caught up yet" case. Persists to the
+  `bills` table.
 - **Bill-due reminder** — while any card isn't paid, the bar icon shows a
   second "!" badge (top-right, alongside the existing untracked-count
   badge at bottom-right), and a desktop notification fires via
@@ -161,6 +246,10 @@ the popup, and are also explicitly reloaded whenever the popup opens.
 - `Panel.qml` — bar icon + popup panel, entry point
 - `Icon.qml` — bar icon glyph + untracked-count badge + bill-due badge
 - `Model.js` — real-data formatting/filtering/bill-status helpers
+- `txdb/`, `bin/txdb` — the transactions database and its command line
+- `tests/test_txdb.py` — database tests (stdlib `unittest`)
+- `tests/test_model_js.py` — the bill maths in `Model.js`, run through
+  `node` (skipped when node isn't installed)
 
 ## Install (local dev)
 

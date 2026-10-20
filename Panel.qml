@@ -43,14 +43,21 @@ Panel {
   readonly property string axisOutputDir: axisDir + "/output"
   property var axisFetchStatus: ({})
   readonly property bool axisOtpNeeded: axisFetchProc.running && axisFetchStatus.stage === "otp-needed"
+  // Third source: the SBI fetcher, same shapes and its own status file. It
+  // solves the login CAPTCHA itself and asks for the OTP like Axis does.
+  readonly property string sbiDir: "/home/pc/Work/sbi-statement-fetcher"
+  readonly property string sbiOutputDir: sbiDir + "/output"
+  property var sbiFetchStatus: ({})
+  readonly property bool sbiOtpNeeded: sbiFetchProc.running && sbiFetchStatus.stage === "otp-needed"
+  readonly property bool anyFetchRunning: fetchProc.running || axisFetchProc.running || sbiFetchProc.running
   readonly property string activeStatusText: fetchProc.running
     ? ((fetchStatus.message || "") !== "" ? "HDFC: " + fetchStatus.message : "")
-    : (axisFetchProc.running && (axisFetchStatus.message || "") !== "" ? "Axis: " + axisFetchStatus.message : "")
-  readonly property color activeStatusColor: (fetchProc.running ? fetchStatus.stage : axisFetchStatus.stage) === "error"
+    : axisFetchProc.running
+      ? ((axisFetchStatus.message || "") !== "" ? "Axis: " + axisFetchStatus.message : "")
+      : (sbiFetchProc.running && (sbiFetchStatus.message || "") !== "" ? "SBI: " + sbiFetchStatus.message : "")
+  readonly property color activeStatusColor: (fetchProc.running ? fetchStatus.stage
+    : (axisFetchProc.running ? axisFetchStatus.stage : sbiFetchStatus.stage)) === "error"
     ? Color.urgent : Color.accent
-  function parseList(text) {
-    try { return JSON.parse(text || "[]") } catch (e) { return [] }
-  }
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property var transactions: store.transactions
@@ -122,8 +129,28 @@ Panel {
     })
   readonly property var groupedTransactions: Model.groupByDate(root.filteredTransactions)
 
-  readonly property var cardOverviewList: Object.values(store.cardOverviews)
+  // Biggest bill first, then by card, so rows do not reshuffle between
+  // snapshots. (Object.values alone put ••7462 before ••0220: JavaScript
+  // walks integer-like keys first, and "0220" is not one.)
+  readonly property var cardOverviewList: Object.values(store.cardOverviews).sort(function (a, b) {
+    var byAmount = Model.billParts(b).payNow - Model.billParts(a).payNow
+    return byAmount !== 0 ? byAmount : String(a.last4).localeCompare(String(b.last4))
+  })
+  // Two fixed columns for every bill row, so each row gets the same budget
+  // for its card name and the figures line up down the popup. Sized from the
+  // widest content either can hold: "IN CREDIT" at caption size, and
+  // "₹16,005.39" at subtitle size. Without them the row with the longer
+  // secondary text stole the other's name and elided away its last4.
+  readonly property int billStatusWidth: Style.space(63)
+  readonly property int billFigureWidth: Style.space(79)
   readonly property bool billDue: store.anyBillDue()
+  // Section figures for the BILLS header: what every card still wants, what
+  // this cycle has spent into next month's bills, and the limit behind them
+  // all. Properties rather than inline bindings, so each re-evaluates on a
+  // snapshot or a mark-as-paid instead of on every paint.
+  readonly property real billsDueTotal: Model.billsDueTotal(root.cardOverviewList, store.billOverrides)
+  readonly property real billsNextTotal: Model.billsNextTotal(root.cardOverviewList)
+  readonly property var creditLimit: Model.creditLimitSummary(root.cardOverviewList)
 
   // "Whole picture" stats — read the full, unfiltered transaction list
   // (post-tracked-override, pre-account-filter/search) so they stay
@@ -146,6 +173,19 @@ Panel {
   // Shared right inset for every row's amount, so BILLS and RECENT
   // amounts line up in one column. Leaves room for the hover pencil and the
   // expand chevron that sit to the right of the amount.
+  // Credit utilisation reads green while it is low, amber past 30% and red
+  // past 50% — the bands a card issuer scores, not arbitrary thirds.
+  // Segments stay accent-coloured and only vary in weight: the green/amber/
+  // red scale already means "how close to the limit", and a second meaning
+  // on the same bar would fight it.
+  function limitSegmentColor(index) {
+    return index % 2 === 0 ? Color.accent : Util.alpha(Color.accent, 0.55)
+  }
+
+  function limitColor(percent) {
+    return percent >= 50 ? root.debitColor : (percent >= 30 ? root.pendingColor : root.creditColor)
+  }
+
   function rowBg(t) { return t.amount < 0 ? root.debitBg : root.creditBg }
   function directionColor(t) { return t.amount < 0 ? root.debitColor : root.creditColor }
 
@@ -193,107 +233,146 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  onOpenedChanged: if (opened) {
-    trackedFile.reload()
-    realTransactionsFile.reload()
-    cardOverviewFile.reload()
-    accountBalancesFile.reload()
-    billsFile.reload()
-    accountNamesFile.reload()
-    transactionNamesFile.reload()
+  onOpenedChanged: if (opened) root.refreshData()
+
+  // --- Transactions database (data/transactions.db, see txdb/) ---
+  // Every persistent piece of data lives in one SQLite file. The widget
+  // reads it as one JSON snapshot (`txdb snapshot`) and writes small
+  // changes with argv commands (no shell, so names need no quoting).
+  // Writers (this widget and the fetchers) rewrite data/.changed after
+  // each commit; watching it reloads the snapshot.
+  readonly property string widgetDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
+  readonly property string txdbBin: widgetDir + "/bin/txdb"
+  property var txdbQueue: []
+  property bool refreshPending: false
+
+  function refreshData() {
+    if (snapshotProc.running || txdbWriteProc.running || txdbQueue.length > 0) {
+      refreshPending = true
+      return
+    }
+    snapshotProc.running = true
   }
+
+  // Queues one write; writes run one at a time, in order.
+  function txdb(args) {
+    txdbQueue = txdbQueue.concat([args])
+    runNextWrite()
+  }
+
+  function runNextWrite() {
+    if (txdbWriteProc.running) return
+    if (txdbQueue.length === 0) {
+      if (refreshPending) { refreshPending = false; refreshData() }
+      return
+    }
+    txdbWriteProc.command = ["python3", root.txdbBin].concat(txdbQueue[0])
+    txdbQueue = txdbQueue.slice(1)
+    txdbWriteProc.running = true
+  }
+
+  Process {
+    id: txdbWriteProc
+    onExited: function (exitCode) {
+      if (exitCode !== 0) console.warn("txdb write failed (" + exitCode + "): " + command.slice(2).join(" "))
+      root.runNextWrite()
+    }
+  }
+
+  Process {
+    id: snapshotProc
+    command: ["python3", root.txdbBin, "snapshot"]
+    stdout: StdioCollector {
+      onStreamFinished: store.applySnapshot(text)
+    }
+    onExited: function (exitCode) {
+      if (exitCode !== 0) console.warn("txdb snapshot failed (" + exitCode + ")")
+      if (root.refreshPending) { root.refreshPending = false; root.refreshData() }
+    }
+  }
+
+  FileView {
+    id: dbChangedFile
+    path: root.widgetDir + "/data/.changed"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: root.refreshData()
+  }
+
+  Component.onCompleted: refreshData()
 
   QtObject {
     id: store
-    property var trackedOverrides: ({})
+    property var trackedOverrides: ({})   // optimistic tracked changes not yet in a snapshot
     property var rawTransactions: []
-    property var sourceTransactions: ({})   // map: source name -> rows
-    property var sourceBalances: ({})       // map: source name -> balance rows
     property var transactions: []
     property var cardOverviews: ({})   // map: last4 -> overview entry
     property var accountBalances: []   // list of {bank, accountType, last4, balance, currency}
     property var billOverrides: ({})   // map: last4 -> { markedPaid, notifiedDate }
     property var accountNameOverrides: ({})   // map: last4 -> user-set display name
-    property var transactionNameOverrides: ({})   // map: Model.transactionGroupKey(t) -> user-set merchant name
+    property var transactionNameOverrides: ({})   // map: groupKey -> user-set merchant name
 
-    // Rebuilds `transactions` from the real fetched rows, minus anything
-    // with any locally-toggled tracked state applied on top.
+    // Loads one `txdb snapshot`. A snapshot that doesn't parse is ignored,
+    // so the widget keeps showing the last good data. Everything is set
+    // together before bill reminders run, so "marked paid" is never lost
+    // to load order.
+    function applySnapshot(text) {
+      var snap
+      try { snap = JSON.parse(text) } catch (e) { console.warn("txdb snapshot unreadable: " + e); return }
+      if (root.txdbQueue.length > 0 || txdbWriteProc.running) { root.refreshPending = true; return }
+      var cards = {}
+      var overviews = snap.cardOverviews || []
+      for (var i = 0; i < overviews.length; i++) {
+        if (overviews[i] && overviews[i].last4) cards[overviews[i].last4] = overviews[i]
+      }
+      cardOverviews = cards
+      accountBalances = snap.balances || []
+      billOverrides = snap.bills || {}
+      accountNameOverrides = snap.accountNames || {}
+      transactionNameOverrides = snap.merchantNames || {}
+      trackedOverrides = {}
+      rawTransactions = snap.transactions || []
+      recompute()
+      checkBillReminders()
+    }
+
+    // `transactions` = the snapshot rows with optimistic tracked changes on top.
     function recompute() {
       var base = rawTransactions
       var list = []
       for (var j = 0; j < base.length; j++) {
         var row = base[j]
         if (Object.prototype.hasOwnProperty.call(trackedOverrides, row.id)) {
-          row = Object.assign({}, row, { tracked: !!trackedOverrides[row.id] })
+          row = Object.assign({}, row, { tracked: trackedOverrides[row.id] })
         }
         list.push(row)
       }
       transactions = list
     }
 
-    function setTrackedOverrides(overrides) {
-      trackedOverrides = overrides || {}
-      recompute()
-    }
-
-
-    // One list per source ("hdfc", "axis"); the merged list feeds RECENT.
-    function setSourceTransactions(source, list) {
-      var map = Object.assign({}, sourceTransactions)
-      map[source] = list || []
-      sourceTransactions = map
-      rawTransactions = [].concat(map.hdfc || [], map.axis || [])
-      recompute()
-    }
-
     function setTracked(id, value) {
       var overrides = Object.assign({}, trackedOverrides)
-      if (value) overrides[id] = true
-      else delete overrides[id]
+      overrides[id] = !!value
       trackedOverrides = overrides
       recompute()
-      writeTrackedFile()
+      root.txdb(["set-tracked", id, value ? "1" : "0"])
     }
 
     // Sets the tracked state of several rows at once (Track / Untrack selected).
     function setTrackedMany(rows, value) {
       if (!rows || rows.length === 0) return
       var overrides = Object.assign({}, trackedOverrides)
+      var ids = []
       for (var i = 0; i < rows.length; i++) {
-        if (value) overrides[rows[i].id] = true
-        else delete overrides[rows[i].id]
+        overrides[rows[i].id] = !!value
+        ids.push(rows[i].id)
       }
       trackedOverrides = overrides
       recompute()
-      writeTrackedFile()
-    }
-
-    function writeTrackedFile() {
-      trackedFile.setText(JSON.stringify(trackedOverrides, null, 2) + "\n")
+      root.txdb(["set-tracked-many", value ? "1" : "0"].concat(ids))
     }
 
     // --- Bills ---
-
-    function setCardOverviews(list) {
-      var map = {}
-      for (var i = 0; i < (list || []).length; i++) {
-        var entry = list[i]
-        if (entry && entry.last4) map[entry.last4] = entry
-      }
-      cardOverviews = map
-      checkBillReminders()
-    }
-
-    function setSourceBalances(source, list) {
-      var map = Object.assign({}, sourceBalances)
-      map[source] = list || []
-      sourceBalances = map
-      accountBalances = [].concat(map.hdfc || [], map.axis || [])
-    }
-
-    function setBillOverrides(overrides) {
-      billOverrides = overrides || {}
-    }
 
     function isPaid(last4) {
       return Model.isBillPaid(cardOverviews[last4], billOverrides[last4])
@@ -311,18 +390,16 @@ Panel {
       var overrides = Object.assign({}, billOverrides)
       overrides[last4] = Object.assign({}, overrides[last4] || {}, { markedPaid: value })
       billOverrides = overrides
-      writeBillsFile()
+      root.txdb(["bill-paid", cardAccountId(last4), value ? "1" : "0"])
     }
 
-    function writeBillsFile() {
-      billsFile.setText(JSON.stringify(billOverrides, null, 2) + "\n")
+    // Bills belong to credit cards; the database keys them by account id.
+    function cardAccountId(last4) {
+      var entry = cardOverviews[last4]
+      return entry && entry.accountId ? entry.accountId : "HDFC|credit|" + last4
     }
 
     // --- Account renaming ---
-
-    function setAccountNameOverrides(overrides) {
-      accountNameOverrides = overrides || {}
-    }
 
     function setAccountName(last4, name) {
       var overrides = Object.assign({}, accountNameOverrides)
@@ -330,14 +407,10 @@ Panel {
       if (trimmed) overrides[last4] = trimmed
       else delete overrides[last4]
       accountNameOverrides = overrides
-      accountNamesFile.setText(JSON.stringify(accountNameOverrides, null, 2) + "\n")
+      root.txdb(trimmed ? ["account-name", last4, trimmed] : ["account-name", last4])
     }
 
     // --- Transaction renaming ---
-
-    function setTransactionNameOverrides(overrides) {
-      transactionNameOverrides = overrides || {}
-    }
 
     function setTransactionName(groupKey, name) {
       var overrides = Object.assign({}, transactionNameOverrides)
@@ -345,12 +418,11 @@ Panel {
       if (trimmed) overrides[groupKey] = trimmed
       else delete overrides[groupKey]
       transactionNameOverrides = overrides
-      transactionNamesFile.setText(JSON.stringify(transactionNameOverrides, null, 2) + "\n")
+      root.txdb(trimmed ? ["rename", groupKey, trimmed] : ["rename", groupKey])
     }
 
     // Fires a desktop notification for each unpaid card, at most once per
-    // card per calendar day. Called from cardOverviewFile's onLoaded so
-    // "what counts as a reminder" lives in one place, not in the FileView.
+    // card per calendar day. Runs after every snapshot.
     function checkBillReminders() {
       var today = new Date().toISOString().slice(0, 10)
       var overrides = Object.assign({}, billOverrides)
@@ -367,55 +439,72 @@ Panel {
           Quickshell.env("OMARCHY_PATH") + "/bin/omarchy-notification-send",
           "--app-name", "home.transactions",
           "Bill due: " + entry.name,
-          "••" + last4 + "  ·  " + entry.upcoming_payment_due + "  ·  " + entry.payment_status
+          "••" + last4 + "  ·  " + Model.currencySymbol("INR")
+            + Model.formatGrouped(Model.billParts(entry).payNow)
+            + (entry.dueDate ? "  ·  pay by " + Model.formatShortDate(entry.dueDate) + " (" + Model.dueCountdown(entry.dueDate) + ")" : "")
+            + "  ·  " + entry.payment_status
         ])
 
         overrides[last4] = Object.assign({}, override, { notifiedDate: today })
+        root.txdb(["bill-notified", cardAccountId(last4), today])
         changed = true
       }
-      if (changed) {
-        billOverrides = overrides
-        writeBillsFile()
-      }
+      if (changed) billOverrides = overrides
     }
-  }
-
-  FileView {
-    id: trackedFile
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/transactions-tracked.json"
-    watchChanges: true
-    atomicWrites: true
-    printErrors: false
-    onLoaded: store.setTrackedOverrides(JSON.parse(text() || "{}"))
-    onLoadFailed: store.setTrackedOverrides({})
-    onFileChanged: reload()
-  }
-
-
-  FileView {
-    id: realTransactionsFile
-    path: root.fetcherOutputDir + "/hdfc_transactions.json"
-    watchChanges: true
-    printErrors: false
-    onLoaded: store.setSourceTransactions("hdfc", root.parseList(text()))
-    onLoadFailed: store.setSourceTransactions("hdfc", [])
-    onFileChanged: reload()
-  }
-
-  FileView {
-    id: axisTransactionsFile
-    path: root.axisOutputDir + "/axis_transactions.json"
-    watchChanges: true
-    printErrors: false
-    onLoaded: store.setSourceTransactions("axis", root.parseList(text()))
-    onLoadFailed: store.setSourceTransactions("axis", [])
-    onFileChanged: reload()
   }
 
   property bool fetchCancelled: false
 
+  // When a fetch ends, the notification says what it added, from the run
+  // the fetcher recorded in the database (`txdb last-run <BANK>`).
+  property string notifyBank: ""
+
+  function notifyFetchResult(bank) {
+    notifyBank = bank
+    lastRunProc.running = true
+  }
+
+  Process {
+    id: lastRunProc
+    command: ["python3", root.txdbBin, "last-run", root.notifyBank]
+    stdout: StdioCollector {
+      onStreamFinished: root.sendFetchNotification(text)
+    }
+  }
+
+  function sendFetchNotification(text) {
+    var run = {}
+    try { run = JSON.parse(text) || {} } catch (e) {}
+    var name = ({ HDFC: "HDFC", AXIS: "Axis", SBI: "SBI" })[notifyBank] || notifyBank
+    // A run that started before this fetch is the previous one: this fetch
+    // died before it could record anything.
+    if (!run.started_at || new Date(run.started_at).getTime() < fetchStartedMs - 5000) run = {}
+    var title, body
+    if (run.outcome === "done" && typeof run.added === "number") {
+      title = run.added === 0 ? name + ": no new transactions"
+        : name + ": " + run.added + " new transaction" + (run.added === 1 ? "" : "s")
+      body = (typeof run.total === "number" ? run.total + " saved in total" : run.message || "")
+    } else if (run.outcome === "done") {
+      title = name + " fetch finished"
+      body = run.message || ""
+    } else if (run.outcome === "cancelled") {
+      return
+    } else {
+      title = name + " fetch failed"
+      body = run.message || "See output/widget-fetch.log"
+    }
+    Quickshell.execDetached([
+      Quickshell.env("OMARCHY_PATH") + "/bin/omarchy-notification-send",
+      "--app-name", "home.transactions", title, body
+    ])
+  }
+
+  property real fetchStartedMs: 0
+
   function startFetch(bank) {
+    fetchStartedMs = Date.now()
     if (bank === "axis") axisFetchProc.running = true
+    else if (bank === "sbi") sbiFetchProc.running = true
     else fetchProc.running = true
   }
 
@@ -424,6 +513,10 @@ Panel {
       axisFetchCancelled = true
       axisCancelProc.running = true
       axisFetchProc.running = false
+    } else if (bank === "sbi") {
+      sbiFetchCancelled = true
+      sbiCancelProc.running = true
+      sbiFetchProc.running = false
     } else {
       fetchCancelled = true
       cancelProc.running = true
@@ -431,7 +524,7 @@ Panel {
     }
   }
 
-  // The balance amount(s) for one bank ("HDFC" or "AXIS"), joined. Only the
+  // The balance amount(s) for one bank ("HDFC", "AXIS" or "SBI"), joined. Only the
   // amount: the bank's logo already says which account it is.
   function balanceTextFor(bank) {
     return root.accountBalances
@@ -444,7 +537,7 @@ Panel {
   // login QR, and records the cancelled stage for the widget.
   Process {
     id: cancelProc
-    command: ["bash", "-c", "cd '" + root.fetcherDir + "' && PID=$(cat output/fetch.pid 2>/dev/null); [ -n \"$PID\" ] && kill -TERM -- -$PID 2>/dev/null; rm -f output/qr.png; printf '%s' '{\"stage\": \"cancelled\", \"message\": \"Fetch cancelled.\", \"qr\": \"\", \"card\": \"\", \"step\": \"\", \"updated\": \"\"}' > output/fetch-status.json"]
+    command: ["bash", "-c", "cd '" + root.fetcherDir + "' && PID=$(cat output/fetch.pid 2>/dev/null); [ -n \"$PID\" ] && grep -qa src.main /proc/$PID/cmdline 2>/dev/null && kill -TERM -- -$PID 2>/dev/null; rm -f output/qr.png; printf '%s' '{\"stage\": \"cancelled\", \"message\": \"Fetch cancelled.\", \"qr\": \"\", \"card\": \"\", \"step\": \"\", \"updated\": \"\"}' > output/.fetch-status.json.tmp && mv output/.fetch-status.json.tmp output/fetch-status.json"]
   }
 
   // Runs the fetcher. Its output goes to output/widget-fetch.log, so a
@@ -458,12 +551,7 @@ Panel {
     command: ["setsid", "bash", "-c", "cd '" + root.fetcherDir + "' && echo $$ > output/fetch.pid && exec .venv/bin/python -m src.main > output/widget-fetch.log 2>&1"]
     onExited: function (exitCode) {
       if (root.fetchCancelled) { root.fetchCancelled = false; return }
-      Quickshell.execDetached([
-        Quickshell.env("OMARCHY_PATH") + "/bin/omarchy-notification-send",
-        "--app-name", "home.transactions",
-        exitCode === 0 ? "HDFC fetch finished" : "HDFC fetch failed",
-        exitCode === 0 ? "Data refreshed" : "See output/widget-fetch.log"
-      ])
+      root.notifyFetchResult("HDFC")
     }
   }
 
@@ -471,7 +559,7 @@ Panel {
 
   Process {
     id: axisCancelProc
-    command: ["bash", "-c", "cd '" + root.axisDir + "' && mkdir -p output && PID=$(cat output/fetch.pid 2>/dev/null); [ -n \"$PID\" ] && kill -TERM -- -$PID 2>/dev/null; printf '%s' '{\"stage\": \"cancelled\", \"message\": \"Fetch cancelled.\", \"qr\": \"\", \"card\": \"\", \"step\": \"\", \"updated\": \"\"}' > output/axis-fetch-status.json"]
+    command: ["bash", "-c", "cd '" + root.axisDir + "' && mkdir -p output && PID=$(cat output/fetch.pid 2>/dev/null); [ -n \"$PID\" ] && grep -qa src.main /proc/$PID/cmdline 2>/dev/null && kill -TERM -- -$PID 2>/dev/null; printf '%s' '{\"stage\": \"cancelled\", \"message\": \"Fetch cancelled.\", \"qr\": \"\", \"card\": \"\", \"step\": \"\", \"updated\": \"\"}' > output/.axis-fetch-status.json.tmp && mv output/.axis-fetch-status.json.tmp output/axis-fetch-status.json"]
   }
 
   // Runs the Axis fetcher. stdinEnabled keeps its stdin open: the OTP the
@@ -482,12 +570,7 @@ Panel {
     command: ["setsid", "bash", "-c", "cd '" + root.axisDir + "' && mkdir -p output && echo $$ > output/fetch.pid && exec .venv/bin/python -m src.main > output/widget-fetch.log 2>&1"]
     onExited: function (exitCode) {
       if (root.axisFetchCancelled) { root.axisFetchCancelled = false; return }
-      Quickshell.execDetached([
-        Quickshell.env("OMARCHY_PATH") + "/bin/omarchy-notification-send",
-        "--app-name", "home.transactions",
-        exitCode === 0 ? "Axis fetch finished" : "Axis fetch failed",
-        exitCode === 0 ? "Data refreshed" : "See output/widget-fetch.log in axis-statement-fetcher"
-      ])
+      root.notifyFetchResult("AXIS")
     }
   }
 
@@ -503,6 +586,37 @@ Panel {
     onFileChanged: reload()
   }
 
+  property bool sbiFetchCancelled: false
+
+  Process {
+    id: sbiCancelProc
+    command: ["bash", "-c", "cd '" + root.sbiDir + "' && mkdir -p output && PID=$(cat output/fetch.pid 2>/dev/null); [ -n \"$PID\" ] && grep -qa src.main /proc/$PID/cmdline 2>/dev/null && kill -TERM -- -$PID 2>/dev/null; printf '%s' '{\"stage\": \"cancelled\", \"message\": \"Fetch cancelled.\", \"qr\": \"\", \"card\": \"\", \"step\": \"\", \"updated\": \"\"}' > output/.sbi-fetch-status.json.tmp && mv output/.sbi-fetch-status.json.tmp output/sbi-fetch-status.json"]
+  }
+
+  // Runs the SBI fetcher. Like Axis, stdinEnabled keeps its stdin open for
+  // the OTP typed into otpRow; it is never written to a file.
+  Process {
+    id: sbiFetchProc
+    stdinEnabled: true
+    command: ["setsid", "bash", "-c", "cd '" + root.sbiDir + "' && mkdir -p output && echo $$ > output/fetch.pid && exec .venv/bin/python -m src.main > output/widget-fetch.log 2>&1"]
+    onExited: function (exitCode) {
+      if (root.sbiFetchCancelled) { root.sbiFetchCancelled = false; return }
+      root.notifyFetchResult("SBI")
+    }
+  }
+
+  FileView {
+    id: sbiFetchStatusFile
+    path: root.sbiOutputDir + "/sbi-fetch-status.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      try { root.sbiFetchStatus = JSON.parse(text() || "{}") } catch (e) { root.sbiFetchStatus = {} }
+    }
+    onLoadFailed: root.sbiFetchStatus = ({})
+    onFileChanged: reload()
+  }
+
   FileView {
     id: fetchStatusFile
     path: root.fetcherOutputDir + "/fetch-status.json"
@@ -512,69 +626,6 @@ Panel {
       try { root.fetchStatus = JSON.parse(text() || "{}") } catch (e) { root.fetchStatus = {} }
     }
     onLoadFailed: root.fetchStatus = ({})
-    onFileChanged: reload()
-  }
-
-  FileView {
-    id: cardOverviewFile
-    path: root.fetcherOutputDir + "/hdfc_creditcard_overview.json"
-    watchChanges: true
-    printErrors: false
-    onLoaded: store.setCardOverviews(JSON.parse(text() || "[]"))
-    onLoadFailed: store.setCardOverviews([])
-    onFileChanged: reload()
-  }
-
-  FileView {
-    id: accountBalancesFile
-    path: root.fetcherOutputDir + "/hdfc_account_balances.json"
-    watchChanges: true
-    printErrors: false
-    onLoaded: store.setSourceBalances("hdfc", root.parseList(text()))
-    onLoadFailed: store.setSourceBalances("hdfc", [])
-    onFileChanged: reload()
-  }
-
-  FileView {
-    id: axisBalancesFile
-    path: root.axisOutputDir + "/axis_account_balances.json"
-    watchChanges: true
-    printErrors: false
-    onLoaded: store.setSourceBalances("axis", root.parseList(text()))
-    onLoadFailed: store.setSourceBalances("axis", [])
-    onFileChanged: reload()
-  }
-
-  FileView {
-    id: billsFile
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/transactions-bills.json"
-    watchChanges: true
-    atomicWrites: true
-    printErrors: false
-    onLoaded: store.setBillOverrides(JSON.parse(text() || "{}"))
-    onLoadFailed: store.setBillOverrides({})
-    onFileChanged: reload()
-  }
-
-  FileView {
-    id: accountNamesFile
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/transactions-account-names.json"
-    watchChanges: true
-    atomicWrites: true
-    printErrors: false
-    onLoaded: store.setAccountNameOverrides(JSON.parse(text() || "{}"))
-    onLoadFailed: store.setAccountNameOverrides({})
-    onFileChanged: reload()
-  }
-
-  FileView {
-    id: transactionNamesFile
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/transactions-custom-names.json"
-    watchChanges: true
-    atomicWrites: true
-    printErrors: false
-    onLoaded: store.setTransactionNameOverrides(JSON.parse(text() || "{}"))
-    onLoadFailed: store.setTransactionNameOverrides({})
     onFileChanged: reload()
   }
 
@@ -699,6 +750,12 @@ Panel {
               tooltip: "Fetch Axis data (asks for the OTP here)"
               balanceText: root.balanceTextFor("AXIS")
             }
+
+            BankBalance {
+              bank: "sbi"
+              tooltip: "Fetch SBI data (asks for the OTP here)"
+              balanceText: root.balanceTextFor("SBI")
+            }
           }
 
           Text {
@@ -714,17 +771,24 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
-          // Axis OTP: one box per digit, like the bank's own screen. Typing
+          // Axis or SBI OTP (whichever fetch is asking): one box per digit, like the bank's own screen. Typing
           // moves on to the next box, Backspace on an empty box goes back, and
           // a pasted code fills the row. The code goes down the fetcher's
           // stdin once every box is filled (or on Enter, for an empty or short
           // try, which the fetcher answers by asking again). Never stored.
           Item {
             id: otpRow
-            visible: root.axisOtpNeeded
+            // Hidden from the moment a code is sent until the fetcher writes a
+            // new status: it asks again (new "updated") only if the code was
+            // wrong, expired or the wrong length — so a code can't be typed twice.
+            property string sentAt: ""
+            readonly property var otpStatus: root.sbiOtpNeeded ? root.sbiFetchStatus : root.axisFetchStatus
+            visible: (root.axisOtpNeeded || root.sbiOtpNeeded) && otpStatus.updated !== sentAt
             width: parent.width
             height: Style.space(34)
-            readonly property int digitCount: root.axisFetchStatus.digits || 6
+            // Only one fetch runs at a time, so at most one of these asks.
+            readonly property var otpProc: root.sbiOtpNeeded ? sbiFetchProc : axisFetchProc
+            readonly property int digitCount: (root.sbiOtpNeeded ? root.sbiFetchStatus.digits : root.axisFetchStatus.digits) || 6
 
             onVisibleChanged: if (visible) Qt.callLater(function () { otpRow.boxAt(0).forceActiveFocus() })
 
@@ -748,12 +812,12 @@ Panel {
             }
 
             function sendOtp() {
-              if (!axisFetchProc.running) return
+              if (!otpProc.running) return
               var code = ""
               for (var i = 0; i < digitCount; i++) code += boxAt(i).text
-              axisFetchProc.write(code + "\n")
+              otpProc.write(code + "\n")
               for (var j = 0; j < digitCount; j++) boxAt(j).text = ""
-              boxAt(0).forceActiveFocus()
+              sentAt = otpStatus.updated || ""
             }
 
             Row {
@@ -828,10 +892,180 @@ Panel {
           }
         }
 
-        PanelSectionHeader {
-          text: "BILLS" + (root.cardOverviewList.length > 0 && !root.billDue ? "  ·  all paid" : "")
+        // BILLS shares its row with the section totals, the way RECENT
+        // shares its row with the filter controls — they answer "what do I
+        // owe in all" without costing a row of their own.
+        Item {
           visible: root.cardOverviewList.length > 0
-          foreground: root.foreground
+          width: parent.width
+          height: Math.max(billsHeader.implicitHeight, billsTotals.implicitHeight)
+
+          PanelSectionHeader {
+            id: billsHeader
+            anchors.left: parent.left
+            // Section headers sit flush at x=0 while row content is inset;
+            // matching the inset puts BILLS, the status discs and the card
+            // names on one left edge.
+            anchors.leftMargin: Style.spacing.rowPaddingX
+            anchors.verticalCenter: parent.verticalCenter
+            text: "BILLS"
+            foreground: root.foreground
+          }
+
+          Row {
+            id: billsTotals
+            anchors.right: parent.right
+            // Same inset as a row's own amount, so the two line up.
+            anchors.rightMargin: Style.spacing.rowPaddingX
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(6)
+
+            Text {
+              textFormat: Text.PlainText
+              text: root.billsDueTotal > 0
+                ? "to pay " + Model.currencySymbol("INR") + Model.formatGrouped(root.billsDueTotal)
+                : "all paid"
+              color: root.billsDueTotal > 0 ? root.debitColor : root.creditColor
+              font.family: Style.font.family
+              font.bold: true
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
+              visible: root.billsNextTotal > 0
+              textFormat: Text.PlainText
+              text: "·  next " + Model.currencySymbol("INR") + Model.formatGrouped(Math.round(root.billsNextTotal))
+              color: Qt.darker(root.foreground, 1.5)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
+        // The limit is one pool shared by every card on the account, not one
+        // limit each (HDFC prints the same total and the same available
+        // figure on both cards, and total minus available is the cards'
+        // outstanding added together) — so it belongs to the section, not to
+        // a row. The strip keeps its height before a fetch has read the
+        // limit, so the block never jumps when the figures arrive.
+        Item {
+          id: limitStrip
+          readonly property var limit: root.creditLimit
+          readonly property bool known: limitStrip.limit.limit > 0
+
+          visible: root.cardOverviewList.length > 0
+          width: parent.width
+          height: limitLabel.implicitHeight + Style.space(5) + limitTrack.height
+            + (limitKey.visible ? Style.space(5) + limitKey.implicitHeight : 0)
+
+          Text {
+            id: limitLabel
+            anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.rowPaddingX
+            anchors.top: parent.top
+            textFormat: Text.PlainText
+            text: limitStrip.known
+              ? "limit " + Model.currencySymbol("INR") + Model.formatGrouped(Math.round(limitStrip.limit.used))
+                + " of " + Model.currencySymbol("INR") + Model.formatGrouped(limitStrip.limit.limit) + " used"
+              : "limit not read yet"
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+
+          Text {
+            id: limitPercent
+            visible: limitStrip.known
+            anchors.right: parent.right
+            anchors.rightMargin: Style.spacing.rowPaddingX
+            anchors.baseline: limitLabel.baseline
+            textFormat: Text.PlainText
+            text: Math.round(limitStrip.limit.percent) + "%"
+            color: root.limitColor(limitStrip.limit.percent)
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.caption
+          }
+
+          // One thin track, one segment per card. At this utilisation the
+          // smaller card is barely two pixels wide, so the key below carries
+          // the detail — but a non-zero share never disappears entirely.
+          Item {
+            id: limitTrack
+            anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.rowPaddingX
+            anchors.right: parent.right
+            anchors.rightMargin: Style.spacing.rowPaddingX
+            anchors.top: limitLabel.bottom
+            anchors.topMargin: Style.space(5)
+            height: Style.space(3)
+            clip: true
+
+            Rectangle {
+              anchors.fill: parent
+              radius: height / 2
+              color: Qt.darker(root.foreground, 3.0)
+            }
+
+            Row {
+              anchors.left: parent.left
+              height: parent.height
+
+              Repeater {
+                model: limitStrip.limit.segments || []
+                delegate: Rectangle {
+                  required property var modelData
+                  required property int index
+                  height: limitTrack.height
+                  width: Math.max(1, limitTrack.width * Math.min(1, Math.max(0, modelData.fraction)))
+                  radius: height / 2
+                  color: root.limitSegmentColor(index)
+                  Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                }
+              }
+            }
+          }
+
+          // Which card is using what. A Flow, not a Row: a third card wraps
+          // instead of running off the popup.
+          Flow {
+            id: limitKey
+            visible: limitStrip.known && (limitStrip.limit.segments || []).length > 0
+            anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.rowPaddingX
+            anchors.right: parent.right
+            anchors.rightMargin: Style.spacing.rowPaddingX
+            anchors.top: limitTrack.bottom
+            anchors.topMargin: Style.space(5)
+            spacing: Style.spacing.md
+
+            Repeater {
+              model: limitStrip.limit.segments || []
+              delegate: Row {
+                required property var modelData
+                required property int index
+                spacing: Style.space(4)
+
+                Rectangle {
+                  width: Style.space(6)
+                  height: width
+                  radius: width / 2
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.limitSegmentColor(index)
+                }
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "••" + modelData.last4 + " " + Model.currencySymbol("INR")
+                    + Model.formatGrouped(Math.round(modelData.amount))
+                  color: Qt.darker(root.foreground, 1.5)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+          }
         }
 
         Column {
@@ -1048,39 +1282,37 @@ Panel {
     }
   }
 
-  // Compact BILLS row — status-colored avatar (✓ paid / ! due) + card name
-  // + outstanding amount, matching TransactionCard's density instead of
-  // the old Toggle+description row (switch control plus a full text line
-  // just to say "Due ₹0.00 · FULLY PAID"). Click or Enter/Space toggles
-  // the manual "mark as paid" override.
+  // Compact BILLS row: a status gutter (the disc, and under it the one word
+  // for where this bill stands), the card with its deadline, and the two
+  // figures that matter — what the card wants now, and what this cycle has
+  // already spent into next month's bill. Click anywhere to expand; click
+  // the disc to flip the manual "mark as paid" override.
   component BillRow: BorderSurface {
     id: billRow
     required property var overview
     property bool expanded: false
     readonly property bool paid: store.isPaid(billRow.overview.last4)
-    readonly property string cardName: Model.accountDisplayName(billRow.overview.name, billRow.overview.last4, store.accountNameOverrides)
-    readonly property var brand: Model.cardBrandParts(billRow.cardName)
-    readonly property real outstandingSigned: Model.parseCurrencyString(billRow.overview.total_outstanding)
-    readonly property real upcomingDueSigned: Model.parseCurrencyString(billRow.overview.upcoming_payment_due)
-    readonly property real currentAmount: Math.abs(billRow.outstandingSigned)
-    // Three states, purely numeric — deliberately NOT keyed off `paid`
-    // (the scrape's own "FULLY PAID"/"NO DUES" status, or the manual
-    // override): that status can be true while total_outstanding is
-    // still positive (last statement was paid off, but this cycle's new
-    // spend hasn't been billed yet), which made a plain paid/unpaid
-    // color lie about money still owed.
-    //   "settled" — outstanding is zero or negative (bank owes the
-    //     cardholder) — green ✓.
-    //   "pending" — there's a positive outstanding/unbilled amount, but
-    //     upcoming_payment_due is still ₹0 — nothing has actually come
-    //     due yet, just spend sitting unbilled — amber ●.
-    //   "due" — a positive amount has actually come due — red !.
-    // `paid` (the manual override) still exists and still drives the
-    // bill-due reminder/badge (see store.isPaid/anyBillDue) — it just no
-    // longer overrides this row's own color or glyph.
-    readonly property string billState: billRow.outstandingSigned <= 0
-      ? "settled"
-      : (billRow.upcomingDueSigned > 0 ? "due" : "pending")
+    // Label and network kept apart: a rename shows as typed, while the
+    // network mark still follows the bank's own card name.
+    readonly property var brand: Model.cardLabelParts(billRow.overview.name,
+      store.accountNameOverrides[billRow.overview.last4])
+    readonly property string bank: Model.accountBank(billRow.overview.accountId)
+    // The bill already generated, what has been paid into the card, what is
+    // left to pay now and this cycle's spend — see Model.billParts.
+    readonly property var parts: Model.billParts(billRow.overview)
+    // Three states, purely numeric — deliberately NOT keyed off the scrape's
+    // own "FULLY PAID"/"PARTIALLY PAID" wording, which says paid while ₹595
+    // is still owed and says partly paid while nothing is.
+    //   "settled" — nothing left to pay (or the bank owes the cardholder)
+    //     and no unbilled spend — green ✓.
+    //   "pending" — nothing due yet, just this cycle's spend building up
+    //     into next month's bill — amber ●.
+    //   "due" — a bill is generated and not cleared — red !.
+    // The manual "mark as paid" override still drives the bill-due
+    // reminder/badge (store.isPaid/anyBillDue); it does not recolour the row.
+    readonly property string billState: billRow.parts.payNow > 0
+      ? "due"
+      : (billRow.parts.nextBill > 0 && !billRow.parts.inCredit ? "pending" : "settled")
     readonly property bool displayPaid: billRow.billState === "settled"
     readonly property color statusColor: billRow.billState === "settled"
       ? root.creditColor
@@ -1089,7 +1321,13 @@ Panel {
       ? "✓"
       : (billRow.billState === "due" ? "!" : "●")
     readonly property bool _hot: rowHover.hovered || billRow.activeFocus
-    readonly property int collapsedHeight: Style.space(52)
+    // The status column (disc + label) is the tallest thing in the row, so
+    // it sets this; the two text lines need less.
+    readonly property int collapsedHeight: Style.space(44)
+    // Where the row's text starts — the status column plus its gap. Shared
+    // with the detail panel, so the panel's text lines up under the card
+    // name instead of an inset worked out from a disc size long since gone.
+    readonly property int contentLeft: Style.spacing.rowPaddingX + root.billStatusWidth + Style.spacing.md
 
     implicitHeight: billRow.collapsedHeight + (billRow.expanded ? detailsPanel.implicitHeight + Style.space(10) : 0)
     radius: Style.cornerRadius
@@ -1107,8 +1345,8 @@ Panel {
 
     activeFocusOnTab: true
     // Matches the row's own click behavior (expand) — "mark as paid" is
-    // mouse-only on the avatar now, same precedent as TransactionCard's
-    // rename pencil not being in the main Tab/Enter flow either.
+    // mouse-only on the avatar, same precedent as TransactionCard's rename
+    // pencil not being in the main Tab/Enter flow either.
     Keys.onReturnPressed: billRow.expanded = !billRow.expanded
     Keys.onEnterPressed: billRow.expanded = !billRow.expanded
     Keys.onSpacePressed: billRow.expanded = !billRow.expanded
@@ -1129,11 +1367,10 @@ Panel {
       anchors.right: parent.right
       height: billRow.collapsedHeight
 
-      // Covers the collapsed row — clicking anywhere on it now expands
-      // the full detail panel below. The avatar's own MouseArea (below)
-      // sits on top of this one (declared later = higher z) and claims
-      // just that icon for "mark as paid" instead, same precedent as
-      // TransactionCard's editBtn overriding cardMouse beneath.
+      // Covers the collapsed row — clicking anywhere on it expands the full
+      // detail panel below. The disc's own MouseArea (below) sits on top of
+      // this one (declared later = higher z) and claims just that icon for
+      // "mark as paid", same precedent as TransactionCard's editBtn.
       MouseArea {
         id: rowMouse
         anchors.fill: parent
@@ -1141,113 +1378,208 @@ Panel {
         onClicked: billRow.expanded = !billRow.expanded
       }
 
-      Rectangle {
-        id: avatar
-        width: Style.space(36)
-        height: width
-        radius: width / 2
-        color: Util.alpha(billRow.statusColor, 0.22)
+      // Status gutter: the disc, and under it the one word for where this
+      // bill stands. Fixed width, so every row's name starts at the same x
+      // whatever its label says, and the labels read as their own column.
+      Item {
+        id: statusGutter
         anchors.left: parent.left
         anchors.leftMargin: Style.spacing.rowPaddingX
         anchors.verticalCenter: parent.verticalCenter
+        width: root.billStatusWidth
+        height: avatar.height + (statePill.visible ? Style.space(4) + statePill.height : 0)
 
-        Text {
-          anchors.centerIn: parent
-          textFormat: Text.PlainText
-          text: billRow.statusGlyph
-          color: billRow.statusColor
-          font.bold: true
-          font.pixelSize: Style.font.subtitle
+        Rectangle {
+          id: avatar
+          width: Style.space(20)
+          height: width
+          radius: width / 2
+          color: Util.alpha(billRow.statusColor, 0.16)
+          anchors.top: parent.top
+          // Left-aligned, not centred: the disc, the label under it and the
+          // BILLS header all share one left edge this way.
+          anchors.left: parent.left
+
+          Text {
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: billRow.statusGlyph
+            color: billRow.statusColor
+            font.bold: true
+            // A smaller disc needs a proportionally larger glyph to stay
+            // legible, so this drops one step where the disc dropped two.
+            font.pixelSize: Style.font.caption
+          }
+
+          // The one place "mark as paid" lives: click just the status icon
+          // to flip the manual override (it still drives the bill-due
+          // reminder/badge) without expanding the row.
+          MouseArea {
+            anchors.fill: parent
+            // The disc lost a third of its width; the target keeps the size
+            // it had. The gutter around it is empty, so nothing else can be
+            // hit by mistake.
+            anchors.margins: -Style.space(10)
+            cursorShape: Qt.PointingHandCursor
+            onClicked: store.setBillPaid(billRow.overview.last4, !billRow.paid)
+          }
         }
 
-        // The one place "mark as paid" still lives — click just the
-        // status icon to flip the manual override (it still drives the
-        // bill-due reminder/badge, see store.isPaid/anyBillDue), without
-        // it also being the row's main "show details" action anymore.
-        MouseArea {
-          anchors.fill: parent
-          anchors.margins: -Style.space(4)
-          cursorShape: Qt.PointingHandCursor
-          onClicked: store.setBillPaid(billRow.overview.last4, !billRow.paid)
+        // One word, never a sentence: how long is left belongs on the due
+        // line beside the card's name, where there is room for it.
+        Rectangle {
+          id: statePill
+          readonly property string label: billRow.parts.inCredit
+            ? "IN CREDIT"
+            : (billRow.parts.payNow <= 0
+                ? (billRow.paid ? "PAID" : "")
+                : (billRow.paid ? "PAID"
+                    : (Model.billUrgency(billRow.overview, false) === "overdue" ? "OVERDUE" : "NOT PAID")))
+          readonly property color tone: billRow.parts.inCredit
+            ? root.creditColor
+            : (billRow.parts.payNow <= 0 || billRow.paid
+                ? Qt.darker(root.foreground, 1.4)
+                : root.debitColor)
+
+          visible: statePill.label !== ""
+          anchors.top: avatar.bottom
+          anchors.topMargin: Style.space(4)
+          anchors.left: parent.left
+          implicitWidth: Math.min(parent.width, pillText.implicitWidth + Style.space(8))
+          implicitHeight: pillText.implicitHeight + Style.space(2)
+          width: implicitWidth
+          height: implicitHeight
+          radius: Style.space(4)
+          color: Util.alpha(statePill.tone, 0.18)
+
+          Text {
+            id: pillText
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: statePill.label
+            color: statePill.tone
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.caption
+          }
         }
       }
 
+      // The card and its deadline. Same two-line shape and spacing as the
+      // figures on the right, so the name sits on the amount's baseline and
+      // the due date on the next bill's. Only the name can shrink: it is the
+      // one item whose width comes from a pair of anchors.
       Column {
-        id: titleCol
-        anchors.left: avatar.right
-        anchors.leftMargin: Style.space(10)
-        anchors.right: amountText.left
-        anchors.rightMargin: Style.spacing.lg
+        id: textCol
+        anchors.left: statusGutter.right
+        anchors.leftMargin: Style.spacing.md
+        anchors.right: amountStack.left
+        anchors.rightMargin: Style.spacing.md
         anchors.verticalCenter: parent.verticalCenter
-        spacing: Style.spacing.xs
+        spacing: Style.space(3)
 
-        Row {
+        Item {
           width: parent.width
-          spacing: Style.space(6)
+          height: nameText.implicitHeight
 
-          // The card logo opens the details (like the rest of the row).
-          Item {
-            id: billBrandSlot
-            width: billBrandMark.width
-            height: billBrandMark.height
+          BrandMark {
+            id: billBrandMark
+            anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-
-            BrandMark {
-              id: billBrandMark
-              network: billRow.brand.network
-              markHeight: Style.spaceReal(9)
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              anchors.margins: -Style.space(4)
-              cursorShape: Qt.PointingHandCursor
-              onClicked: billRow.expanded = !billRow.expanded
-            }
+            network: billRow.brand.network
+            markHeight: Style.spaceReal(9)
           }
 
           Text {
-            width: parent.width - (billBrandMark.visible ? billBrandMark.width + Style.space(6) : 0)
+            id: nameText
+            anchors.left: billBrandMark.visible ? billBrandMark.right : parent.left
+            anchors.leftMargin: billBrandMark.visible ? Style.space(6) : 0
+            anchors.right: parent.right
             textFormat: Text.PlainText
             text: billRow.brand.label + " ••" + billRow.overview.last4
             color: root.foreground
             font.family: Style.font.family
             font.bold: true
-            font.pixelSize: Style.font.subtitle
+            // One step down from subtitle: 16 characters plus the network
+            // mark fit the name column with room to spare, so the last4 is
+            // never the thing that elides.
+            font.pixelSize: Style.font.body
             elide: Text.ElideRight
           }
         }
 
+        // The last day to pay, while there is something to pay — red once
+        // three days or less are left, or it is past. A cleared card shows
+        // its last payment here instead.
         Text {
+          id: dueText
+          readonly property string urgency: Model.billUrgency(billRow.overview, billRow.paid)
           width: parent.width
           textFormat: Text.PlainText
-          text: Model.billPaidLine(billRow.overview)
-          color: Qt.darker(root.foreground, 1.5)
+          text: billRow.parts.payNow > 0 && billRow.overview.dueDate
+            ? "Due " + Model.formatShortDate(billRow.overview.dueDate)
+              + " · " + Model.dueCountdown(billRow.overview.dueDate)
+            : Model.billPaidLine(billRow.overview)
+          color: dueText.urgency !== "" ? root.debitColor : Qt.darker(root.foreground, 1.5)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
       }
 
-      Text {
-        id: amountText
-        textFormat: Text.PlainText
-        text: Model.currencySymbol("INR") + Model.formatGrouped(billRow.currentAmount)
-        color: billRow.statusColor
-        font.family: Style.font.family
-        font.bold: true
-        font.pixelSize: Style.font.subtitle
-        // The chevron that used to take this space is gone, so the amount sits
-        // at the row's normal padding, flush with the card's right edge.
+      // Two figures, stacked so they are never mistaken for one: what the
+      // card wants now, and what this cycle has already spent into next
+      // month's bill. The second line is always drawn — an empty next bill
+      // is said in words rather than left to a dash — so rows stay level.
+      Column {
+        id: amountStack
+        // Fixed width, so both rows' figures share a column and neither row
+        // can borrow width from the other's card name.
+        width: root.billFigureWidth
         anchors.right: parent.right
         anchors.rightMargin: Style.spacing.rowPaddingX
         anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(3)
+
+        Text {
+          id: payNowText
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          width: parent.width
+          horizontalAlignment: Text.AlignRight
+          text: billRow.parts.payNow > 0
+            ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.payNow)
+            : (billRow.parts.inCredit
+                ? Model.currencySymbol("INR") + Model.formatGrouped(Math.abs(billRow.parts.payNow))
+                : "Nothing to pay")
+          color: billRow.parts.payNow > 0 || billRow.parts.inCredit
+            ? billRow.statusColor
+            : Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.bold: billRow.parts.payNow > 0 || billRow.parts.inCredit
+          font.pixelSize: billRow.parts.payNow > 0 || billRow.parts.inCredit
+            ? Style.font.subtitle : Style.font.caption
+        }
+
+        Text {
+          id: nextBillText
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          width: parent.width
+          horizontalAlignment: Text.AlignRight
+          text: billRow.parts.nextBill > 0
+            ? "next " + Model.currencySymbol("INR") + Model.formatGrouped(Math.round(billRow.parts.nextBill))
+            : "no spend yet"
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
       }
     }
 
-    // Expanded detail panel: every field the billing-overview scrape
-    // gives us for this card, neatly laid out — not just the one number
-    // the collapsed row has room for.
+    // Expanded detail panel: every field the billing-overview scrape gives
+    // us for this card, neatly laid out — not just the two numbers the
+    // collapsed row has room for.
     Column {
       id: detailsPanel
       visible: billRow.expanded
@@ -1255,7 +1587,7 @@ Panel {
       anchors.topMargin: Style.space(6)
       anchors.left: parent.left
       anchors.right: parent.right
-      anchors.leftMargin: Style.spacing.rowPaddingX + Style.space(46)
+      anchors.leftMargin: billRow.contentLeft
       anchors.rightMargin: Style.spacing.rowPaddingX
       spacing: Style.space(4)
 
@@ -1265,13 +1597,81 @@ Panel {
         color: Qt.darker(root.foreground, 1.8)
       }
 
+      // Which bank the card is from, as its own mark: the collapsed row has
+      // no space for it, and the card's name no longer carries the bank.
+      Item {
+        width: parent.width
+        height: Math.max(bankLabel.implicitHeight, bankMark.implicitHeight)
+
+        Text {
+          id: bankLabel
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: "Bank"
+          color: Qt.darker(root.foreground, 1.4)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        // A bank with no mark of its own falls back to its name. Never
+        // defaults to HDFC, which would mislabel the first Axis or SBI card.
+        Loader {
+          id: bankMark
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          sourceComponent: billRow.bank === "HDFC" ? hdfcMark
+            : (billRow.bank === "AXIS" ? axisMark
+              : (billRow.bank === "SBI" ? sbiMark : bankNameOnly))
+        }
+
+        Component { id: hdfcMark; HdfcLogo { variant: "icon"; markSize: Style.spaceReal(12) } }
+        Component { id: axisMark; AxisLogo { markSize: Style.spaceReal(12) } }
+        Component { id: sbiMark; SbiLogo { markSize: Style.spaceReal(12) } }
+        Component {
+          id: bankNameOnly
+          Text {
+            textFormat: Text.PlainText
+            text: billRow.bank
+            color: root.foreground
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.caption
+          }
+        }
+      }
+
       Repeater {
         model: [
-          { label: "Unbilled", value: billRow.overview.unbilled_amount },
+          { label: "Bill this month", value: billRow.parts.hasBreakdown ? billRow.overview.last_statement_amount : "" },
+          // paidIn is only known once the Outstanding Summary has been
+          // scraped; until then the same money shows as this cycle's credits.
+          { label: "Paid into card", value: billRow.parts.paidIn > 0
+              ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.paidIn)
+              : (Model.parseCurrencyString(billRow.overview.credited_this_cycle) !== 0
+                  ? billRow.overview.credited_this_cycle : "") },
+          { label: "Left to pay", value: billRow.parts.payNow > 0
+              ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.payNow) : "" },
+          { label: "In credit", value: billRow.parts.inCredit
+              ? Model.currencySymbol("INR") + Model.formatGrouped(Math.abs(billRow.parts.payNow)) : "" },
+          { label: "Bill generated", value: Model.formatShortDate(billRow.overview.statementDate, true) },
+          { label: "Pay by", value: billRow.overview.dueDate
+              ? Model.formatShortDate(billRow.overview.dueDate, true) + "  ·  " + Model.dueCountdown(billRow.overview.dueDate) : "" },
+          { label: "Next bill on", value: Model.formatShortDate(billRow.overview.nextStatementDate, true) },
+          { label: "Next bill so far", value: billRow.parts.nextBill > 0
+              ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.nextBill) : "" },
           { label: "Total outstanding", value: billRow.overview.total_outstanding },
-          { label: "Upcoming due", value: billRow.overview.upcoming_payment_due },
-          { label: "Spent this cycle", value: billRow.overview.spent_this_cycle },
-          { label: "Credited this cycle", value: billRow.overview.credited_this_cycle },
+          { label: "Unsettled / loans", value: billRow.overview.unsettled_amount || "" },
+          // One shared pool: every card on this account reports the same
+          // limit, so the row says so instead of implying this card has it
+          // to itself.
+          { label: "Limit", value: (billRow.overview.credit_limit_total || "")
+              + (billRow.overview.credit_limit_total && root.creditLimit.cards > 1
+                  ? "  ·  shared with " + (root.creditLimit.cards - 1)
+                    + (root.creditLimit.cards > 2 ? " other cards" : " other card") : "") },
+          { label: "Available", value: billRow.overview.available_limit || "" },
+          { label: "Used", value: root.creditLimit.limit > 0
+              ? Model.currencySymbol("INR") + Model.formatGrouped(root.creditLimit.used) : "" },
           { label: "Last payment", value: (billRow.overview.last_payment_amount || "") + (billRow.overview.last_payment_date ? "  ·  " + billRow.overview.last_payment_date : "") },
           { label: "Status", value: billRow.overview.payment_status }
         ].filter(function (row) { return row.value })
@@ -1458,8 +1858,9 @@ Panel {
           delegate: FilterMenuRow {
             required property var modelData
             width: parent.width
-            // Axis savings: the logo stands in for the name, so just the number.
-            label: modelData.bank === "AXIS" ? "••" + modelData.last4 : modelData.label
+            // Axis and SBI savings: the logo stands in for the name, so just the number.
+            label: (modelData.bank === "AXIS" || modelData.bank === "SBI") && modelData.accountType === "checking"
+              ? "••" + modelData.last4 : modelData.label
             network: modelData.network || ""
             bank: modelData.accountType === "checking" ? modelData.bank : ""
             selected: root.accountFilters.indexOf(modelData.key) !== -1
@@ -1551,9 +1952,19 @@ Panel {
       anchors.verticalCenter: parent.verticalCenter
     }
 
+    SbiLogo {
+      id: rowSbiMark
+      visible: menuRow.bank === "SBI"
+      markSize: Style.spaceReal(9)
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
     // Whichever bank mark this row shows (none for cards and "All accounts").
-    readonly property bool hasBankMark: menuRow.bank === "HDFC" || menuRow.bank === "AXIS"
-    readonly property Item bankMark: menuRow.bank === "AXIS" ? rowAxisMark : rowBankMark
+    readonly property bool hasBankMark: menuRow.bank === "HDFC" || menuRow.bank === "AXIS" || menuRow.bank === "SBI"
+    readonly property Item bankMark: menuRow.bank === "AXIS" ? rowAxisMark
+      : (menuRow.bank === "SBI" ? rowSbiMark : rowBankMark)
 
     BrandMark {
       id: rowMark
@@ -1566,8 +1977,8 @@ Panel {
 
     Text {
       anchors.left: rowMark.visible ? rowMark.right : (menuRow.hasBankMark ? menuRow.bankMark.right : parent.left)
-      // Axis rows show only "••NNNN" after the logo, so give it more room.
-      anchors.leftMargin: menuRow.bank === "AXIS" ? Style.space(12) : Style.space(6)
+      // Axis and SBI rows show only "••NNNN" after the logo, so give it more room.
+      anchors.leftMargin: menuRow.bank === "AXIS" || menuRow.bank === "SBI" ? Style.space(12) : Style.space(6)
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
       anchors.rightMargin: Style.space(8)
@@ -1595,9 +2006,10 @@ Panel {
     property string bank: "hdfc"
     property string tooltip: ""
     property string balanceText: ""
-    readonly property bool isAxis: chip.bank === "axis"
-    readonly property bool running: chip.isAxis ? axisFetchProc.running : fetchProc.running
-    readonly property bool allowed: chip.isAxis ? !fetchProc.running : !axisFetchProc.running
+    readonly property bool running: chip.bank === "axis" ? axisFetchProc.running
+      : (chip.bank === "sbi" ? sbiFetchProc.running : fetchProc.running)
+    // Only one fetch at a time: allowed while no other bank's fetch runs.
+    readonly property bool allowed: chip.running || !root.anyFetchRunning
 
     implicitWidth: control.width + Style.spacing.xs + balanceLabel.implicitWidth
     implicitHeight: Style.space(28)
@@ -1706,7 +2118,12 @@ Panel {
     readonly property string groupKey: Model.transactionGroupKey(txn)
     readonly property string displayMerchant: Model.transactionDisplayName(txn, store.transactionNameOverrides)
     readonly property bool isAxisSavings: card.txn.accountType === "checking" && card.txn.bank === "AXIS"
-    readonly property string accountName: Model.cardBrandParts(Model.formatAccount(txn, store.accountNameOverrides, store.cardOverviews).split(" ••")[0]).label + " ••" + txn.last4
+    readonly property bool isSbiSavings: card.txn.accountType === "checking" && card.txn.bank === "SBI"
+    // Same rule as a BILLS row: a rename shows as typed, and the network
+    // word is only stripped from the bank's own card name.
+    readonly property string accountName: Model.cardLabelParts(
+      Model.cardFallbackName(txn.accountType, txn.last4, store.cardOverviews, txn.bank),
+      store.accountNameOverrides[txn.last4]).label + " ••" + txn.last4
     readonly property string note: Model.transactionNote(txn)
     readonly property bool isDebit: txn.amount < 0
     readonly property color directionColor: root.directionColor(txn)
@@ -1846,7 +2263,10 @@ Panel {
         visible: !card.editing
         anchors.left: avatar.right
         anchors.leftMargin: Style.space(10)
-        anchors.right: amountText.left
+        // The stack, not the amount inside it: a grandchild is not a valid
+        // anchor target, and anchoring to one leaves this column with no
+        // right edge at all, so its text stops eliding.
+        anchors.right: amountStack.left
         anchors.rightMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.space(3)
@@ -1885,6 +2305,12 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
           }
 
+          SbiLogo {
+            visible: card.isSbiSavings
+            markSize: Style.spaceReal(9)
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
           Rectangle {
             radius: Style.space(4)
             color: Util.alpha(root.foreground, 0.12)
@@ -1895,45 +2321,55 @@ Panel {
               id: pillText
               anchors.centerIn: parent
               textFormat: Text.PlainText
-              // Axis savings show the Axis logo beside the number, not the name.
-              text: card.isAxisSavings ? "••" + card.txn.last4 : card.accountName
+              // Axis and SBI savings show the bank's logo beside the number, not the name.
+              text: card.isAxisSavings || card.isSbiSavings ? "••" + card.txn.last4 : card.accountName
               color: root.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
             }
           }
 
-          // The raw UPI remark (e.g. "FOR CC BILLS", "MF AND FD") shown as
-          // a note beneath the merchant heading — skipped when it's just
-          // boilerplate ("NO REMARK"/"UPI", see Model.transactionNote).
-          Text {
-            visible: card.note !== ""
-            width: Math.max(0, parent.width - pillText.implicitWidth - Style.space(16))
-            anchors.verticalCenter: parent.verticalCenter
-            textFormat: Text.PlainText
-            text: card.note
-            color: Qt.darker(root.foreground, 1.5)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
-          }
+          // The raw UPI remark used to sit here, beside the account pill.
+          // It was noise next to the balance the row now carries — often a
+          // bank code or "Pay" — so it lives in the expanded card only.
         }
       }
 
-      Text {
-        id: amountText
+      // The amount, and under it the balance the statement showed after
+      // this transaction — the same stacked shape the bill rows use, and
+      // dim, because it is context rather than the number you came for. A
+      // credit card has no running balance, and rows saved before the
+      // balance was scraped have none either: the line then disappears and
+      // the amount centres on its own.
+      Column {
+        id: amountStack
         visible: !card.editing
-        textFormat: Text.PlainText
-        text: Model.formatAmount(card.txn)
-        color: card.directionColor
-        font.family: Style.font.family
-        font.bold: true
-        font.pixelSize: Style.font.subtitle
-        // Sits just left of the rename pencil's slot (which is reserved even
-        // while the pencil is hidden), so the amount stays clear of it.
         anchors.right: editBtn.left
         anchors.rightMargin: Style.space(6)
         anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(2)
+
+        Text {
+          id: amountText
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          text: Model.formatAmount(card.txn)
+          color: card.directionColor
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.subtitle
+        }
+
+        Text {
+          id: balanceText
+          visible: card.txn.balance !== null && card.txn.balance !== undefined
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          text: "bal " + Model.currencySymbol(card.txn.currency) + Model.formatGrouped(card.txn.balance)
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
       }
 
       // Reveals on hover OR keyboard focus (so Tab-only users can still
@@ -2026,6 +2462,32 @@ Panel {
         width: parent.width
         textFormat: Text.PlainText
         text: Model.formatFullDate(card.txn.date) + "  ·  " + Model.formatAccount(card.txn, store.accountNameOverrides, store.cardOverviews)
+        color: Qt.darker(root.foreground, 1.3)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      Text {
+        visible: card.note !== ""
+        width: parent.width
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        text: "Remark: " + card.note
+        color: Qt.darker(root.foreground, 1.3)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      Text {
+        visible: card.txn.balance !== null && card.txn.balance !== undefined
+        width: parent.width
+        textFormat: Text.PlainText
+        // A derived balance was worked back from the account's current
+        // balance for a row scraped before the statement's own figure was
+        // kept; the next fetch reads the real one and replaces it.
+        text: "Balance after this transaction: " + Model.currencySymbol(card.txn.currency)
+          + Model.formatGrouped(card.txn.balance)
+          + (card.txn.balanceDerived ? "  ·  worked out, not read from the statement" : "")
         color: Qt.darker(root.foreground, 1.3)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption

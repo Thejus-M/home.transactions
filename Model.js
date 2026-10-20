@@ -140,9 +140,12 @@ function accountDisplayName(fallback, last4, accountNameOverrides) {
 // MILLENNIA"), so several cards stay distinguishable; "Credit Card" only when
 // no overview is known for that last4.
 // Fallback name for a bank account: "Savings" for HDFC, "Axis Savings" for
-// Axis, so the two are told apart in the filter, the pill and the balances.
+// Axis, "SBI Savings" for SBI, so they are told apart in the filter, the
+// pill and the balances.
 function savingsName(bank) {
-  return bank === "AXIS" ? "Axis Savings" : "Savings"
+  if (bank === "AXIS") return "Axis Savings"
+  if (bank === "SBI") return "SBI Savings"
+  return "Savings"
 }
 
 function cardFallbackName(accountType, last4, cardOverviewsByLast4, bank) {
@@ -228,7 +231,63 @@ function accountOptions(transactions, cardOverviewsByLast4, accountNameOverrides
 // since those repeat verbatim.
 var _LONG_DIGIT_RUN_RE = /\d{8,}/
 
+// SBI and Axis put their own account/reference numbers BEFORE the
+// counterparty, so the HDFC rule above would cut every one of their UPI
+// rows down to the same prefix ("UPI- TRANSFER TO", "UPI/P2A/") and a
+// rename of one row would rename them all. These parse the counterparty
+// out instead. Formats (confirmed on real data):
+//   SBI:  "UPI- TRANSFER TO|FROM <acct> UPI/DR|CR/<ref>/<name>/<bank>/<vpa>/<remark>"
+//         (cut by SBI at ~80 chars, so the tail can be missing)
+//   SBI:  "NEFT- TRANSFER FROM <acct> NEFT*<ifsc>*<ref>*<name>"
+//   Axis: "UPI/P2A|P2M/<ref>/<name>/<bank>/<remark>/"
+var _SBI_UPI_RE = /^UPI- TRANSFER (?:TO|FROM) \d+ UPI\/(?:DR|CR)\/\d+\/([^/]*)(?:\/([^/]*))?(?:\/[^/]*)?(?:\/(.*))?/
+var _SBI_NEFT_RE = /^NEFT- TRANSFER (?:TO|FROM) \d+ NEFT\*[^*]*\*[^*]*\*(.+)$/
+var _AXIS_UPI_RE = /^UPI\/P2[AMV]\/\d+\/([^/]*)\/([^/]*)(?:\/([^/]*))?/
+// "UPI-LAKSHMI MOHAN-LMLAKSHMIMOHAN2002@OKSBI-SBIN0070528-627610349848-NO REMARK".
+// The VPA is masked on some rows and not others, so it is never keyed on.
+var _HDFC_UPI_RE = /^UPI-([^-]*)-([^-]*)-([^-]*)-(\d+)(?:-(.*))?$/
+
+function _clean(s) {
+  return (s || "").replace(/\s+/g, " ").trim()
+}
+
+// Bank codes vary in case and suffix between rows ("HDFC", "HDFC BANK", "utib").
+function _bankCode(s) {
+  return _clean(s).toUpperCase().replace(/ BANK$/, "")
+}
+
+// { key, name, remark } for a UPI/NEFT row of any of the three banks, or
+// null. One counterparty gets one key whichever bank the row came from and
+// whatever its VPA looked like ("UPI|LAKSHMI MOHAN"), so renaming a person
+// once renames every transaction with them. Mirrors txdb/keys.py, which is
+// what actually writes the key stored on each row.
+function parsedCounterparty(t) {
+  var m
+  if (t.bank === "SBI" && (m = _SBI_UPI_RE.exec(t.merchant))) {
+    return _counterparty(m[1], m[3])
+  }
+  if (t.bank === "SBI" && (m = _SBI_NEFT_RE.exec(t.merchant))) {
+    return { key: "NEFT|" + _clean(m[1]).toUpperCase(), name: _clean(m[1]), remark: "" }
+  }
+  if (t.bank === "AXIS" && (m = _AXIS_UPI_RE.exec(t.merchant))) {
+    return _counterparty(m[1], m[3])
+  }
+  if (t.bank === "HDFC" && (m = _HDFC_UPI_RE.exec(t.merchant)) && _clean(m[1])) {
+    return _counterparty(m[1], m[5])
+  }
+  return null
+}
+
+function _counterparty(rawName, rawRemark) {
+  var name = _clean(rawName)
+  return { key: "UPI|" + name.toUpperCase(), name: name, remark: _clean(rawRemark) }
+}
+
 function transactionGroupKey(t) {
+  // Rows from the database carry their key (txdb/keys.py).
+  if (t.groupKey) return t.groupKey
+  var parsed = parsedCounterparty(t)
+  if (parsed) return parsed.key
   var match = _LONG_DIGIT_RUN_RE.exec(t.merchant)
   var key = match ? t.merchant.slice(0, match.index) : t.merchant
   return key.replace(/[-\s]+$/, "")
@@ -251,7 +310,17 @@ var _LONG_DIGIT_RUN_GLOBAL_RE = /\d{8,}/g
 // IFSC in between — as "the remark", which it isn't (confirmed on real
 // data: "...-8921768575@UPI-UTIB0000802-125226240762-MF AND FD" has TWO
 // 8+ digit runs; the real remark is only "MF AND FD", after the second).
+// True for empty/boilerplate remarks, including ones SBI cut short ("NO RE").
+function _isBoilerplateNote(note) {
+  var n = note.toUpperCase()
+  if (_NON_INFORMATIVE_NOTES[n]) return true
+  return n.length >= 2 && ("NO REMARKS".indexOf(n) === 0)
+}
+
 function transactionNote(t) {
+  if (t.note !== undefined) return t.note
+  var parsed = parsedCounterparty(t)
+  if (parsed) return _isBoilerplateNote(parsed.remark) ? "" : parsed.remark
   var matches = t.merchant.match(_LONG_DIGIT_RUN_GLOBAL_RE)
   if (!matches) return ""
   var lastRun = matches[matches.length - 1]
@@ -266,7 +335,12 @@ function transactionNote(t) {
 // one exists, else the raw scraped merchant text.
 function transactionDisplayName(t, transactionNameOverrides) {
   var override = transactionNameOverrides && transactionNameOverrides[transactionGroupKey(t)]
-  return override || t.merchant
+  if (override) return override
+  // SBI/Axis: the counterparty's name reads better than the raw reference
+  // string (which stays visible as "Raw:" in the expanded row).
+  if (t.counterparty) return t.counterparty
+  var parsed = parsedCounterparty(t)
+  return parsed && parsed.name ? parsed.name : t.merchant
 }
 
 // The billing-overview scrape's amount fields ("unbilled_amount",
@@ -289,21 +363,219 @@ function parseCurrencyString(s) {
 // unseen future value — counts as a bill still due.
 var PAID_STATUSES = { "FULLY PAID": true, "NO DUES": true }
 
+// Paid means nothing left to pay on the bill already generated: the money
+// decides it, not the scrape's own wording, because HDFC says "PARTIALLY
+// PAID" while ₹595 is still owed and "FULLY PAID" while this cycle's new
+// spend sits unbilled. The status text is only read when the card has no
+// amounts at all (nothing scraped yet).
 function isBillPaid(overviewEntry, manualOverride) {
   if (manualOverride && manualOverride.markedPaid) return true
   if (!overviewEntry) return true // no overview data for this card -> nothing to flag
-  return !!PAID_STATUSES[String(overviewEntry.payment_status || "").toUpperCase()]
+  if (!overviewEntry.total_outstanding) {
+    return !!PAID_STATUSES[String(overviewEntry.payment_status || "").toUpperCase()]
+  }
+  return billParts(overviewEntry).payNow <= 0
 }
 
-// "Due ₹0.00  ·  FULLY PAID" — description line for a BILLS row.
-function billDescription(overviewEntry) {
-  if (!overviewEntry) return ""
-  return "Due " + overviewEntry.upcoming_payment_due + "  ·  " + overviewEntry.payment_status
+// --- Credit card bill dates (statementDate / dueDate / nextStatementDate are
+// YYYY-MM-DD, worked out by txdb.ingest.bill_dates from HDFC's "Billing
+// cycle : 12th of every month" and "Due on 1st Nov") ---
+
+function _localDate(iso) {
+  var p = String(iso).split("-")
+  return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]))
+}
+
+// Whole days from today to `iso` (negative = in the past).
+function daysUntil(iso) {
+  var now = new Date()
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  return Math.round((_localDate(iso) - today) / 86400000)
+}
+
+// "12 Oct", or "12 Oct 2026" with `withYear`.
+function formatShortDate(iso, withYear) {
+  if (!iso) return ""
+  var d = _localDate(iso)
+  return d.getDate() + " " + _MONTH_NAMES[d.getMonth()] + (withYear ? " " + d.getFullYear() : "")
+}
+
+// "18 days left" / "due tomorrow" / "due today" / "3 days overdue".
+function dueCountdown(iso) {
+  var n = daysUntil(iso)
+  if (n > 1) return n + " days left"
+  if (n === 1) return "due tomorrow"
+  if (n === 0) return "due today"
+  return (-n) + (n === -1 ? " day" : " days") + " overdue"
+}
+
+// "overdue", "soon" (3 days or less) or "" for an unpaid bill with a due date.
+function billUrgency(overviewEntry, paid) {
+  if (paid || !overviewEntry || !overviewEntry.dueDate) return ""
+  var n = daysUntil(overviewEntry.dueDate)
+  return n < 0 ? "overdue" : (n <= 3 ? "soon" : "")
+}
+
+// "Bill 12 Oct · Pay by 1 Nov · 18 days left" for an unpaid bill;
+// "" when the bill dates aren't known.
+function billDatesLine(overviewEntry) {
+  if (!overviewEntry || !overviewEntry.dueDate) return ""
+  var parts = []
+  if (overviewEntry.statementDate) parts.push("Bill " + formatShortDate(overviewEntry.statementDate))
+  parts.push("Pay by " + formatShortDate(overviewEntry.dueDate))
+  parts.push(dueCountdown(overviewEntry.dueDate))
+  return parts.join("  ·  ")
+}
+
+// Everything a BILLS row says about one card, as numbers.
+//
+// HDFC's Overview tab splits the total four ways under "Outstanding
+// Summary", and they add up:
+//
+//   last statement - credits paid in + unbilled purchases + unsettled
+//     = total outstanding
+//
+// So what has to be cleared now is the whole outstanding except this
+// cycle's unbilled purchases, and those purchases are next month's bill.
+// Exact to the paise, deliberately: HDFC's own "Upcoming Payment" rounds
+// to whole rupees (₹595.00 against ₹595.38 outstanding) and drops the
+// unsettled remainder.
+//
+// `hasBreakdown` is false for a card scraped before that block was read (or
+// a non-HDFC card later): the bill and the amount paid into the card are
+// then unknown and left at 0, while payNow and nextBill still work off
+// "Unbilled Amount" and "Total Outstanding".
+//
+// Returns { billThisMonth, paidIn, payNow, nextBill, inCredit, hasBreakdown }.
+// payNow is signed — negative is the bank owing the cardholder.
+function billParts(overviewEntry) {
+  if (!overviewEntry) {
+    return { billThisMonth: 0, paidIn: 0, payNow: 0, nextBill: 0, inCredit: false, hasBreakdown: false }
+  }
+
+  var outstanding = _money(parseCurrencyString(overviewEntry.total_outstanding))
+  var hasBreakdown = !!overviewEntry.last_statement_amount
+  // Next month's bill is this cycle's spend whether or not the merchant has
+  // settled it yet. HDFC's "Unbilled Amount" counts only settled spend, and
+  // parks the rest under "Loans and/or unsettled transactions" — leaving it
+  // out billed a purchase made today as due now (₹646.38 on one live card)
+  // while the row claimed no new spend. Adding it back makes pay-now agree
+  // with the bank's own ask to the rupee on both cards.
+  var nextBill = _money(parseCurrencyString(
+    hasBreakdown ? overviewEntry.unbilled_purchases : overviewEntry.unbilled_amount)
+    + parseCurrencyString(overviewEntry.unsettled_amount))
+  var payNow = _money(outstanding - nextBill)
+
+  return {
+    billThisMonth: hasBreakdown ? _money(parseCurrencyString(overviewEntry.last_statement_amount)) : 0,
+    // The page shows credits as a negative ("- ₹3,779.00"); this is the
+    // money already sitting in the card, so it reads positive here.
+    paidIn: hasBreakdown ? Math.abs(_money(parseCurrencyString(overviewEntry.unbilled_credits))) : 0,
+    payNow: payNow,
+    nextBill: nextBill,
+    inCredit: payNow < 0,
+    hasBreakdown: hasBreakdown
+  }
+}
+
+// Sub-paise leftovers are noise, not money: HDFC's split leaves ₹0.38 of
+// "loans and/or unsettled transactions" behind, and floating point leaves
+// less than that.
+function _money(n) {
+  var rounded = Math.round(n * 100) / 100
+  return Math.abs(rounded) < 0.005 ? 0 : rounded
+}
+
+// What every card still wants, added up, for the BILLS header.
+//
+// Three deliberate rules:
+//   - a card the user marked paid by hand drops out, so this reaches zero
+//     at the same moment the bar's bill badge clears — both go through
+//     isBillPaid;
+//   - a card in credit contributes 0, never a negative: the bank owing
+//     ₹626 on one card does not reduce what another card asks for;
+//   - this cycle's unbilled spend is not counted. Nobody has asked for it.
+function billsDueTotal(cardOverviewList, billOverridesByLast4) {
+  var list = cardOverviewList || []
+  var total = 0
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i]
+    if (!entry) continue
+    var override = billOverridesByLast4 ? billOverridesByLast4[entry.last4] : null
+    if (isBillPaid(entry, override)) continue
+    var payNow = billParts(entry).payNow
+    if (payNow > 0) total += payNow
+  }
+  return _money(total)
+}
+
+// This cycle's spend across every card — what next month's bills add up to
+// so far. Not filtered by the paid override: marking a bill paid says
+// nothing about spend that has not been billed yet.
+function billsNextTotal(cardOverviewList) {
+  var list = cardOverviewList || []
+  var total = 0
+  for (var i = 0; i < list.length; i++) {
+    if (list[i]) total += billParts(list[i]).nextBill
+  }
+  return _money(total)
+}
+
+// The credit limit behind the cards: { limit, available, used, percent,
+// shared, cards }.
+//
+// Both cards on this account print the same "Credit Limit Total" and the
+// same "Available Limit", and total minus available is exactly the two
+// cards' outstanding added together — one shared pool, not a limit each.
+// `shared` means every card that reports a limit reports the same one,
+// which is what lets the section show a single line. When they disagree it
+// is not a pool: limit comes back 0 and the figures are left to each card's
+// own detail panel. Everything is 0 until the limit has been scraped.
+function creditLimitSummary(cardOverviewList) {
+  var list = cardOverviewList || []
+  var limit = 0
+  var available = 0
+  var cards = 0
+  var none = { limit: 0, available: 0, used: 0, percent: 0, shared: false, cards: 0 }
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i]
+    if (!entry || !entry.credit_limit_total) continue
+    var cardLimit = _money(parseCurrencyString(entry.credit_limit_total))
+    if (cards > 0 && cardLimit !== limit) return none
+    limit = cardLimit
+    available = _money(parseCurrencyString(entry.available_limit))
+    cards++
+  }
+  if (!cards || limit <= 0) return none
+  var used = _money(limit - available)
+  return { limit: limit, available: available, used: used,
+           percent: _money(used / limit * 100), shared: true, cards: cards,
+           segments: _limitSegments(list, limit, used) }
+}
+
+// How each card fills the shared limit: [{ last4, amount, fraction }] in the
+// order given, from each card's own outstanding. The total is clamped to
+// `used` so a card whose outstanding is missing (or a bank that rounds
+// differently) can never draw a bar past the limit it is drawn against.
+function _limitSegments(list, limit, used) {
+  var segments = []
+  var running = 0
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i]
+    if (!entry) continue
+    var amount = _money(parseCurrencyString(entry.total_outstanding))
+    if (amount <= 0) continue
+    amount = Math.min(amount, _money(used - running))
+    if (amount <= 0) break
+    running = _money(running + amount)
+    segments.push({ last4: entry.last4, amount: amount, fraction: amount / limit })
+  }
+  return segments
 }
 
 // "Paid ₹8,965.00 · 30th Sept 2026" — last-payment line for a BILLS row.
 // last_payment_amount/_date are already scraper-formatted display strings,
-// so this is plain concatenation, same as billDescription above.
+// so this is plain concatenation, not a formatted number.
 function billPaidLine(overviewEntry) {
   if (!overviewEntry || !overviewEntry.last_payment_amount) return ""
   return "Paid " + overviewEntry.last_payment_amount
@@ -323,6 +595,23 @@ function cardBrandParts(name) {
   if (!match) return { label: raw, network: "" }
   var label = raw.replace(_CARD_NETWORK_RE, "").replace(/\s+/g, " ").trim()
   return { label: label || raw, network: match[1].toUpperCase() }
+}
+
+// Label and network for one card row, keeping the two apart: the network is
+// always read from the bank's own scraped name, never from a rename.
+// Passing a rename through cardBrandParts cut the network word out of it
+// — "HDFC Rupay" rendered as "HDFC ••0220" — and renaming a card to
+// something without a network word silently dropped its brand mark. A
+// rename now shows exactly as typed, and the mark still follows the bank.
+function cardLabelParts(scrapedName, override) {
+  var parts = cardBrandParts(scrapedName)
+  var typed = String(override || "").trim()
+  return { label: typed || parts.label, network: parts.network }
+}
+
+// "HDFC" out of an account id like "HDFC|credit|0220"; "" when there is none.
+function accountBank(accountId) {
+  return String(accountId || "").split("|")[0].toUpperCase()
 }
 
 // Total spent/income/net within the calendar month of `referenceDateIso`
