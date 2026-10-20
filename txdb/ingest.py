@@ -250,7 +250,7 @@ def set_card_cycle(conn: sqlite3.Connection, aid: str, overview: dict) -> None:
     """HDFC billing-cycle overview: raw display strings plus parsed numbers."""
     ts = now()
     with write(conn):
-        conn.execute(f"INSERT OR REPLACE INTO hdfc_card_cycles_raw (account_id, name, {', '.join(OVERVIEW_FIELDS)}, "
+        conn.execute(f"INSERT OR REPLACE INTO card_cycles_raw (account_id, name, {', '.join(OVERVIEW_FIELDS)}, "
                      f"fetched_at) VALUES (?, ?, {', '.join('?' * len(OVERVIEW_FIELDS))}, ?)",
                      (aid, overview.get("name"), *[overview.get(f) for f in OVERVIEW_FIELDS], ts))
         dates = bill_dates(overview.get("billing_cycle"), overview.get("due_text"))

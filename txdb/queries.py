@@ -33,13 +33,13 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "SELECT b.*, a.bank, a.account_type, a.last4 FROM balances b JOIN accounts a ON a.id = b.account_id "
         "ORDER BY a.bank, a.last4")]
     card_overviews = [{
-        "name": r["name"] or "", "last4": r["last4"], "accountId": r["account_id"],
+        "name": r["name"] or "", "last4": r["last4"], "accountId": r["account_id"], "bank": r["bank"],
         **{f: r[f] or "" for f in OVERVIEW_FIELDS},
         "billingDay": r["statement_day"], "statementDate": r["statement_date"] or "",
         "nextStatementDate": r["next_statement_date"] or "", "dueDate": r["due_date"] or "",
     } for r in conn.execute(
-        "SELECT c.*, a.last4, d.statement_day, d.statement_date, d.next_statement_date, d.due_date "
-        "FROM hdfc_card_cycles_raw c JOIN accounts a ON a.id = c.account_id "
+        "SELECT c.*, a.last4, a.bank, d.statement_day, d.statement_date, d.next_statement_date, d.due_date "
+        "FROM card_cycles_raw c JOIN accounts a ON a.id = c.account_id "
         "LEFT JOIN card_cycles d ON d.account_id = c.account_id ORDER BY a.last4")]
     accounts = [{
         "id": r["id"], "bank": r["bank"], "accountType": r["account_type"], "last4": r["last4"],

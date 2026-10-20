@@ -256,6 +256,17 @@ MIGRATIONS = [
     """
     ALTER TABLE transactions ADD COLUMN balance_derived INTEGER NOT NULL DEFAULT 0;
     """,
+    # v7: a second bank's credit card arrived (ICICI), and the raw card
+    # table was called hdfc_card_cycles_raw. The account id already carries
+    # the bank, so the table never needed the name; it is renamed and the
+    # old name kept as a view, since `sqlite3 txdb hdfc_card_cycles_raw` is
+    # in the README and in muscle memory.
+    """
+    ALTER TABLE hdfc_card_cycles_raw RENAME TO card_cycles_raw;
+    CREATE VIEW hdfc_card_cycles_raw AS
+        SELECT r.* FROM card_cycles_raw r JOIN accounts a ON a.id = r.account_id
+        WHERE a.bank = 'HDFC';
+    """,
 ]
 
 

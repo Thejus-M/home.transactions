@@ -14,14 +14,14 @@ NODE = shutil.which("node")
 # What the snapshot gives the widget: the Overview scrape's display strings.
 CARDS = {
     # Bill generated and not paid, with this cycle's spend building up.
-    "rupay": {"last4": "0220", "accountId": "HDFC|credit|0220", "name": "RUPAY BIZ UPI",
+    "rupay": {"bank": "HDFC", "last4": "0220", "accountId": "HDFC|credit|0220", "name": "RUPAY BIZ UPI",
               "total_outstanding": "₹19,132.39", "upcoming_payment_due": "₹16,005.00",
               "unbilled_amount": "₹3,127.00", "payment_status": "AMOUNT DUE",
               "last_statement_amount": "₹16,005.00", "unbilled_credits": "₹0.00",
               "unbilled_purchases": "₹3,127.00", "unsettled_amount": "₹0.39",
               "credit_limit_total": "₹1,38,000.00", "available_limit": "₹1,18,272.23"},
     # Part of the bill already paid into the card.
-    "millennia": {"last4": "7462", "accountId": "HDFC|credit|7462", "name": "MASTERCARD MILLENNIA",
+    "millennia": {"bank": "HDFC", "last4": "7462", "accountId": "HDFC|credit|7462", "name": "MASTERCARD MILLENNIA",
                   "total_outstanding": "₹595.38", "upcoming_payment_due": "₹595.00",
                   "unbilled_amount": "₹0.00", "payment_status": "PARTIALLY PAID",
                   "last_statement_amount": "₹4,374.00", "unbilled_credits": "- ₹3,779.00",
@@ -152,43 +152,59 @@ class SectionTotalsTests(unittest.TestCase):
         self.assertEqual(self.run_js("billsDueTotal(input.cards, {})", cards=[]), 0)
         self.assertEqual(self.run_js("billsNextTotal(null)", cards=[]), 0)
 
-    def test_one_limit_shared_by_both_cards(self):
-        summary = self.run_js("creditLimitSummary(input.cards)", cards=self.both)
-        self.assertEqual(summary["limit"], 138000)
-        self.assertEqual(summary["available"], 118272.23)
+    def test_one_pool_for_the_two_cards_that_share_a_limit(self):
+        pools = self.run_js("creditLimitPools(input.cards)", cards=self.both)
+        self.assertEqual(len(pools), 1)
+        pool = pools[0]
+        self.assertEqual((pool["label"], pool["bank"], pool["cards"]), ("HDFC", "HDFC", 2))
+        self.assertEqual(pool["limit"], 138000)
+        self.assertEqual(pool["available"], 118272.23)
         # The used figure is both cards' outstanding added together, which is
         # what proves the limit is one pool rather than one limit per card.
-        self.assertEqual(summary["used"], 19727.77)
-        self.assertAlmostEqual(summary["percent"], 14.3, places=1)
-        self.assertTrue(summary["shared"])
-        self.assertEqual(summary["cards"], 2)
-        # One segment per card, together filling exactly the used portion.
-        segments = summary["segments"]
+        self.assertEqual(pool["used"], 19727.77)
+        self.assertAlmostEqual(pool["percent"], 14.3, places=1)
+        segments = pool["segments"]
         self.assertEqual([s["last4"] for s in segments], ["0220", "7462"])
-        self.assertAlmostEqual(sum(s["amount"] for s in segments), summary["used"], places=2)
-        self.assertAlmostEqual(sum(s["fraction"] for s in segments) * 100, summary["percent"], places=2)
+        self.assertAlmostEqual(sum(s["amount"] for s in segments), pool["used"], places=2)
+        self.assertAlmostEqual(sum(s["fraction"] for s in segments) * 100, pool["percent"], places=2)
+
+    def test_a_second_bank_gets_its_own_pool(self):
+        """ICICI's card carries its own limit; folding it into HDFC's pool
+        would describe neither."""
+        icici = {"bank": "ICICI", "last4": "2004", "accountId": "ICICI|credit|2004",
+                 "name": "Coral RuPay", "total_outstanding": "₹0",
+                 "credit_limit_total": "₹1,30,000", "available_limit": "₹1,30,040"}
+        pools = self.run_js("creditLimitPools(input.cards)", cards=self.both + [icici])
+        self.assertEqual([p["label"] for p in pools], ["HDFC", "ICICI"])
+        self.assertEqual(pools[1]["limit"], 130000)
+
+    def test_more_available_than_the_limit_is_credit_not_negative_use(self):
+        icici = {"bank": "ICICI", "last4": "2004", "accountId": "ICICI|credit|2004",
+                 "name": "Coral RuPay", "total_outstanding": "₹0",
+                 "credit_limit_total": "₹1,30,000", "available_limit": "₹1,30,040"}
+        pool = self.run_js("creditLimitPools(input.cards)", cards=[icici])[0]
+        self.assertEqual((pool["used"], pool["credit"], pool["percent"]), (0, 40, 0))
 
     def test_a_card_with_nothing_outstanding_draws_no_segment(self):
         settled = dict(CARDS["millennia"], total_outstanding="₹0.00")
-        summary = self.run_js("creditLimitSummary(input.cards)", cards=[CARDS["rupay"], settled])
-        self.assertEqual([s["last4"] for s in summary["segments"]], ["0220"])
+        pool = self.run_js("creditLimitPools(input.cards)", cards=[CARDS["rupay"], settled])[0]
+        self.assertEqual([s["last4"] for s in pool["segments"]], ["0220"])
 
     def test_segments_never_overfill_the_bar(self):
         """A card whose outstanding is larger than the pool's used figure (a
         stale scrape, say) is clamped rather than drawn past the limit."""
         stale = dict(CARDS["rupay"], total_outstanding="₹1,00,000.00")
-        summary = self.run_js("creditLimitSummary(input.cards)", cards=[stale, CARDS["millennia"]])
-        self.assertAlmostEqual(sum(s["amount"] for s in summary["segments"]), summary["used"], places=2)
+        pool = self.run_js("creditLimitPools(input.cards)", cards=[stale, CARDS["millennia"]])[0]
+        self.assertAlmostEqual(sum(s["amount"] for s in pool["segments"]), pool["used"], places=2)
 
-    def test_cards_with_different_limits_are_not_a_pool(self):
+    def test_one_bank_whose_cards_disagree_splits_into_a_pool_each(self):
         other = dict(CARDS["millennia"], credit_limit_total="₹50,000.00", available_limit="₹49,404.62")
-        summary = self.run_js("creditLimitSummary(input.cards)", cards=[CARDS["rupay"], other])
-        self.assertFalse(summary["shared"])
-        self.assertEqual(summary["limit"], 0)
+        pools = self.run_js("creditLimitPools(input.cards)", cards=[CARDS["rupay"], other])
+        self.assertEqual([p["label"] for p in pools], ["HDFC ••0220", "HDFC ••7462"])
+        self.assertEqual([p["limit"] for p in pools], [138000, 50000])
 
-    def test_no_limit_scraped_yet(self):
-        summary = self.run_js("creditLimitSummary(input.cards)", cards=[CARDS["legacy"]])
-        self.assertEqual([summary["limit"], summary["used"], summary["percent"]], [0, 0, 0])
+    def test_no_limit_scraped_yet_means_no_pool(self):
+        self.assertEqual(self.run_js("creditLimitPools(input.cards)", cards=[CARDS["legacy"]]), [])
 
 
 @unittest.skipUnless(NODE, "node is not installed")

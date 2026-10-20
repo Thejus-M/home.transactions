@@ -521,42 +521,66 @@ function billsNextTotal(cardOverviewList) {
   return _money(total)
 }
 
-// The credit limit behind the cards: { limit, available, used, percent,
-// shared, cards }.
+// The credit limits behind the cards, one entry per pool, newest-first
+// order preserved from the list given.
 //
-// Both cards on this account print the same "Credit Limit Total" and the
-// same "Available Limit", and total minus available is exactly the two
-// cards' outstanding added together — one shared pool, not a limit each.
-// `shared` means every card that reports a limit reports the same one,
-// which is what lets the section show a single line. When they disagree it
-// is not a pool: limit comes back 0 and the figures are left to each card's
-// own detail panel. Everything is 0 until the limit has been scraped.
-function creditLimitSummary(cardOverviewList) {
+// HDFC prints the same total and the same available figure on both of its
+// cards, and total minus available is those two cards' outstanding added
+// together: one pool, shared. ICICI's card carries its own, different
+// limit. So a single summary was wrong as soon as a second bank arrived —
+// the limits are grouped by bank, and a bank whose cards disagree about
+// the total is split one pool per card rather than averaged into fiction.
+//
+// Each pool: { label, bank, limit, available, used, percent, cards,
+// segments: [{ last4, amount, fraction }] }.
+function creditLimitPools(cardOverviewList) {
   var list = cardOverviewList || []
-  var limit = 0
-  var available = 0
-  var cards = 0
-  var none = { limit: 0, available: 0, used: 0, percent: 0, shared: false, cards: 0 }
+  var byBank = {}
+  var order = []
   for (var i = 0; i < list.length; i++) {
     var entry = list[i]
     if (!entry || !entry.credit_limit_total) continue
-    var cardLimit = _money(parseCurrencyString(entry.credit_limit_total))
-    if (cards > 0 && cardLimit !== limit) return none
-    limit = cardLimit
-    available = _money(parseCurrencyString(entry.available_limit))
-    cards++
+    var bank = String(entry.bank || Model_accountBankOf(entry) || "")
+    if (!byBank[bank]) { byBank[bank] = []; order.push(bank) }
+    byBank[bank].push(entry)
   }
-  if (!cards || limit <= 0) return none
-  var used = _money(limit - available)
-  return { limit: limit, available: available, used: used,
-           percent: _money(used / limit * 100), shared: true, cards: cards,
-           segments: _limitSegments(list, limit, used) }
+
+  var pools = []
+  for (var b = 0; b < order.length; b++) {
+    var cards = byBank[order[b]]
+    var limits = cards.map(function (c) { return _money(parseCurrencyString(c.credit_limit_total)) })
+    var shared = limits.every(function (l) { return l === limits[0] })
+    if (shared) {
+      pools.push(_pool(order[b], order[b], cards, limits[0],
+                       _money(parseCurrencyString(cards[0].available_limit))))
+    } else {
+      for (var c = 0; c < cards.length; c++) {
+        pools.push(_pool(order[b] + " ••" + cards[c].last4, order[b], [cards[c]], limits[c],
+                         _money(parseCurrencyString(cards[c].available_limit))))
+      }
+    }
+  }
+  return pools.filter(function (pool) { return pool.limit > 0 })
 }
 
-// How each card fills the shared limit: [{ last4, amount, fraction }] in the
-// order given, from each card's own outstanding. The total is clamped to
-// `used` so a card whose outstanding is missing (or a bank that rounds
-// differently) can never draw a bar past the limit it is drawn against.
+function _pool(label, bank, cards, limit, available) {
+  // More available than the limit means money sitting in the card: the
+  // ICICI card shows ₹1,30,040 available against a ₹1,30,000 limit, which
+  // is the ₹40 it is in credit. Nothing is used in that case, and a bar
+  // drawn from a negative would read as a sliver of debt.
+  var used = Math.max(0, _money(limit - available))
+  var credit = Math.max(0, _money(available - limit))
+  return {
+    label: label, bank: bank, limit: limit, available: available, used: used, credit: credit,
+    percent: limit > 0 ? _money(used / limit * 100) : 0,
+    cards: cards.length, segments: _limitSegments(cards, limit, used),
+  }
+}
+
+// How each card fills its pool: [{ last4, amount, fraction }] from each
+// card's own outstanding, in the order given. The total is clamped to
+// `used`, so a card whose outstanding is missing — or a bank that rounds
+// differently — can never draw past the limit it is drawn against.
 function _limitSegments(list, limit, used) {
   var segments = []
   var running = 0
@@ -571,6 +595,11 @@ function _limitSegments(list, limit, used) {
     segments.push({ last4: entry.last4, amount: amount, fraction: amount / limit })
   }
   return segments
+}
+
+// "HDFC" out of a card entry that predates the snapshot carrying its bank.
+function Model_accountBankOf(entry) {
+  return accountBank(entry.accountId)
 }
 
 // "Paid ₹8,965.00 · 30th Sept 2026" — last-payment line for a BILLS row.

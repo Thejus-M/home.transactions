@@ -150,7 +150,10 @@ Panel {
   // snapshot or a mark-as-paid instead of on every paint.
   readonly property real billsDueTotal: Model.billsDueTotal(root.cardOverviewList, store.billOverrides)
   readonly property real billsNextTotal: Model.billsNextTotal(root.cardOverviewList)
-  readonly property var creditLimit: Model.creditLimitSummary(root.cardOverviewList)
+  // One entry per pool: HDFC's two cards share a limit, ICICI's card has
+  // its own, so the section shows a strip each rather than one figure that
+  // would be true of neither.
+  readonly property var creditLimits: Model.creditLimitPools(root.cardOverviewList)
 
   // "Whole picture" stats — read the full, unfiltered transaction list
   // (post-tracked-override, pre-account-filter/search) so they stay
@@ -942,126 +945,132 @@ Panel {
           }
         }
 
-        // The limit is one pool shared by every card on the account, not one
-        // limit each (HDFC prints the same total and the same available
-        // figure on both cards, and total minus available is the cards'
-        // outstanding added together) — so it belongs to the section, not to
-        // a row. The strip keeps its height before a fetch has read the
-        // limit, so the block never jumps when the figures arrive.
-        Item {
-          id: limitStrip
-          readonly property var limit: root.creditLimit
-          readonly property bool known: limitStrip.limit.limit > 0
+        // A strip per credit-limit pool. HDFC prints the same limit on both
+        // its cards and total-minus-available equals their combined
+        // outstanding — one shared pool — while ICICI's card carries its
+        // own. Each strip keeps its height before a fetch has read a limit,
+        // so the block does not jump when the figures arrive.
+        Repeater {
+          model: root.creditLimits
 
-          visible: root.cardOverviewList.length > 0
-          width: parent.width
-          height: limitLabel.implicitHeight + Style.space(5) + limitTrack.height
-            + (limitKey.visible ? Style.space(5) + limitKey.implicitHeight : 0)
+          delegate: Item {
+            id: limitStrip
+            required property var modelData
+            readonly property bool known: limitStrip.modelData.limit > 0
 
-          Text {
-            id: limitLabel
-            anchors.left: parent.left
-            anchors.leftMargin: Style.spacing.rowPaddingX
-            anchors.top: parent.top
-            textFormat: Text.PlainText
-            text: limitStrip.known
-              ? "limit " + Model.currencySymbol("INR") + Model.formatGrouped(Math.round(limitStrip.limit.used))
-                + " of " + Model.currencySymbol("INR") + Model.formatGrouped(limitStrip.limit.limit) + " used"
-              : "limit not read yet"
-            color: Qt.darker(root.foreground, 1.5)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
-          }
+            width: parent.width
+            height: limitLabel.implicitHeight + Style.space(5) + limitTrack.height
+              + (limitKey.visible ? Style.space(5) + limitKey.implicitHeight : 0)
 
-          Text {
-            id: limitPercent
-            visible: limitStrip.known
-            anchors.right: parent.right
-            anchors.rightMargin: Style.spacing.rowPaddingX
-            anchors.baseline: limitLabel.baseline
-            textFormat: Text.PlainText
-            text: Math.round(limitStrip.limit.percent) + "%"
-            color: root.limitColor(limitStrip.limit.percent)
-            font.family: Style.font.family
-            font.bold: true
-            font.pixelSize: Style.font.caption
-          }
-
-          // One thin track, one segment per card. At this utilisation the
-          // smaller card is barely two pixels wide, so the key below carries
-          // the detail — but a non-zero share never disappears entirely.
-          Item {
-            id: limitTrack
-            anchors.left: parent.left
-            anchors.leftMargin: Style.spacing.rowPaddingX
-            anchors.right: parent.right
-            anchors.rightMargin: Style.spacing.rowPaddingX
-            anchors.top: limitLabel.bottom
-            anchors.topMargin: Style.space(5)
-            height: Style.space(3)
-            clip: true
-
-            Rectangle {
-              anchors.fill: parent
-              radius: height / 2
-              color: Qt.darker(root.foreground, 3.0)
+            Text {
+              id: limitLabel
+              anchors.left: parent.left
+              anchors.leftMargin: Style.spacing.rowPaddingX
+              anchors.top: parent.top
+              textFormat: Text.PlainText
+              text: limitStrip.modelData.label + "  "
+                + (limitStrip.modelData.credit > 0
+                    ? Model.currencySymbol("INR") + Model.formatGrouped(limitStrip.modelData.credit)
+                      + " in credit of " + Model.currencySymbol("INR")
+                      + Model.formatGrouped(limitStrip.modelData.limit) + " limit"
+                    : "limit " + Model.currencySymbol("INR")
+                      + Model.formatGrouped(Math.round(limitStrip.modelData.used))
+                      + " of " + Model.currencySymbol("INR")
+                      + Model.formatGrouped(limitStrip.modelData.limit) + " used")
+              color: Qt.darker(root.foreground, 1.5)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
             }
 
-            Row {
-              anchors.left: parent.left
-              height: parent.height
+            Text {
+              id: limitPercent
+              anchors.right: parent.right
+              anchors.rightMargin: Style.spacing.rowPaddingX
+              anchors.baseline: limitLabel.baseline
+              textFormat: Text.PlainText
+              text: Math.round(limitStrip.modelData.percent) + "%"
+              color: root.limitColor(limitStrip.modelData.percent)
+              font.family: Style.font.family
+              font.bold: true
+              font.pixelSize: Style.font.caption
+            }
 
-              Repeater {
-                model: limitStrip.limit.segments || []
-                delegate: Rectangle {
-                  required property var modelData
-                  required property int index
-                  height: limitTrack.height
-                  width: Math.max(1, limitTrack.width * Math.min(1, Math.max(0, modelData.fraction)))
-                  radius: height / 2
-                  color: root.limitSegmentColor(index)
-                  Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+            // One thin track, one segment per card. At this utilisation a
+            // small card is barely two pixels wide, so the key below
+            // carries the detail — but a non-zero share never vanishes.
+            Item {
+              id: limitTrack
+              anchors.left: parent.left
+              anchors.leftMargin: Style.spacing.rowPaddingX
+              anchors.right: parent.right
+              anchors.rightMargin: Style.spacing.rowPaddingX
+              anchors.top: limitLabel.bottom
+              anchors.topMargin: Style.space(5)
+              height: Style.space(3)
+              clip: true
+
+              Rectangle {
+                anchors.fill: parent
+                radius: height / 2
+                color: Qt.darker(root.foreground, 3.0)
+              }
+
+              Row {
+                anchors.left: parent.left
+                height: parent.height
+
+                Repeater {
+                  model: limitStrip.modelData.segments || []
+                  delegate: Rectangle {
+                    required property var modelData
+                    required property int index
+                    height: limitTrack.height
+                    width: Math.max(1, limitTrack.width * Math.min(1, Math.max(0, modelData.fraction)))
+                    radius: height / 2
+                    color: root.limitSegmentColor(index)
+                    Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                  }
                 }
               }
             }
-          }
 
-          // Which card is using what. A Flow, not a Row: a third card wraps
-          // instead of running off the popup.
-          Flow {
-            id: limitKey
-            visible: limitStrip.known && (limitStrip.limit.segments || []).length > 0
-            anchors.left: parent.left
-            anchors.leftMargin: Style.spacing.rowPaddingX
-            anchors.right: parent.right
-            anchors.rightMargin: Style.spacing.rowPaddingX
-            anchors.top: limitTrack.bottom
-            anchors.topMargin: Style.space(5)
-            spacing: Style.spacing.md
+            // Which card is using what. Only worth a line when the pool is
+            // shared; a single-card pool says it on the row above.
+            Flow {
+              id: limitKey
+              visible: (limitStrip.modelData.segments || []).length > 1
+              anchors.left: parent.left
+              anchors.leftMargin: Style.spacing.rowPaddingX
+              anchors.right: parent.right
+              anchors.rightMargin: Style.spacing.rowPaddingX
+              anchors.top: limitTrack.bottom
+              anchors.topMargin: Style.space(5)
+              spacing: Style.spacing.md
 
-            Repeater {
-              model: limitStrip.limit.segments || []
-              delegate: Row {
-                required property var modelData
-                required property int index
-                spacing: Style.space(4)
+              Repeater {
+                model: limitStrip.modelData.segments || []
+                delegate: Row {
+                  required property var modelData
+                  required property int index
+                  spacing: Style.space(4)
 
-                Rectangle {
-                  width: Style.space(6)
-                  height: width
-                  radius: width / 2
-                  anchors.verticalCenter: parent.verticalCenter
-                  color: root.limitSegmentColor(index)
-                }
+                  Rectangle {
+                    width: Style.space(6)
+                    height: width
+                    radius: width / 2
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: root.limitSegmentColor(index)
+                  }
 
-                Text {
-                  textFormat: Text.PlainText
-                  text: "••" + modelData.last4 + " " + Model.currencySymbol("INR")
-                    + Model.formatGrouped(Math.round(modelData.amount))
-                  color: Qt.darker(root.foreground, 1.5)
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
+                  Text {
+                    textFormat: Text.PlainText
+                    text: "••" + modelData.last4 + " " + Model.currencySymbol("INR")
+                      + Model.formatGrouped(Math.round(modelData.amount))
+                    color: Qt.darker(root.foreground, 1.5)
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
                 }
               }
             }
@@ -1297,6 +1306,17 @@ Panel {
     readonly property var brand: Model.cardLabelParts(billRow.overview.name,
       store.accountNameOverrides[billRow.overview.last4])
     readonly property string bank: Model.accountBank(billRow.overview.accountId)
+    // The limit pool this card belongs to — its bank's, shared or not.
+    readonly property var pool: {
+      for (var i = 0; i < root.creditLimits.length; i++) {
+        var candidate = root.creditLimits[i]
+        for (var s = 0; s < candidate.segments.length; s++) {
+          if (candidate.segments[s].last4 === billRow.overview.last4) return candidate
+        }
+        if (candidate.bank === billRow.bank && candidate.cards === 1) return candidate
+      }
+      return null
+    }
     // The bill already generated, what has been paid into the card, what is
     // left to pay now and this cycle's spend — see Model.billParts.
     readonly property var parts: Model.billParts(billRow.overview)
@@ -1666,12 +1686,12 @@ Panel {
           // limit, so the row says so instead of implying this card has it
           // to itself.
           { label: "Limit", value: (billRow.overview.credit_limit_total || "")
-              + (billRow.overview.credit_limit_total && root.creditLimit.cards > 1
-                  ? "  ·  shared with " + (root.creditLimit.cards - 1)
-                    + (root.creditLimit.cards > 2 ? " other cards" : " other card") : "") },
+              + (billRow.overview.credit_limit_total && billRow.pool && billRow.pool.cards > 1
+                  ? "  ·  shared with " + (billRow.pool.cards - 1)
+                    + (billRow.pool.cards > 2 ? " other cards" : " other card") : "") },
           { label: "Available", value: billRow.overview.available_limit || "" },
-          { label: "Used", value: root.creditLimit.limit > 0
-              ? Model.currencySymbol("INR") + Model.formatGrouped(root.creditLimit.used) : "" },
+          { label: "Used", value: billRow.pool && billRow.pool.limit > 0
+              ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.pool.used) : "" },
           { label: "Last payment", value: (billRow.overview.last_payment_amount || "") + (billRow.overview.last_payment_date ? "  ·  " + billRow.overview.last_payment_date : "") },
           { label: "Status", value: billRow.overview.payment_status }
         ].filter(function (row) { return row.value })

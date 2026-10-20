@@ -23,7 +23,7 @@ Everything the widget shows or remembers lives in one SQLite file,
 `data/transactions.db` (git-ignored, mode 600), managed by the stdlib-only
 `txdb/` package:
 
-- **Fetchers write it.** `hdfc-`, `axis-` and `sbi-statement-fetcher` import
+- **Fetchers write it.** `hdfc-`, `axis-`, `sbi-` and `icici-statement-fetcher` import
   `txdb.ingest` through their `src/store.py` (`TXDB_HOME` points at this
   repo) and save transactions, balances and HDFC card billing cycles.
   Each run is recorded in `fetch_runs`, and a successful run makes a backup
@@ -46,6 +46,10 @@ its status badge) and the Outstanding Summary, which splits the total
 into `last_statement_amount` (this month's bill), `unbilled_credits`
 (money already paid into the card, negative as the page prints it),
 `unbilled_purchases` (next month's bill so far) and `unsettled_amount`.
+The card tables are `card_cycles` and `card_cycles_raw` — not HDFC's
+alone since the ICICI card arrived; `hdfc_card_cycles_raw` survives as a
+view over the HDFC rows, because that name is in a few fingers' muscle
+memory.
 They add up: `last statement - credits + purchases + unsettled = total
 outstanding`. The same scrape stores `credit_limit_total` and
 `available_limit`; both cards report the same pair, because the limit is
@@ -207,7 +211,14 @@ Tests: `python3 -m unittest discover -s tests`.
   (`Model.billsDueTotal` / `Model.billsNextTotal`). Under it, the credit
   limit as one line and a slim meter: "limit ₹19,728 of ₹1,38,000 used"
   with the percentage green under 30% utilisation, amber past it and
-  red past 50%. The bar carries one segment per card — accent, then the
+  red past 50%. One strip per **pool**, not one for everything: HDFC
+  prints the same limit on both its cards and total-minus-available
+  equals their combined outstanding, so those two share a pool, while
+  the ICICI card carries its own — and a bank whose cards disagree about
+  the total is split one pool per card rather than averaged into fiction
+  (`Model.creditLimitPools`). A pool with more available than its limit
+  is in credit, not negatively used: ICICI's reads "₹40 in credit of
+  ₹1,30,000 limit". The bar carries one segment per card — accent, then the
   same accent at 55% — with a key under it ("••0220 ₹19,132   ••7462
   ₹1,241"), since at low utilisation a small card's segment is only a
   pixel or two wide. Before a fetch has read the limit the strip keeps
