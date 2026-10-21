@@ -162,6 +162,9 @@ Panel {
   // its own, so the section shows a strip each rather than one figure that
   // would be true of neither.
   readonly property var creditLimits: Model.creditLimitPools(root.cardOverviewList)
+  // The one bar the section leads with; the pools open underneath it.
+  readonly property var creditTotal: Model.creditLimitTotal(root.creditLimits)
+  property bool limitsExpanded: false
 
   // "Whole picture" stats — read the full, unfiltered transaction list
   // (post-tracked-override, pre-account-filter/search) so they stay
@@ -551,11 +554,20 @@ Panel {
     }
     return parts.inCredit
       ? Model.currencySymbol("INR") + Model.formatGrouped(Math.abs(parts.payNow)) + " in credit"
-      : "nothing to pay"
+      : "no dues"
   }
 
   // The balance amount(s) for one bank ("HDFC", "AXIS" or "SBI"), joined. Only the
   // amount: the bank's logo already says which account it is.
+  // The same balances as balanceTextFor, to the rupee: four chips with
+  // paise need ~647px against the popup's 548.
+  function chipBalanceFor(bank) {
+    return root.accountBalances
+      .filter(function (b) { return b.bank === bank })
+      .map(function (b) { return Model.currencySymbol(b.currency) + Model.formatGrouped(Math.round(b.balance)) })
+      .join("  ·  ")
+  }
+
   function balanceTextFor(bank) {
     return root.accountBalances
       .filter(function (b) { return b.bank === bank })
@@ -793,28 +805,33 @@ Panel {
             }
           }
 
-          // One chip per bank: the bank's logo (click it to reload that bank)
-          // then its balance. A Flow, so the chips wrap rather than truncate.
-          Flow {
+          // One chip per bank: the bank's logo (click it to reload that
+          // bank) then its balance, rounded to whole rupees — the exact
+          // paise are in the account list above, and at four banks the
+          // decimals were what pushed the row onto a second line. A Row,
+          // not a Flow: wrapping made the reload buttons stop reading as
+          // one set, and a Flow would quietly do it again the moment a
+          // figure grew.
+          Row {
             width: parent.width
             spacing: Style.spacing.md
 
             BankBalance {
               bank: "hdfc"
               tooltip: "Fetch HDFC data (opens browser, scan QR)"
-              balanceText: root.balanceTextFor("HDFC")
+              balanceText: root.chipBalanceFor("HDFC")
             }
 
             BankBalance {
               bank: "axis"
               tooltip: "Fetch Axis data (asks for the OTP here)"
-              balanceText: root.balanceTextFor("AXIS")
+              balanceText: root.chipBalanceFor("AXIS")
             }
 
             BankBalance {
               bank: "sbi"
               tooltip: "Fetch SBI data (asks for the OTP here)"
-              balanceText: root.balanceTextFor("SBI")
+              balanceText: root.chipBalanceFor("SBI")
             }
 
             BankBalance {
@@ -1010,135 +1027,276 @@ Panel {
           }
         }
 
-        // A strip per credit-limit pool. HDFC prints the same limit on both
-        // its cards and total-minus-available equals their combined
-        // outstanding — one shared pool — while ICICI's card carries its
-        // own. Each strip keeps its height before a fetch has read a limit,
-        // so the block does not jump when the figures arrive.
-        Repeater {
-          model: root.creditLimits
+        // One bar for every card, opening into the per-bank ones. Two
+        // headline numbers (HDFC's pool and ICICI's) answered a question
+        // nobody asks first; "how much credit am I using in all" does.
+        BorderSurface {
+          id: limitHeader
+          readonly property var total: root.creditTotal
+          readonly property bool _hot: limitHover.hovered || limitHeader.activeFocus
 
-          delegate: Item {
-            id: limitStrip
-            required property var modelData
-            readonly property bool known: limitStrip.modelData.limit > 0
+          visible: root.creditLimits.length > 0
+          width: parent.width
+          implicitHeight: limitTotalLabel.implicitHeight + Style.space(5) + limitTotalTrack.height
+            + Style.space(4)
+          radius: Style.cornerRadius
+          color: limitHeader._hot ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent"
+          borderSpec: limitHeader.activeFocus
+            ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
 
-            width: parent.width
-            height: limitLabel.implicitHeight + Style.space(5) + limitTrack.height
-              + (limitKey.visible ? Style.space(5) + limitKey.implicitHeight : 0)
+          HoverHandler { id: limitHover }
+
+          activeFocusOnTab: true
+          Keys.onReturnPressed: root.limitsExpanded = !root.limitsExpanded
+          Keys.onEnterPressed: root.limitsExpanded = !root.limitsExpanded
+          Keys.onSpacePressed: root.limitsExpanded = !root.limitsExpanded
+          Keys.onLeftPressed: root.limitsExpanded = false
+          Keys.onRightPressed: root.limitsExpanded = true
+          Keys.onUpPressed: root.focusNext(limitHeader, false)
+          Keys.onDownPressed: root.focusNext(limitHeader, true)
+
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.limitsExpanded = !root.limitsExpanded
+          }
+
+          Text {
+            id: limitTotalLabel
+            anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.rowPaddingX
+            anchors.top: parent.top
+            anchors.topMargin: Style.space(2)
+            textFormat: Text.PlainText
+            text: limitHeader.total.limit > 0
+              ? "limit " + Model.currencySymbol("INR") + Model.formatGrouped(Math.round(limitHeader.total.used))
+                + " of " + Model.currencySymbol("INR") + Model.formatGrouped(limitHeader.total.limit) + " used"
+              : "limit not read yet"
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+
+          Row {
+            anchors.right: parent.right
+            anchors.rightMargin: Style.spacing.rowPaddingX
+            anchors.baseline: limitTotalLabel.baseline
+            spacing: Style.space(5)
 
             Text {
-              id: limitLabel
-              anchors.left: parent.left
-              anchors.leftMargin: Style.spacing.rowPaddingX
-              anchors.top: parent.top
+              visible: limitHeader.total.limit > 0
               textFormat: Text.PlainText
-              text: limitStrip.modelData.label + "  "
-                + (limitStrip.modelData.credit > 0
-                    ? Model.currencySymbol("INR") + Model.formatGrouped(limitStrip.modelData.credit)
-                      + " in credit of " + Model.currencySymbol("INR")
-                      + Model.formatGrouped(limitStrip.modelData.limit) + " limit"
-                    : "limit " + Model.currencySymbol("INR")
-                      + Model.formatGrouped(Math.round(limitStrip.modelData.used))
-                      + " of " + Model.currencySymbol("INR")
-                      + Model.formatGrouped(limitStrip.modelData.limit) + " used")
-              color: Qt.darker(root.foreground, 1.5)
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-              elide: Text.ElideRight
-            }
-
-            Text {
-              id: limitPercent
-              anchors.right: parent.right
-              anchors.rightMargin: Style.spacing.rowPaddingX
-              anchors.baseline: limitLabel.baseline
-              textFormat: Text.PlainText
-              text: Math.round(limitStrip.modelData.percent) + "%"
-              color: root.limitColor(limitStrip.modelData.percent)
+              text: Math.round(limitHeader.total.percent) + "%"
+              color: root.limitColor(limitHeader.total.percent)
               font.family: Style.font.family
               font.bold: true
               font.pixelSize: Style.font.caption
             }
 
-            // One thin track, one segment per card. At this utilisation a
-            // small card is barely two pixels wide, so the key below
-            // carries the detail — but a non-zero share never vanishes.
-            Item {
-              id: limitTrack
-              anchors.left: parent.left
-              anchors.leftMargin: Style.spacing.rowPaddingX
-              anchors.right: parent.right
-              anchors.rightMargin: Style.spacing.rowPaddingX
-              anchors.top: limitLabel.bottom
-              anchors.topMargin: Style.space(5)
-              height: Style.space(3)
-              clip: true
+            // Says there is more behind the bar, and which way it goes.
+            Text {
+              textFormat: Text.PlainText
+              text: root.limitsExpanded ? "▴" : "▾"
+              color: Qt.darker(root.foreground, 1.5)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
 
-              Rectangle {
-                anchors.fill: parent
-                radius: height / 2
-                color: Qt.darker(root.foreground, 3.0)
+          // One segment per pool, so the combined bar still shows which
+          // bank the usage belongs to.
+          Item {
+            id: limitTotalTrack
+            anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.rowPaddingX
+            anchors.right: parent.right
+            anchors.rightMargin: Style.spacing.rowPaddingX
+            anchors.top: limitTotalLabel.bottom
+            anchors.topMargin: Style.space(5)
+            height: Style.space(3)
+            clip: true
+
+            Rectangle {
+              anchors.fill: parent
+              radius: height / 2
+              color: Qt.darker(root.foreground, 3.0)
+            }
+
+            Row {
+              anchors.left: parent.left
+              height: parent.height
+
+              Repeater {
+                model: limitHeader.total.pools || []
+                delegate: Rectangle {
+                  required property var modelData
+                  required property int index
+                  height: limitTotalTrack.height
+                  width: limitHeader.total.limit > 0
+                    ? Math.max(modelData.used > 0 ? 1 : 0,
+                               limitTotalTrack.width * (modelData.used / limitHeader.total.limit))
+                    : 0
+                  radius: height / 2
+                  color: root.limitSegmentColor(index)
+                  Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                }
+              }
+            }
+          }
+        }
+
+        // The per-bank strips, revealed by the bar above. Height animates
+        // the same way a bill row's detail panel does, so the section
+        // grows rather than jumping.
+        Item {
+          visible: root.creditLimits.length > 0 && height > 0
+          width: parent.width
+          height: root.limitsExpanded ? poolStrips.implicitHeight : 0
+          clip: true
+
+          Behavior on height { NumberAnimation { duration: 140 } }
+
+          Column {
+            id: poolStrips
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.md
+            anchors.right: parent.right
+            spacing: Style.spacing.xs
+
+          // A strip per credit-limit pool. HDFC prints the same limit on both
+          // its cards and total-minus-available equals their combined
+          // outstanding — one shared pool — while ICICI's card carries its
+          // own. Each strip keeps its height before a fetch has read a limit,
+          // so the block does not jump when the figures arrive.
+          Repeater {
+            model: root.creditLimits
+
+            delegate: Item {
+              id: limitStrip
+              required property var modelData
+              readonly property bool known: limitStrip.modelData.limit > 0
+
+              width: parent.width
+              height: limitLabel.implicitHeight + Style.space(5) + limitTrack.height
+                + (limitKey.visible ? Style.space(5) + limitKey.implicitHeight : 0)
+
+              Text {
+                id: limitLabel
+                anchors.left: parent.left
+                anchors.leftMargin: Style.spacing.rowPaddingX
+                anchors.top: parent.top
+                textFormat: Text.PlainText
+                text: limitStrip.modelData.label + "  "
+                  + (limitStrip.modelData.credit > 0
+                      ? Model.currencySymbol("INR") + Model.formatGrouped(limitStrip.modelData.credit)
+                        + " in credit of " + Model.currencySymbol("INR")
+                        + Model.formatGrouped(limitStrip.modelData.limit) + " limit"
+                      : "limit " + Model.currencySymbol("INR")
+                        + Model.formatGrouped(Math.round(limitStrip.modelData.used))
+                        + " of " + Model.currencySymbol("INR")
+                        + Model.formatGrouped(limitStrip.modelData.limit) + " used")
+                color: Qt.darker(root.foreground, 1.5)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
               }
 
-              Row {
+              Text {
+                id: limitPercent
+                anchors.right: parent.right
+                anchors.rightMargin: Style.spacing.rowPaddingX
+                anchors.baseline: limitLabel.baseline
+                textFormat: Text.PlainText
+                text: Math.round(limitStrip.modelData.percent) + "%"
+                color: root.limitColor(limitStrip.modelData.percent)
+                font.family: Style.font.family
+                font.bold: true
+                font.pixelSize: Style.font.caption
+              }
+
+              // One thin track, one segment per card. At this utilisation a
+              // small card is barely two pixels wide, so the key below
+              // carries the detail — but a non-zero share never vanishes.
+              Item {
+                id: limitTrack
                 anchors.left: parent.left
-                height: parent.height
+                anchors.leftMargin: Style.spacing.rowPaddingX
+                anchors.right: parent.right
+                anchors.rightMargin: Style.spacing.rowPaddingX
+                anchors.top: limitLabel.bottom
+                anchors.topMargin: Style.space(5)
+                height: Style.space(3)
+                clip: true
+
+                Rectangle {
+                  anchors.fill: parent
+                  radius: height / 2
+                  color: Qt.darker(root.foreground, 3.0)
+                }
+
+                Row {
+                  anchors.left: parent.left
+                  height: parent.height
+
+                  Repeater {
+                    model: limitStrip.modelData.segments || []
+                    delegate: Rectangle {
+                      required property var modelData
+                      required property int index
+                      height: limitTrack.height
+                      width: Math.max(1, limitTrack.width * Math.min(1, Math.max(0, modelData.fraction)))
+                      radius: height / 2
+                      color: root.limitSegmentColor(index)
+                      Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                    }
+                  }
+                }
+              }
+
+              // Which card is using what. Only worth a line when the pool is
+              // shared; a single-card pool says it on the row above.
+              Flow {
+                id: limitKey
+                visible: (limitStrip.modelData.segments || []).length > 1
+                anchors.left: parent.left
+                anchors.leftMargin: Style.spacing.rowPaddingX
+                anchors.right: parent.right
+                anchors.rightMargin: Style.spacing.rowPaddingX
+                anchors.top: limitTrack.bottom
+                anchors.topMargin: Style.space(5)
+                spacing: Style.spacing.md
 
                 Repeater {
                   model: limitStrip.modelData.segments || []
-                  delegate: Rectangle {
+                  delegate: Row {
                     required property var modelData
                     required property int index
-                    height: limitTrack.height
-                    width: Math.max(1, limitTrack.width * Math.min(1, Math.max(0, modelData.fraction)))
-                    radius: height / 2
-                    color: root.limitSegmentColor(index)
-                    Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                    spacing: Style.space(4)
+
+                    Rectangle {
+                      width: Style.space(6)
+                      height: width
+                      radius: width / 2
+                      anchors.verticalCenter: parent.verticalCenter
+                      color: root.limitSegmentColor(index)
+                    }
+
+                    Text {
+                      textFormat: Text.PlainText
+                      text: "••" + modelData.last4 + " " + Model.currencySymbol("INR")
+                        + Model.formatGrouped(Math.round(modelData.amount))
+                      color: Qt.darker(root.foreground, 1.5)
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                    }
                   }
                 }
               }
             }
+          }
 
-            // Which card is using what. Only worth a line when the pool is
-            // shared; a single-card pool says it on the row above.
-            Flow {
-              id: limitKey
-              visible: (limitStrip.modelData.segments || []).length > 1
-              anchors.left: parent.left
-              anchors.leftMargin: Style.spacing.rowPaddingX
-              anchors.right: parent.right
-              anchors.rightMargin: Style.spacing.rowPaddingX
-              anchors.top: limitTrack.bottom
-              anchors.topMargin: Style.space(5)
-              spacing: Style.spacing.md
-
-              Repeater {
-                model: limitStrip.modelData.segments || []
-                delegate: Row {
-                  required property var modelData
-                  required property int index
-                  spacing: Style.space(4)
-
-                  Rectangle {
-                    width: Style.space(6)
-                    height: width
-                    radius: width / 2
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: root.limitSegmentColor(index)
-                  }
-
-                  Text {
-                    textFormat: Text.PlainText
-                    text: "••" + modelData.last4 + " " + Model.currencySymbol("INR")
-                      + Model.formatGrouped(Math.round(modelData.amount))
-                    color: Qt.darker(root.foreground, 1.5)
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                  }
-                }
-              }
-            }
           }
         }
 
@@ -2123,6 +2281,9 @@ Panel {
       anchors.left: control.right
       anchors.leftMargin: Style.spacing.xs
       anchors.verticalCenter: parent.verticalCenter
+      // Elides rather than pushing the row over: the logos are the
+      // buttons, so they are the last thing that should give way.
+      elide: Text.ElideRight
       textFormat: Text.PlainText
       text: chip.balanceText !== "" ? chip.balanceText : "no balance yet"
       color: chip.balanceText !== "" ? Qt.darker(root.foreground, 1.3) : Qt.darker(root.foreground, 1.7)

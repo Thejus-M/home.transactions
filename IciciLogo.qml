@@ -2,11 +2,17 @@ import QtQuick
 import QtQuick.Shapes
 import qs.Commons
 
-// Personal, unofficial approximation of an ICICI-style mark: an orange
-// rounded tile carrying a white lowercase "i", with a maroon arc sweeping
-// up from the lower-left. Not the official ICICI Bank logo and not a copy
-// of one — its own proportions, drawn with shapes only (no images, no
-// Text), sized by markSize, the same contract AxisLogo and SbiLogo use.
+// Personal, unofficial approximation of the ICICI mark: an upright
+// elliptical form whose lower end narrows to a point and curls inward,
+// reading as a handwritten lowercase "i" without its dot, shaded darker
+// to brighter orange with the curl's inner edge in maroon. Not the
+// official ICICI Bank logo and not a copy of one — its own proportions,
+// drawn with shapes only (no images, no Text), sized by markSize, the
+// same contract AxisLogo and SbiLogo use.
+//
+// The palette is third-party and the sources disagree (color.codes.in
+// gives this orange/maroon pair; WhatTheLogo and logotyp.us list other
+// sets), so treat the hexes as approximate too.
 Item {
   id: root
 
@@ -15,73 +21,73 @@ Item {
 
   // Logo colours, hard-coded rather than themed: a bank mark that changed
   // hue with the wallpaper would stop being recognisable.
-  readonly property color tile: "#F37A21"
-  readonly property color sweep: "#AE275F"
+  readonly property color orangeDeep: "#D8621C"
+  readonly property color orangeBright: "#F58220"
+  readonly property color maroon: "#6E1E24"
 
   implicitWidth: s
   implicitHeight: s
   width: implicitWidth
   height: implicitHeight
 
-  Rectangle {
-    anchors.fill: parent
-    radius: root.s * 0.22
-    color: root.tile
-  }
-
-  // The arc: a maroon band rising from the lower left to the right edge,
-  // clipped by the tile's own rounding.
   Shape {
     anchors.fill: parent
     preferredRendererType: Shape.CurveRenderer
     layer.enabled: true
     layer.samples: 4
 
+    // The body: up the left side, over the top, down the right shoulder
+    // and into the point at the bottom left. Coordinates are fractions of
+    // the mark's side, so the whole thing scales with markSize.
     ShapePath {
-      fillColor: root.sweep
       strokeWidth: 0
-      // Bottom-left corner, curving up to the right edge and back down,
-      // so the band keeps an even width along its length.
-      startX: 0
-      startY: root.s
-      PathCubic {
-        x: root.s
-        y: root.s * 0.42
-        control1X: root.s * 0.34
-        control1Y: root.s * 0.98
-        control2X: root.s * 0.66
-        control2Y: root.s * 0.66
+      fillGradient: LinearGradient {
+        x1: 0; y1: 0
+        x2: 0; y2: root.s
+        GradientStop { position: 0.0; color: root.orangeDeep }
+        GradientStop { position: 1.0; color: root.orangeBright }
       }
-      PathLine { x: root.s; y: root.s * 0.72 }
+
+      startX: root.s * 0.46; startY: root.s * 0.03
       PathCubic {
-        x: root.s * 0.30
-        y: root.s
-        control1X: root.s * 0.72
-        control1Y: root.s * 0.92
-        control2X: root.s * 0.52
-        control2Y: root.s
+        x: root.s * 0.74; y: root.s * 0.44
+        control1X: root.s * 0.70; control1Y: root.s * 0.03
+        control2X: root.s * 0.78; control2Y: root.s * 0.22
       }
-      PathLine { x: 0; y: root.s }
+      PathCubic {
+        x: root.s * 0.30; y: root.s * 0.97
+        control1X: root.s * 0.70; control1Y: root.s * 0.68
+        control2X: root.s * 0.56; control2Y: root.s * 0.86
+      }
+      PathCubic {
+        x: root.s * 0.48; y: root.s * 0.44
+        control1X: root.s * 0.44; control1Y: root.s * 0.80
+        control2X: root.s * 0.50; control2Y: root.s * 0.60
+      }
+      PathCubic {
+        x: root.s * 0.46; y: root.s * 0.03
+        control1X: root.s * 0.46; control1Y: root.s * 0.26
+        control2X: root.s * 0.34; control2Y: root.s * 0.18
+      }
     }
-  }
 
-  // The "i": a dot over a stem, both white, left of centre so the arc has
-  // room on the right.
-  Rectangle {
-    width: root.s * 0.14
-    height: width
-    radius: width / 2
-    color: "white"
-    x: root.s * 0.26
-    y: root.s * 0.18
-  }
+    // The curl's inner edge, which is what stops the form reading as a
+    // plain teardrop. Kept wide enough to survive at a 20px mark.
+    ShapePath {
+      strokeWidth: 0
+      fillColor: root.maroon
 
-  Rectangle {
-    width: root.s * 0.14
-    height: root.s * 0.34
-    radius: width * 0.4
-    color: "white"
-    x: root.s * 0.26
-    y: root.s * 0.40
+      startX: root.s * 0.30; startY: root.s * 0.97
+      PathCubic {
+        x: root.s * 0.25; y: root.s * 0.56
+        control1X: root.s * 0.16; control1Y: root.s * 0.88
+        control2X: root.s * 0.14; control2Y: root.s * 0.70
+      }
+      PathCubic {
+        x: root.s * 0.30; y: root.s * 0.97
+        control1X: root.s * 0.28; control1Y: root.s * 0.74
+        control2X: root.s * 0.29; control2Y: root.s * 0.88
+      }
+    }
   }
 }

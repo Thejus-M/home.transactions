@@ -211,7 +211,10 @@ Tests: `python3 -m unittest discover -s tests`.
   (`Model.billsDueTotal` / `Model.billsNextTotal`). Under it, the credit
   limit as one line and a slim meter: "limit ₹19,728 of ₹1,38,000 used"
   with the percentage green under 30% utilisation, amber past it and
-  red past 50%. One strip per **pool**, not one for everything: HDFC
+  red past 50%. The section leads with **one bar for every card** —
+  "limit ₹20,374 of ₹2,68,000 used · 8%", a segment per pool — and
+  clicking it (or Tab + Enter) opens the per-pool strips underneath,
+  each with its own figures and card key. One strip per **pool**: HDFC
   prints the same limit on both its cards and total-minus-available
   equals their combined outstanding, so those two share a pool, while
   the ICICI card carries its own — and a bank whose cards disagree about
@@ -245,9 +248,13 @@ Tests: `python3 -m unittest discover -s tests`.
   the bill-due reminder/badge below, for the "I paid through another
   channel and the scrape hasn't caught up yet" case. Persists to the
   `bills` table.
-- **A reload button per bank** — the balance row carries one chip per
-  bank: its logo is the button (click it, or Tab to it and press Enter,
-  to fetch that bank), and beside it the balance. ICICI is a credit card
+- **A reload button per bank** — one line, one chip per bank: its logo
+  is the button (click it, or Tab to it and press Enter, to fetch that
+  bank), and beside it the balance to the rupee — the exact paise are in
+  the account list above, and four chips carrying decimals needed about
+  100px more than the popup has. The balance elides before the row
+  wraps: the logos are the buttons, so they are the last thing to give
+  way. ICICI is a credit card
   only on this profile, so its chip reads what the card wants instead —
   "₹X due", "₹40 in credit" or "nothing to pay". Only one fetch runs at a
   time; the others grey out while one is going.

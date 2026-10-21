@@ -597,6 +597,35 @@ function _limitSegments(list, limit, used) {
   return segments
 }
 
+// Every pool added up, for the one bar the section leads with:
+// { limit, used, available, credit, percent, pools }.
+//
+// Each pool's `used` is already clamped at zero, so a card in credit
+// (ICICI's ₹40) counts as nothing used rather than subtracting from
+// another bank's usage — credit is reported separately instead. `pools`
+// is the list it came from, so the bar can draw a segment per pool and
+// open into their own strips.
+function creditLimitTotal(pools) {
+  var list = pools || []
+  var limit = 0
+  var used = 0
+  var available = 0
+  var credit = 0
+  for (var i = 0; i < list.length; i++) {
+    limit += list[i].limit
+    used += list[i].used
+    available += list[i].available
+    credit += list[i].credit || 0
+  }
+  limit = _money(limit)
+  used = _money(used)
+  return {
+    limit: limit, used: used, available: _money(available), credit: _money(credit),
+    percent: limit > 0 ? _money(used / limit * 100) : 0,
+    pools: list,
+  }
+}
+
 // "HDFC" out of a card entry that predates the snapshot carrying its bank.
 function Model_accountBankOf(entry) {
   return accountBank(entry.accountId)

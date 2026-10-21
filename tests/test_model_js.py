@@ -203,6 +203,31 @@ class SectionTotalsTests(unittest.TestCase):
         self.assertEqual([p["label"] for p in pools], ["HDFC ••0220", "HDFC ••7462"])
         self.assertEqual([p["limit"] for p in pools], [138000, 50000])
 
+    def test_the_pools_add_up_into_one_bar(self):
+        """The section leads with one figure across every card; two
+        headlines answered a question nobody asks first."""
+        icici = {"bank": "ICICI", "last4": "2004", "accountId": "ICICI|credit|2004",
+                 "name": "Coral RuPay", "total_outstanding": "₹0",
+                 "credit_limit_total": "₹1,30,000", "available_limit": "₹1,30,040"}
+        total = self.run_js("creditLimitTotal(creditLimitPools(input.cards))",
+                            cards=self.both + [icici])
+        self.assertEqual(total["limit"], 268000)
+        self.assertEqual(total["used"], 19727.77)
+        self.assertAlmostEqual(total["percent"], 7.4, places=1)
+        # The ₹40 sitting in the ICICI card is reported, not subtracted
+        # from HDFC's usage.
+        self.assertEqual(total["credit"], 40)
+        self.assertEqual(len(total["pools"]), 2)
+
+    def test_one_pool_totals_to_itself(self):
+        total = self.run_js("creditLimitTotal(creditLimitPools(input.cards))", cards=self.both)
+        pool = self.run_js("creditLimitPools(input.cards)", cards=self.both)[0]
+        self.assertEqual((total["limit"], total["used"]), (pool["limit"], pool["used"]))
+
+    def test_no_pools_totals_to_zero_without_dividing_by_it(self):
+        self.assertEqual(self.run_js("creditLimitTotal([])"),
+                         {"limit": 0, "used": 0, "available": 0, "credit": 0, "percent": 0, "pools": []})
+
     def test_no_limit_scraped_yet_means_no_pool(self):
         self.assertEqual(self.run_js("creditLimitPools(input.cards)", cards=[CARDS["legacy"]]), [])
 
