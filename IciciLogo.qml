@@ -2,28 +2,31 @@ import QtQuick
 import QtQuick.Shapes
 import qs.Commons
 
-// Personal, unofficial approximation of the ICICI mark: an upright
-// elliptical form whose lower end narrows to a point and curls inward,
-// reading as a handwritten lowercase "i" without its dot, shaded darker
-// to brighter orange with the curl's inner edge in maroon. Not the
-// official ICICI Bank logo and not a copy of one — its own proportions,
-// drawn with shapes only (no images, no Text), sized by markSize, the
-// same contract AxisLogo and SbiLogo use.
+// Personal, unofficial approximation of the ICICI mark: a solid ellipse
+// leaning right with a lowercase "i" knocked out of it — a dot and a
+// tapered stem that sweeps down to the left. Not the official ICICI Bank
+// logo and not a copy of one: its own proportions, drawn with shapes only
+// (no images, no Text), sized by markSize, the same contract AxisLogo and
+// SbiLogo use.
 //
-// The palette is third-party and the sources disagree (color.codes.in
-// gives this orange/maroon pair; WhatTheLogo and logotyp.us list other
-// sets), so treat the hexes as approximate too.
+// Two things worth keeping if this is ever adjusted. The lean rides on
+// the arc's own xAxisRotation rather than on a transform around the whole
+// item, because rotating the group tilts the "i" with the body and the
+// letter has to stay upright. And the counters are knocked out of one
+// path with OddEvenFill rather than painted over the top, so the mark
+// works on the popup, on a hover fill and on the bar alike.
+//
+// The colour is the one the single-colour glyph ships in; third-party
+// sources disagree on ICICI's palette, so treat it as approximate.
 Item {
   id: root
 
   property real markSize: Style.spaceReal(12)
   readonly property real s: Math.round(markSize)
 
-  // Logo colours, hard-coded rather than themed: a bank mark that changed
-  // hue with the wallpaper would stop being recognisable.
-  readonly property color orangeDeep: "#D8621C"
-  readonly property color orangeBright: "#F58220"
-  readonly property color maroon: "#6E1E24"
+  // Hard-coded rather than themed: a bank mark that changed hue with the
+  // wallpaper would stop being recognisable.
+  readonly property color brand: "#AE282E"
 
   implicitWidth: s
   implicitHeight: s
@@ -36,57 +39,66 @@ Item {
     layer.enabled: true
     layer.samples: 4
 
-    // The body: up the left side, over the top, down the right shoulder
-    // and into the point at the bottom left. Coordinates are fractions of
-    // the mark's side, so the whole thing scales with markSize.
     ShapePath {
+      fillColor: root.brand
+      fillRule: ShapePath.OddEvenFill
       strokeWidth: 0
-      fillGradient: LinearGradient {
-        x1: 0; y1: 0
-        x2: 0; y2: root.s
-        GradientStop { position: 0.0; color: root.orangeDeep }
-        GradientStop { position: 1.0; color: root.orangeBright }
+
+      // The body: an ellipse leaning 26° right, drawn as two half arcs.
+      startX: root.s * 0.1585; startY: root.s * 0.3334
+      PathArc {
+        x: root.s * 0.8415; y: root.s * 0.6666
+        radiusX: root.s * 0.38; radiusY: root.s * 0.50
+        xAxisRotation: 26
+        useLargeArc: true
+        direction: PathArc.Counterclockwise
+      }
+      PathArc {
+        x: root.s * 0.1585; y: root.s * 0.3334
+        radiusX: root.s * 0.38; radiusY: root.s * 0.50
+        xAxisRotation: 26
+        useLargeArc: true
+        direction: PathArc.Counterclockwise
       }
 
-      startX: root.s * 0.46; startY: root.s * 0.03
-      PathCubic {
-        x: root.s * 0.74; y: root.s * 0.44
-        control1X: root.s * 0.70; control1Y: root.s * 0.03
-        control2X: root.s * 0.78; control2Y: root.s * 0.22
+      // The dot, upright.
+      PathMove { x: root.s * 0.52; y: root.s * 0.23 }
+      PathArc {
+        x: root.s * 0.72; y: root.s * 0.23
+        radiusX: root.s * 0.10; radiusY: root.s * 0.092
+        useLargeArc: true
+        direction: PathArc.Counterclockwise
       }
-      PathCubic {
-        x: root.s * 0.30; y: root.s * 0.97
-        control1X: root.s * 0.70; control1Y: root.s * 0.68
-        control2X: root.s * 0.56; control2Y: root.s * 0.86
+      PathArc {
+        x: root.s * 0.52; y: root.s * 0.23
+        radiusX: root.s * 0.10; radiusY: root.s * 0.092
+        useLargeArc: true
+        direction: PathArc.Counterclockwise
       }
-      PathCubic {
-        x: root.s * 0.48; y: root.s * 0.44
-        control1X: root.s * 0.44; control1Y: root.s * 0.80
-        control2X: root.s * 0.50; control2Y: root.s * 0.60
-      }
-      PathCubic {
-        x: root.s * 0.46; y: root.s * 0.03
-        control1X: root.s * 0.46; control1Y: root.s * 0.26
-        control2X: root.s * 0.34; control2Y: root.s * 0.18
-      }
-    }
 
-    // The curl's inner edge, which is what stops the form reading as a
-    // plain teardrop. Kept wide enough to survive at a 20px mark.
-    ShapePath {
-      strokeWidth: 0
-      fillColor: root.maroon
-
-      startX: root.s * 0.30; startY: root.s * 0.97
+      // The stem: down the right flank, round the foot, back up the left,
+      // capped under the dot. Wider at the top than at the foot, which is
+      // what stops it reading as a bar.
+      PathMove { x: root.s * 0.68; y: root.s * 0.41 }
       PathCubic {
-        x: root.s * 0.25; y: root.s * 0.56
-        control1X: root.s * 0.16; control1Y: root.s * 0.88
-        control2X: root.s * 0.14; control2Y: root.s * 0.70
+        x: root.s * 0.445; y: root.s * 0.82
+        control1X: root.s * 0.68; control1Y: root.s * 0.5945
+        control2X: root.s * 0.445; control2Y: root.s * 0.6765
       }
       PathCubic {
-        x: root.s * 0.30; y: root.s * 0.97
-        control1X: root.s * 0.28; control1Y: root.s * 0.74
-        control2X: root.s * 0.29; control2Y: root.s * 0.88
+        x: root.s * 0.335; y: root.s * 0.82
+        control1X: root.s * 0.4175; control1Y: root.s * 0.8805
+        control2X: root.s * 0.3625; control2Y: root.s * 0.8805
+      }
+      PathCubic {
+        x: root.s * 0.48; y: root.s * 0.41
+        control1X: root.s * 0.335; control1Y: root.s * 0.6765
+        control2X: root.s * 0.48; control2Y: root.s * 0.5945
+      }
+      PathCubic {
+        x: root.s * 0.68; y: root.s * 0.41
+        control1X: root.s * 0.53; control1Y: root.s * 0.30
+        control2X: root.s * 0.63; control2Y: root.s * 0.30
       }
     }
   }

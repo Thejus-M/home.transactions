@@ -149,6 +149,11 @@ Panel {
   // widest content either can hold: "IN CREDIT" at caption size, and
   // "₹16,005.39" at subtitle size. Without them the row with the longer
   // secondary text stole the other's name and elided away its last4.
+  // The chevron on the combined limit bar sits in a slot of its own, so
+  // every percentage under it keeps the same right edge whether or not
+  // its row has one. Without it the combined "8%" sat ~15px left of the
+  // per-pool "15%" and read as a misalignment, which it was.
+  readonly property int limitChevronSlot: Style.space(14)
   readonly property int billStatusWidth: Style.space(63)
   readonly property int billFigureWidth: Style.space(79)
   readonly property bool billDue: store.anyBillDue()
@@ -1078,30 +1083,30 @@ Panel {
             elide: Text.ElideRight
           }
 
-          Row {
+          Text {
+            visible: limitHeader.total.limit > 0
+            anchors.right: parent.right
+            anchors.rightMargin: Style.spacing.rowPaddingX + root.limitChevronSlot
+            anchors.baseline: limitTotalLabel.baseline
+            textFormat: Text.PlainText
+            text: Math.round(limitHeader.total.percent) + "%"
+            color: root.limitColor(limitHeader.total.percent)
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.caption
+          }
+
+          // Says there is more behind the bar, and which way it goes. In
+          // its own slot, outside the percentage column.
+          Text {
             anchors.right: parent.right
             anchors.rightMargin: Style.spacing.rowPaddingX
             anchors.baseline: limitTotalLabel.baseline
-            spacing: Style.space(5)
-
-            Text {
-              visible: limitHeader.total.limit > 0
-              textFormat: Text.PlainText
-              text: Math.round(limitHeader.total.percent) + "%"
-              color: root.limitColor(limitHeader.total.percent)
-              font.family: Style.font.family
-              font.bold: true
-              font.pixelSize: Style.font.caption
-            }
-
-            // Says there is more behind the bar, and which way it goes.
-            Text {
-              textFormat: Text.PlainText
-              text: root.limitsExpanded ? "▴" : "▾"
-              color: Qt.darker(root.foreground, 1.5)
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-            }
+            textFormat: Text.PlainText
+            text: root.limitsExpanded ? "▴" : "▾"
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
           }
 
           // One segment per pool, so the combined bar still shows which
@@ -1206,7 +1211,9 @@ Panel {
               Text {
                 id: limitPercent
                 anchors.right: parent.right
-                anchors.rightMargin: Style.spacing.rowPaddingX
+                // The bar above reserves a chevron slot; matching it here
+                // puts every percentage in one column.
+                anchors.rightMargin: Style.spacing.rowPaddingX + root.limitChevronSlot
                 anchors.baseline: limitLabel.baseline
                 textFormat: Text.PlainText
                 text: Math.round(limitStrip.modelData.percent) + "%"
@@ -1224,7 +1231,9 @@ Panel {
                 anchors.left: parent.left
                 anchors.leftMargin: Style.spacing.rowPaddingX
                 anchors.right: parent.right
-                anchors.rightMargin: Style.spacing.rowPaddingX
+                // Matches the indent this strip carries on its left, so
+                // its track is the same width as the bar it hangs from.
+                anchors.rightMargin: Style.spacing.rowPaddingX + Style.spacing.md
                 anchors.top: limitLabel.bottom
                 anchors.topMargin: Style.space(5)
                 height: Style.space(3)
