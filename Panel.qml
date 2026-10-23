@@ -533,6 +533,32 @@ Panel {
 
   property real fetchStartedMs: 0
 
+  // "Fetch all": HDFC, then Axis, then SBI, then ICICI, one after another.
+  // They can't really run at once — each one needs you for a QR scan or an
+  // OTP — so this queues the rest and starts the next the moment one exits
+  // cleanly (see the four onExited handlers below). Cancelling whichever
+  // one is running empties the queue too, so the chain stops rather than
+  // quietly resuming on its own later.
+  property var fetchQueue: []
+  // True for the whole chain, including while the last bank in it is
+  // still running (fetchQueue is already empty by then) — fetchQueue alone
+  // can't tell "the chain's last step" apart from "a single manual fetch".
+  property bool fetchAllActive: false
+
+  function startFetchAll() {
+    if (root.anyFetchRunning) return
+    root.fetchAllActive = true
+    root.fetchQueue = ["axis", "sbi", "icici"]
+    root.startFetch("hdfc")
+  }
+
+  function advanceFetchQueue() {
+    if (root.fetchQueue.length === 0) { root.fetchAllActive = false; return }
+    var next = root.fetchQueue[0]
+    root.fetchQueue = root.fetchQueue.slice(1)
+    root.startFetch(next)
+  }
+
   function startFetch(bank) {
     fetchStartedMs = Date.now()
     if (bank === "axis") axisFetchProc.running = true
@@ -542,6 +568,8 @@ Panel {
   }
 
   function cancelFetch(bank) {
+    root.fetchQueue = []
+    root.fetchAllActive = false
     if (bank === "axis") {
       axisFetchCancelled = true
       axisCancelProc.running = true
@@ -616,6 +644,7 @@ Panel {
     onExited: function (exitCode) {
       if (root.fetchCancelled) { root.fetchCancelled = false; return }
       root.notifyFetchResult("HDFC")
+      root.advanceFetchQueue()
     }
   }
 
@@ -635,6 +664,7 @@ Panel {
     onExited: function (exitCode) {
       if (root.axisFetchCancelled) { root.axisFetchCancelled = false; return }
       root.notifyFetchResult("AXIS")
+      root.advanceFetchQueue()
     }
   }
 
@@ -669,6 +699,7 @@ Panel {
       if (root.iciciFetchCancelled) { root.iciciFetchCancelled = false; return }
       root.notifyFetchResult("ICICI")
       store.reload()
+      root.advanceFetchQueue()
     }
   }
 
@@ -699,6 +730,7 @@ Panel {
     onExited: function (exitCode) {
       if (root.sbiFetchCancelled) { root.sbiFetchCancelled = false; return }
       root.notifyFetchResult("SBI")
+      root.advanceFetchQueue()
     }
   }
 
@@ -865,6 +897,23 @@ Panel {
               // No bank account on this profile, so the chip carries the
               // card's own line instead of a balance it will never have.
               balanceText: root.cardTextFor("ICICI")
+            }
+          }
+
+          // One button to chain all four: HDFC first (its QR needs a scan
+          // before anything else can start), then Axis, SBI and ICICI in
+          // turn, each one starting the moment the last exits cleanly. A
+          // cancel on whichever bank is running stops the chain too.
+          Item {
+            width: parent.width
+            height: fetchAllButton.height
+
+            TextAction {
+              id: fetchAllButton
+              anchors.right: parent.right
+              label: root.fetchAllActive ? "Fetching all…" : "Fetch all"
+              opacity: root.anyFetchRunning && !root.fetchAllActive ? 0.4 : 1.0
+              onTriggered: if (!root.anyFetchRunning) root.startFetchAll()
             }
           }
 
