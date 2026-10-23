@@ -29,13 +29,9 @@ Panel {
   // that changes approximately never on one personal machine.
   readonly property string fetcherDir: "/home/pc/Work/hdfc-statement-fetcher"
   // Progress written by the fetcher (output/fetch-status.json): stage,
-  // message, and the QR screenshot path while stage == "qr-ready".
+  // message, and the path to the published login QR while the stage is
+  // "qr-ready". Read through activeStatus below, with the other banks'.
   property var fetchStatus: ({})
-  function hexOf(c) {
-    var h = String(c).replace("#", "")
-    return h.length === 8 ? h.slice(2) : h.slice(0, 6)
-  }
-  readonly property bool showQr: fetchStatus.stage === "qr-ready" && !!fetchStatus.qr
   readonly property string fetcherOutputDir: fetcherDir + "/output"
   // Second source: the Axis fetcher writes the same shapes into its output/
   // folder (balances, transactions) and its own status file.
@@ -58,14 +54,31 @@ Panel {
   readonly property bool sbiOtpNeeded: sbiFetchProc.running && sbiFetchStatus.stage === "otp-needed"
   readonly property bool anyFetchRunning: fetchProc.running || axisFetchProc.running
     || sbiFetchProc.running || iciciFetchProc.running
-  readonly property string activeStatusText: fetchProc.running
-    ? ((fetchStatus.message || "") !== "" ? "HDFC: " + fetchStatus.message : "")
-    : axisFetchProc.running
-      ? ((axisFetchStatus.message || "") !== "" ? "Axis: " + axisFetchStatus.message : "")
-      : (sbiFetchProc.running && (sbiFetchStatus.message || "") !== "" ? "SBI: " + sbiFetchStatus.message : "")
-  readonly property color activeStatusColor: (fetchProc.running ? fetchStatus.stage
-    : (axisFetchProc.running ? axisFetchStatus.stage : sbiFetchStatus.stage)) === "error"
+
+  // Only one fetch runs at a time (see BankBalance.allowed), so "the fetch
+  // that is running" is a single thing: its bank, and its status file's
+  // contents. Every progress line, the error colour and the QR popup read
+  // this rather than one bank's properties — each bank keeps its own, which
+  // the chips and the reload buttons still read.
+  readonly property string activeBank: fetchProc.running ? "HDFC"
+    : axisFetchProc.running ? "Axis"
+      : sbiFetchProc.running ? "SBI"
+        : iciciFetchProc.running ? "ICICI" : ""
+  readonly property var activeStatus: fetchProc.running ? fetchStatus
+    : axisFetchProc.running ? axisFetchStatus
+      : sbiFetchProc.running ? sbiFetchStatus
+        : iciciFetchProc.running ? iciciFetchStatus : ({})
+  readonly property string activeStatusText: (activeStatus.message || "") !== ""
+    ? activeBank + ": " + activeStatus.message : ""
+  readonly property color activeStatusColor: activeStatus.stage === "error"
     ? Color.urgent : Color.accent
+
+  // The QR popup, for whichever bank asks for a scan: HDFC and ICICI do
+  // today, and a fetcher that writes the same qr-ready stage gets the popup
+  // for free. Gated on the fetch running too, so a status file left at
+  // qr-ready by a killed run cannot show a dead code.
+  readonly property bool showQr: activeBank !== ""
+    && activeStatus.stage === "qr-ready" && !!activeStatus.qr
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property var transactions: store.transactions
@@ -591,8 +604,12 @@ Panel {
   // failed run is readable without opening the popup.
   Process {
     id: fetchProc
-    // QR colours are passed as hex so the fetcher can redraw the login QR in
-    // this theme (only #rrggbb values, see login._hex_or).
+    // No QR colours are passed: both fetchers draw the login code to sit on
+    // QrCard's fixed #0B1628 tile, and theming the code without the tile
+    // only puts a mismatched square inside it. The ICICI fetcher reads
+    // QR_FG / QR_BG / QR_ACCENT (#rrggbb) if they are ever set here, and
+    // the tile would have to follow them; HDFC's palette is fixed in its
+    // own _render_qr.
     // setsid makes this run its own process group, so Cancel can stop the
     // fetcher and its browser together (see cancelProc).
     command: ["setsid", "bash", "-c", "cd '" + root.fetcherDir + "' && echo $$ > output/fetch.pid && exec .venv/bin/python -m src.main > output/widget-fetch.log 2>&1"]
@@ -640,8 +657,11 @@ Panel {
     command: ["bash", "-c", "cd '" + root.iciciDir + "' && mkdir -p output && PID=$(cat output/fetch.pid 2>/dev/null); [ -n \"$PID\" ] && grep -qa src.main /proc/$PID/cmdline 2>/dev/null && kill -TERM -- -$PID 2>/dev/null; rm -f output/qr.png; printf '%s' '{\"stage\": \"cancelled\", \"message\": \"Fetch cancelled.\", \"qr\": \"\", \"card\": \"\", \"step\": \"\", \"updated\": \"\"}' > output/.icici-fetch-status.json.tmp && mv output/.icici-fetch-status.json.tmp output/icici-fetch-status.json"]
   }
 
-  // Runs the ICICI fetcher. Headless would be pointless here: the login
-  // is a QR you scan off the screen, so the browser window has to show.
+  // Runs the ICICI fetcher. Its login code is published as output/qr.png
+  // and shown in the QR popup (HDFC does the same), so the browser window
+  // is no longer the thing you scan off — ICICI_HEADED=0 in its .env hides
+  // it. The window shows by default until that has been through a real
+  // scan.
   Process {
     id: iciciFetchProc
     command: ["setsid", "bash", "-c", "cd '" + root.iciciDir + "' && mkdir -p output && echo $$ > output/fetch.pid && exec .venv/bin/python -m src.main > output/widget-fetch.log 2>&1"]
@@ -978,7 +998,16 @@ Panel {
             id: qrBox
             visible: root.showQr
             width: parent.width
-            imageSource: root.showQr ? ("file://" + root.fetchStatus.qr + "?" + root.fetchStatus.updated) : ""
+            bank: root.activeBank
+            // Both banks redraw the code on their own timer and republish
+            // it; the ?updated suffix is what makes Qt fetch the new image
+            // instead of the one it has cached under this path.
+            // encodeURI because the ICICI fetcher resolves its own path
+            // before writing it, which lands on the external drive — and
+            // "MY Drive" has a space in it.
+            imageSource: root.showQr
+              ? ("file://" + encodeURI(root.activeStatus.qr) + "?" + root.activeStatus.updated) : ""
+            title: root.showQr ? (root.activeStatus.message || "") : ""
           }
         }
 

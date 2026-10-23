@@ -36,8 +36,12 @@ Everything the widget shows or remembers lives in one SQLite file,
   `set-tracked-many`, `rename`, `account-name`, `bill-paid`, `bill-notified`
   run as argv commands, one at a time; the UI updates at once and the next
   snapshot confirms.
-- **Live fetch signals stay files.** `output/*fetch-status.json`, the HDFC
-  QR (`output/qr.png`) and the OTP (sent on the fetcher's stdin).
+- **Live fetch signals stay files.** `output/*fetch-status.json`, the login
+  QR (`output/qr.png`, HDFC and ICICI) and the OTP (sent on the fetcher's
+  stdin). The QR popup follows whichever bank is fetching: the fetcher
+  writes the stage `qr-ready` with the code's path, republishes the path
+  with a new `updated` stamp each time the bank redraws the code, and the
+  popup reloads the image off that stamp.
 
 The credit-card picture comes from two blocks on HDFC's Overview tab,
 both scraped into `card_cycles` / `hdfc_card_cycles_raw`: the Billing
