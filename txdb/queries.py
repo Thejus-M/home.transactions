@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from . import portfolio
 from .db import from_paise
 from .ingest import OVERVIEW_FIELDS
 
@@ -56,6 +57,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "accountNames": {r["last4"]: r["display_name"] for r in conn.execute(
             "SELECT last4, display_name FROM accounts WHERE display_name IS NOT NULL")},
         "merchantNames": {r["group_key"]: r["name"] for r in conn.execute("SELECT * FROM merchant_names")},
+        # The investments half: portfolio, holdings, allocation,
+        # portfolioActivity, portfolioHistory. Additive, so a widget that
+        # predates them simply ignores the keys (see txdb/portfolio.py).
+        **portfolio.snapshot(conn),
     }
 
 

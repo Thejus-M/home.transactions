@@ -52,8 +52,17 @@ Panel {
   readonly property string sbiOutputDir: sbiDir + "/output"
   property var sbiFetchStatus: ({})
   readonly property bool sbiOtpNeeded: sbiFetchProc.running && sbiFetchStatus.stage === "otp-needed"
+  // Fifth source, and the first that is not a bank: the INDmoney
+  // portfolio, read over that service's official read-only MCP server.
+  // It writes the same status file shape as the four scrapers, so the
+  // chip, the progress line and the cancel path need no special case —
+  // but it needs no QR and no OTP, since it signs in once with OAuth
+  // and renews itself after that.
+  readonly property string indmoneyDir: "/home/pc/Work/indmoney-portfolio-fetcher"
+  readonly property string indmoneyOutputDir: indmoneyDir + "/output"
+  property var indmoneyFetchStatus: ({})
   readonly property bool anyFetchRunning: fetchProc.running || axisFetchProc.running
-    || sbiFetchProc.running || iciciFetchProc.running
+    || sbiFetchProc.running || iciciFetchProc.running || indmoneyFetchProc.running
 
   // Only one fetch runs at a time (see BankBalance.allowed), so "the fetch
   // that is running" is a single thing: its bank, and its status file's
@@ -63,11 +72,13 @@ Panel {
   readonly property string activeBank: fetchProc.running ? "HDFC"
     : axisFetchProc.running ? "Axis"
       : sbiFetchProc.running ? "SBI"
-        : iciciFetchProc.running ? "ICICI" : ""
+        : iciciFetchProc.running ? "ICICI"
+          : indmoneyFetchProc.running ? "INDmoney" : ""
   readonly property var activeStatus: fetchProc.running ? fetchStatus
     : axisFetchProc.running ? axisFetchStatus
       : sbiFetchProc.running ? sbiFetchStatus
-        : iciciFetchProc.running ? iciciFetchStatus : ({})
+        : iciciFetchProc.running ? iciciFetchStatus
+          : indmoneyFetchProc.running ? indmoneyFetchStatus : ({})
   readonly property string activeStatusText: (activeStatus.message || "") !== ""
     ? activeBank + ": " + activeStatus.message : ""
   readonly property color activeStatusColor: activeStatus.stage === "error"
@@ -81,6 +92,15 @@ Panel {
     && activeStatus.stage === "qr-ready" && !!activeStatus.qr
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
+  // "bank" or "portfolio". One string with every section gated on it,
+  // the way home.library drives its seven views — see the tab strip at
+  // the top of the popup and the TabChip component below.
+  property string tab: "bank"
+  // The strip's PORTFOLIO badge: figures a day or more old, or a fetch
+  // that ended asking for a fresh sign-in. Both are states the number on
+  // screen cannot show by itself.
+  readonly property bool portfolioStale: !!store.portfolio.stale
+    && (store.holdings.length > 0 || (store.portfolio.lastOutcome || "") === "error")
   readonly property var transactions: store.transactions
   readonly property int untrackedCount: transactions.filter(function (t) { return !t.tracked }).length
   readonly property int pendingTrackedCount: transactions.filter(function (t) { return t.tracked }).length
@@ -343,6 +363,14 @@ Panel {
     property var billOverrides: ({})   // map: last4 -> { markedPaid, notifiedDate }
     property var accountNameOverrides: ({})   // map: last4 -> user-set display name
     property var transactionNameOverrides: ({})   // map: groupKey -> user-set merchant name
+    // The investments half (txdb/portfolio.py). Additive keys, so a
+    // snapshot written before they existed simply leaves these empty and
+    // the PORTFOLIO tab shows its "nothing fetched yet" line.
+    property var portfolio: ({})     // totals + how old they are
+    property var holdings: []        // what is held now, biggest first
+    property var allocation: []      // [{bucket, value, pct}]
+    property var portfolioActivity: []   // buys/sells worked out from snapshots
+    property var portfolioHistory: []    // [{asOf, value, invested}], oldest first
 
     // Loads one `txdb snapshot`. A snapshot that doesn't parse is ignored,
     // so the widget keeps showing the last good data. Everything is set
@@ -362,6 +390,11 @@ Panel {
       billOverrides = snap.bills || {}
       accountNameOverrides = snap.accountNames || {}
       transactionNameOverrides = snap.merchantNames || {}
+      portfolio = snap.portfolio || ({})
+      holdings = snap.holdings || []
+      allocation = snap.allocation || []
+      portfolioActivity = snap.portfolioActivity || []
+      portfolioHistory = snap.portfolioHistory || []
       trackedOverrides = {}
       rawTransactions = snap.transactions || []
       recompute()
@@ -387,6 +420,17 @@ Panel {
       overrides[id] = !!value
       trackedOverrides = overrides
       recompute()
+      root.txdb(["set-tracked", id, value ? "1" : "0"])
+    }
+
+    // The same toggle for an investment. `tracked` has no foreign key
+    // (see txdb/db.py), so an activity row's id goes in the same table
+    // and the same command writes it — but the optimistic patch belongs
+    // on portfolioActivity, which recompute() does not touch.
+    function setPortfolioTracked(id, value) {
+      portfolioActivity = portfolioActivity.map(function (row) {
+        return row.id === id ? Object.assign({}, row, { tracked: !!value }) : row
+      })
       root.txdb(["set-tracked", id, value ? "1" : "0"])
     }
 
@@ -507,7 +551,10 @@ Panel {
   function sendFetchNotification(text) {
     var run = {}
     try { run = JSON.parse(text) || {} } catch (e) {}
-    var name = ({ HDFC: "HDFC", AXIS: "Axis", SBI: "SBI" })[notifyBank] || notifyBank
+    // Every source that can finish a fetch, so a new one cannot show up
+    // in a notification as its own raw code again (ICICI did).
+    var name = ({ HDFC: "HDFC", AXIS: "Axis", SBI: "SBI", ICICI: "ICICI",
+                  INDMONEY: "INDmoney" })[notifyBank] || notifyBank
     // A run that started before this fetch is the previous one: this fetch
     // died before it could record anything.
     if (!run.started_at || new Date(run.started_at).getTime() < fetchStartedMs - 5000) run = {}
@@ -548,7 +595,7 @@ Panel {
   function startFetchAll() {
     if (root.anyFetchRunning) return
     root.fetchAllActive = true
-    root.fetchQueue = ["axis", "sbi", "icici"]
+    root.fetchQueue = ["axis", "sbi", "icici", "indmoney"]
     root.startFetch("hdfc")
   }
 
@@ -564,6 +611,7 @@ Panel {
     if (bank === "axis") axisFetchProc.running = true
     else if (bank === "sbi") sbiFetchProc.running = true
     else if (bank === "icici") iciciFetchProc.running = true
+    else if (bank === "indmoney") indmoneyFetchProc.running = true
     else fetchProc.running = true
   }
 
@@ -582,6 +630,10 @@ Panel {
       iciciFetchCancelled = true
       iciciCancelProc.running = true
       iciciFetchProc.running = false
+    } else if (bank === "indmoney") {
+      indmoneyFetchCancelled = true
+      indmoneyCancelProc.running = true
+      indmoneyFetchProc.running = false
     } else {
       fetchCancelled = true
       cancelProc.running = true
@@ -698,7 +750,9 @@ Panel {
     onExited: function (code) {
       if (root.iciciFetchCancelled) { root.iciciFetchCancelled = false; return }
       root.notifyFetchResult("ICICI")
-      store.reload()
+      // (There used to be a store.reload() here. store has no such
+      // function, so every ICICI fetch ended in a silent TypeError; the
+      // data/.changed watcher was doing the reload all along.)
       root.advanceFetchQueue()
     }
   }
@@ -743,6 +797,40 @@ Panel {
       try { root.sbiFetchStatus = JSON.parse(text() || "{}") } catch (e) { root.sbiFetchStatus = {} }
     }
     onLoadFailed: root.sbiFetchStatus = ({})
+    onFileChanged: reload()
+  }
+
+  property bool indmoneyFetchCancelled: false
+
+  Process {
+    id: indmoneyCancelProc
+    command: ["bash", "-c", "cd '" + root.indmoneyDir + "' && mkdir -p output && PID=$(cat output/fetch.pid 2>/dev/null); [ -n \"$PID\" ] && grep -qa src.main /proc/$PID/cmdline 2>/dev/null && kill -TERM -- -$PID 2>/dev/null; printf '%s' '{\"stage\": \"cancelled\", \"message\": \"Fetch cancelled.\", \"qr\": \"\", \"card\": \"\", \"step\": \"\", \"updated\": \"\"}' > output/.indmoney-fetch-status.json.tmp && mv output/.indmoney-fetch-status.json.tmp output/indmoney-fetch-status.json"]
+  }
+
+  // Runs the INDmoney portfolio fetch. No stdinEnabled and no QR: the
+  // OAuth sign-in happened once, in a browser, through
+  // `bin/indmoney-login`, and every run since renews its own token. When
+  // that stops working the fetcher exits 2 with "sign in again" in its
+  // message, which the portfolio tab shows in red.
+  Process {
+    id: indmoneyFetchProc
+    command: ["setsid", "bash", "-c", "cd '" + root.indmoneyDir + "' && mkdir -p output && echo $$ > output/fetch.pid && exec .venv/bin/python -m src.main > output/widget-fetch.log 2>&1"]
+    onExited: function (exitCode) {
+      if (root.indmoneyFetchCancelled) { root.indmoneyFetchCancelled = false; return }
+      root.notifyFetchResult("INDMONEY")
+      root.advanceFetchQueue()
+    }
+  }
+
+  FileView {
+    id: indmoneyFetchStatusFile
+    path: root.indmoneyOutputDir + "/indmoney-fetch-status.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      try { root.indmoneyFetchStatus = JSON.parse(text() || "{}") } catch (e) { root.indmoneyFetchStatus = {} }
+    }
+    onLoadFailed: root.indmoneyFetchStatus = ({})
     onFileChanged: reload()
   }
 
@@ -825,12 +913,38 @@ Panel {
           }
         }
 
+        // BANK | PORTFOLIO. One string and two buttons, with each
+        // section gated on it — the same arrangement home.library uses
+        // for its seven tabs. No StackLayout: the sections are already
+        // siblings in one Flickable, and keeping them so means the
+        // keyboard chain, the scroll position and the search box carry
+        // across without special cases.
+        Row {
+          width: parent.width
+          spacing: Style.spacing.xs
+
+          TabChip {
+            label: "BANK"
+            tab: "bank"
+            // The untracked count lives on the bar icon; on the strip it
+            // says which tab the badge is about.
+            badge: root.untrackedCount > 0 ? String(root.untrackedCount) : ""
+          }
+
+          TabChip {
+            label: "PORTFOLIO"
+            tab: "portfolio"
+            badge: root.portfolioStale ? "!" : ""
+          }
+        }
+
         // Compact month summary + top-3-spenders, two lines, no header or
         // separator of their own — replaces the old PanelHero block
         // (which just re-displayed "Transactions"/"N to track", redundant
         // with the icon the user already clicked) and a 5-row spender
         // list (now one elided line).
         Column {
+          visible: root.tab === "bank"
           width: parent.width
           spacing: Style.spacing.sm
 
@@ -919,7 +1033,7 @@ Panel {
 
               HoverHandler { id: fetchAllHover }
               ToolTip.visible: fetchAllHover.hovered
-              ToolTip.text: root.fetchAllActive ? "Fetching all…" : "Fetch all (HDFC, Axis, SBI, ICICI)"
+              ToolTip.text: root.fetchAllActive ? "Fetching all…" : "Fetch all (HDFC, Axis, SBI, ICICI, INDmoney)"
               ToolTip.delay: 400
 
               MouseArea {
@@ -1118,7 +1232,7 @@ Panel {
         // shares its row with the filter controls — they answer "what do I
         // owe in all" without costing a row of their own.
         Item {
-          visible: root.cardOverviewList.length > 0
+          visible: root.tab === "bank" && root.cardOverviewList.length > 0
           width: parent.width
           height: Math.max(billsHeader.implicitHeight, billsTotals.implicitHeight)
 
@@ -1172,7 +1286,7 @@ Panel {
           readonly property var total: root.creditTotal
           readonly property bool _hot: limitHover.hovered || limitHeader.activeFocus
 
-          visible: root.creditLimits.length > 0
+          visible: root.tab === "bank" && root.creditLimits.length > 0
           width: parent.width
           implicitHeight: limitTotalLabel.implicitHeight + Style.space(5) + limitTotalTrack.height
             + Style.space(4)
@@ -1287,7 +1401,7 @@ Panel {
         // the same way a bill row's detail panel does, so the section
         // grows rather than jumping.
         Item {
-          visible: root.creditLimits.length > 0 && height > 0
+          visible: root.tab === "bank" && root.creditLimits.length > 0 && height > 0
           width: parent.width
           height: root.limitsExpanded ? poolStrips.implicitHeight : 0
           clip: true
@@ -1442,7 +1556,7 @@ Panel {
         }
 
         Column {
-          visible: root.cardOverviewList.length > 0
+          visible: root.tab === "bank" && root.cardOverviewList.length > 0
           width: parent.width
           spacing: Style.spacing.xxs
 
@@ -1459,7 +1573,7 @@ Panel {
           }
         }
 
-        PanelSeparator { visible: root.cardOverviewList.length > 0; foreground: root.foreground }
+        PanelSeparator { visible: root.tab === "bank" && root.cardOverviewList.length > 0; foreground: root.foreground }
 
         // RECENT's own header shares its row with the Filter popover +
         // search-toggle button (right-aligned) instead of sitting on a
@@ -1467,6 +1581,7 @@ Panel {
         // and a separator between them would've been redundant with the
         // one above this Item anyway.
         Item {
+          visible: root.tab === "bank"
           width: parent.width
           height: Math.max(recentHeader.implicitHeight, filterRow.implicitHeight)
 
@@ -1535,7 +1650,7 @@ Panel {
           id: selectionRow
           width: parent.width
           spacing: Style.spacing.xs
-          visible: root.selectionMode
+          visible: root.tab === "bank" && root.selectionMode
 
           TextAction {
             // selectionMode is also covered by selectionRow's own
@@ -1570,7 +1685,10 @@ Panel {
           id: searchField
           visible: root.searchVisible
           width: parent.width
-          placeholderText: "Search transactions…"
+          // One box for both tabs: on BANK it narrows RECENT, on
+          // PORTFOLIO it narrows HOLDINGS (PortfolioSection reads the
+          // same root.searchQuery).
+          placeholderText: root.tab === "bank" ? "Search transactions…" : "Search holdings…"
           text: root.searchQuery
           font.family: Style.font.family
           font.pixelSize: Style.font.body
@@ -1585,6 +1703,7 @@ Panel {
         }
 
         Column {
+          visible: root.tab === "bank"
           width: parent.width
           spacing: Style.spacing.lg
 
@@ -1651,7 +1770,111 @@ Panel {
           }
         }
 
+        // The investments half. A file of its own because this one is
+        // long enough; the cost is the plumbing below, since a separate
+        // file cannot see root or store (the same trade FetchControl.qml
+        // already makes).
+        PortfolioSection {
+          id: portfolioSection
+          visible: root.tab === "portfolio"
+          width: parent.width
+
+          portfolio: store.portfolio
+          holdings: store.holdings
+          allocation: store.allocation
+          activity: store.portfolioActivity
+          history: store.portfolioHistory
+
+          foreground: root.foreground
+          creditColor: root.creditColor
+          debitColor: root.debitColor
+          pendingColor: root.pendingColor
+
+          searchQuery: root.searchQuery
+          focusNext: root.focusNext
+          scrollIntoView: root.scrollIntoView
+
+          fetchRunning: indmoneyFetchProc.running
+          // Same rule as the bank chips: one fetch at a time.
+          fetchAllowed: indmoneyFetchProc.running || !root.anyFetchRunning
+          fetchStatusText: root.activeBank === "INDmoney" ? root.activeStatusText : ""
+
+          onFetch: root.startFetch("indmoney")
+          onCancel: root.cancelFetch("indmoney")
+          onToggleTracked: function (id, value) { store.setPortfolioTracked(id, value) }
+        }
       }
+    }
+  }
+
+  // One tab on the strip at the top of the popup. A BorderSurface, not a
+  // Controls TabButton: every other control in this popup is one, and
+  // mixing the two would mean two focus rings and two hover treatments.
+  component TabChip: BorderSurface {
+    id: tabChip
+    required property string label
+    required property string tab
+    property string badge: ""
+    readonly property bool selected: root.tab === tabChip.tab
+    readonly property bool _hot: tabHover.hovered || tabChip.activeFocus
+
+    implicitWidth: tabLabel.implicitWidth + badgeDot.width + Style.spacing.md * 2
+    implicitHeight: Style.space(22)
+    radius: Style.cornerRadius
+    color: Style.controlFill(tabChip.activeFocus, tabChip._hot || tabChip.selected,
+                             root.foreground, Color.accent)
+    borderSpec: Border.controlSpec(
+      tabChip.activeFocus ? "focus" : (tabChip.selected ? "selected"
+        : (tabChip._hot ? "hover-cursor" : "normal")),
+      root.foreground, Color.accent)
+
+    Behavior on color { ColorAnimation { duration: 100 } }
+
+    activeFocusOnTab: true
+    Keys.onReturnPressed: root.tab = tabChip.tab
+    Keys.onEnterPressed: root.tab = tabChip.tab
+    Keys.onSpacePressed: root.tab = tabChip.tab
+    // Left/Right switch tabs from the strip. Safe beside the rows'
+    // own Left/Right (expand/collapse): those only fire on a focused
+    // row, and a row is never focused while the strip is.
+    Keys.onLeftPressed: root.tab = "bank"
+    Keys.onRightPressed: root.tab = "portfolio"
+    Keys.onUpPressed: root.focusNext(tabChip, false)
+    Keys.onDownPressed: root.focusNext(tabChip, true)
+
+    HoverHandler { id: tabHover }
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: { tabChip.forceActiveFocus(); root.tab = tabChip.tab }
+    }
+
+    Text {
+      id: tabLabel
+      anchors.centerIn: parent
+      anchors.horizontalCenterOffset: -badgeDot.width / 2
+      textFormat: Text.PlainText
+      text: tabChip.label
+      color: tabChip.selected ? root.foreground : Qt.darker(root.foreground, 1.4)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: tabChip.selected
+    }
+
+    Text {
+      id: badgeDot
+      anchors.left: tabLabel.right
+      anchors.leftMargin: tabChip.badge === "" ? 0 : Style.spacing.xs
+      anchors.verticalCenter: parent.verticalCenter
+      width: tabChip.badge === "" ? 0 : implicitWidth
+      visible: tabChip.badge !== ""
+      textFormat: Text.PlainText
+      text: tabChip.badge
+      color: Color.urgent
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: true
     }
   }
 

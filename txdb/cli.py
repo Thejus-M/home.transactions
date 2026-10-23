@@ -14,6 +14,9 @@
   txdb check                             integrity check, row counts, balance check
   txdb reconcile [BANK]                  running balances vs amounts, as JSON
   txdb derive-balances [BANK]            fill missing running balances by arithmetic
+  txdb portfolio-derive                  redo the buy/sell diff over the holding snapshots
+  txdb portfolio-check                   units x price vs value, holdings vs the total
+  txdb portfolio-ingest <file.json>      load a saved snapshot payload (offline / debug)
 
 Arguments come as separate argv entries (no shell), so names and ids need
 no quoting."""
@@ -25,7 +28,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from . import ingest, migrate, queries
+from . import ingest, migrate, portfolio, queries
 from .db import DB_PATH, connect, now, write
 
 
@@ -114,6 +117,8 @@ def main(argv: list[str]) -> int:
         print("schema:", conn.execute("PRAGMA user_version").fetchone()[0])
         problems = queries.reconcile(conn)
         print("balances:", "all add up" if not problems else queries.reconcile_summary(conn))
+        holdings = portfolio.reconcile(conn)
+        print("portfolio:", "all adds up" if not holdings else portfolio.reconcile_summary(conn))
         counts = conn.execute("SELECT COUNT(*) FILTER (WHERE balance_paise IS NOT NULL), "
                               "COUNT(*) FILTER (WHERE balance_derived = 1) FROM transactions").fetchone()
         print(f"  {counts[0]} rows carry a balance, {counts[1]} of them worked out rather than read")
@@ -123,6 +128,15 @@ def main(argv: list[str]) -> int:
         print(f"filled {ingest.derive_balances(conn, args[0] if args else None)} balances")
     elif cmd == "reconcile":
         print(json.dumps(queries.reconcile(conn, args[0] if args else None), indent=2))
+    elif cmd == "portfolio-derive":
+        print(f"{portfolio.derive_activity(conn)} activity rows worked out from the snapshots")
+    elif cmd == "portfolio-check":
+        print(json.dumps(portfolio.reconcile(conn), indent=2))
+    elif cmd == "portfolio-ingest":
+        snap = json.loads(Path(args[0]).read_text(encoding="utf-8"))
+        saved = portfolio.record_snapshot(conn, snap)
+        print(f"{saved} holdings saved for {snap['as_of']}, "
+              f"{portfolio.derive_activity(conn)} activity rows")
     else:
         print(f"Unknown command {cmd!r}\n{__doc__}", file=sys.stderr)
         return 2

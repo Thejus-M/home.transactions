@@ -5,6 +5,11 @@ transactions and credit-card billing status, and reminding you which
 transactions you haven't logged into your budget tracker yet and which
 bills aren't paid.
 
+The popup has two tabs. **BANK** is everything above; **PORTFOLIO** is
+the INDmoney investment account — net worth, allocation, every holding,
+and the buys and sells worked out from one day's figures against the
+next. One bar icon, one database, one set of keyboard rules.
+
 Bar icon, top-right corner → click opens a popup with: a compact
 month-spend/top-spenders line, a BILLS section (one row per credit card,
 click, or focus + Enter/Space, to see full details; click the status
@@ -43,6 +48,39 @@ Everything the widget shows or remembers lives in one SQLite file,
   with a new `updated` stamp each time the bank redraws the code, and the
   popup reloads the image off that stamp.
 
+The fifth source is not a bank and not a scraper.
+`indmoney-portfolio-fetcher` reads the investment portfolio over
+INDmoney's official read-only MCP server — JSON-RPC over HTTPS, OAuth
+sign-in once in a browser and silent token refresh after that, no model
+and no agent in the loop. It writes the same `output/*-fetch-status.json`
+shape the scrapers do, so the chip, the progress line and Cancel need no
+special case. INDmoney's free REST API was the obvious first choice and
+does not work: it returns equity holdings only, no mutual funds, no net
+worth, and an order book that covers the current trading day.
+
+**Portfolio transactions are worked out, not read.** The server reports
+holdings, not a statement, so every fetch saves a dated snapshot
+(`holdings`, `holding_history`, `portfolio_totals`, `allocation_history`)
+and `txdb portfolio-derive` diffs consecutive snapshots into
+`portfolio_activity`: units up with money in is a buy priced at what was
+actually paid a unit, units up with nothing invested is a bonus or a
+split, units down is a sell, units to zero an exit, a buy repeating
+within 2% about a month apart is a SIP — and a value that moved while the
+units stood still is the market, not a trade, and produces nothing. Every
+such row is flagged `inferred` and says so on its face, the same rule
+`balance_derived` follows on the bank side. The first fetch therefore
+shows holdings and almost no activity: there is nothing yet to diff
+against.
+
+Money stays INTEGER paise. Units, prices and rates are INTEGER at 1e-4
+(`db.to_e4` / `db.from_e4`), because a NAV is quoted to four decimals and
+a fund holds fractional units.
+
+`txdb check` reports the portfolio's own arithmetic beside the banks':
+units × price must equal a holding's value, and the holdings must add up
+to the total. Commands: `txdb portfolio-derive`, `txdb portfolio-check`,
+`txdb portfolio-ingest <file.json>`.
+
 The credit-card picture comes from two blocks on HDFC's Overview tab,
 both scraped into `card_cycles` / `hdfc_card_cycles_raw`: the Billing
 Summary ("Unbilled Amount", "Total Outstanding", "Upcoming Payment" and
@@ -58,6 +96,15 @@ They add up: `last statement - credits + purchases + unsettled = total
 outstanding`. The same scrape stores `credit_limit_total` and
 `available_limit`; both cards report the same pair, because the limit is
 one pool shared across the account.
+
+Investment tables (schema v8): `instruments` (keyed on ISIN where there
+is one, since a fund keeps its ISIN when it changes its name), `holdings`
+(one row per instrument per broker — INDmoney aggregates external
+brokers, and the same fund in two places is two holdings), the per-day
+`holding_history` modelled on `balance_history`, `portfolio_totals`,
+`allocation_history`, `portfolio_activity`, `indmoney_raw` (every
+response as it arrived, so a later idea can mine a field without another
+round trip) and the `portfolio_view` for ad-hoc `sqlite3`.
 
 Tables: `accounts` (id `BANK|type|last4`, optional display name),
 `transactions` (shared row for every bank, with `group_key` /
@@ -92,6 +139,47 @@ Tests: `python3 -m unittest discover -s tests`.
 
 ## Features
 
+- **BANK | PORTFOLIO tabs** — one string (`root.tab`) with every section
+  gated on it and a two-chip strip at the top, the arrangement
+  home.library uses for its seven views. Not a `StackLayout`: the
+  sections stay siblings in the one Flickable, so the focus chain, the
+  scroll position and the search box carry across without special cases.
+  Left/Right switch tabs while the strip is focused, which is safe beside
+  the rows' own Left/Right because a row is never focused while the strip
+  is. The PORTFOLIO chip carries a "!" while the figures are a day or
+  more old or the last fetch asked for a fresh sign-in.
+- **Net worth block** (PORTFOLIO) — net worth, `invested → value`, the
+  absolute and percent gain, today's change, XIRR, and a 90-day value
+  sparkline drawn with `QtQuick.Shapes` (no plugin here uses `Canvas`;
+  every vector mark is a `ShapePath` already, and Shapes are rendered on
+  the GPU rather than repainted on each snapshot). Under it, how old the
+  figures are — "today", "2 days old" — in amber once they are behind and
+  red when the session has expired, because a stale number that looks
+  current is the failure worth avoiding. If INDmoney's own total
+  disagrees with the holdings it sent by more than a percent, the panel
+  says so and shows the rows rather than silently preferring one.
+- **ALLOCATION** (PORTFOLIO) — one segmented bar with a key under it,
+  reusing the credit-limit bar's interaction; a 0.3% bucket still gets a
+  pixel, so a small bucket never reads as a missing one.
+- **HOLDINGS** (PORTFOLIO) — one sub-group per asset kind (mutual funds,
+  stocks, US stocks, …) in a fixed order with that group's value and
+  gain, then a row each: the fund house's initial in a disc, the name, a
+  weight bar saying what share of the portfolio it is, the category and
+  broker, and the value with the gain under it. Expand a row (click,
+  Enter, or Right) for units, average and current NAV or price, invested,
+  value, gain, XIRR, today's move, share of portfolio, category, fund
+  house or exchange, broker, symbol, ISIN, and how long it has been held.
+- **ACTIVITY** (PORTFOLIO) — the derived buys and sells, grouped by day
+  with the same `Model.groupByDate` the bank rows use, each with a
+  BUY/SELL/SIP/NEW/EXIT/BONUS pill and the words "worked out, not read".
+  Rows toggle `tracked` on click or Enter exactly as a bank row does —
+  the `tracked` table has no foreign key, so an investment shares it.
+- **The lines a single figure cannot say** (PORTFOLIO) — top-5
+  concentration once it passes half the portfolio, duplicate categories
+  ("3 Flexi Cap funds, 62% of the portfolio"), money actually put in this
+  month and how much of it was SIP, and the drawdown from peak once it is
+  past 5%. Each one is suppressed unless it has something to report, so a
+  simple portfolio shows none of them rather than a row of zeros.
 - **Month summary + account balances** — merged into one compact block at
   the top (no separate header or separator — the old layout spent a full
   section's worth of margin+header+separator overhead just to show a
@@ -274,10 +362,24 @@ Tests: `python3 -m unittest discover -s tests`.
 - `Panel.qml` — bar icon + popup panel, entry point
 - `Icon.qml` — bar icon glyph + untracked-count badge + bill-due badge
 - `Model.js` — real-data formatting/filtering/bill-status helpers
+- `PortfolioSection.qml` — the whole PORTFOLIO tab, with its own
+  `HoldingRow` / `ActivityRow` as inline components (a separate file
+  cannot see `root` or `store`, so what it needs arrives as properties
+  and what it changes leaves as signals — the trade `FetchControl.qml`
+  already documents)
+- `Portfolio.js` — the portfolio maths: totals, grouping, allocation
+  segments, concentration, category overlap, net invested, movers,
+  sparkline points, drawdown. No QML imports, so node can test it
+- `Sparkline.qml`, `IndmoneyLogo.qml` — a `Shape` value line, and the
+  INDmoney mark following the same contract as the four bank marks
 - `txdb/`, `bin/txdb` — the transactions database and its command line
 - `tests/test_txdb.py` — database tests (stdlib `unittest`)
 - `tests/test_model_js.py` — the bill maths in `Model.js`, run through
   `node` (skipped when node isn't installed)
+- `tests/test_portfolio.py` — the snapshot store, the buy/sell/SIP
+  classifier and the v8 migration landing on a v7 database
+- `tests/test_portfolio_js.py` — the maths in `Portfolio.js`, through the
+  same `node` harness
 
 ## Install (local dev)
 

@@ -267,6 +267,133 @@ MIGRATIONS = [
         SELECT r.* FROM card_cycles_raw r JOIN accounts a ON a.id = r.account_id
         WHERE a.bank = 'HDFC';
     """,
+    # v8: investments. INDmoney's MCP server is read-only and hands over
+    # holdings, not a statement, so this half of the database is a dated
+    # snapshot plus the activity worked out from consecutive snapshots.
+    # It stays clear of accounts and transactions: an investment has units
+    # and a price where a bank row has an amount and a running balance, and
+    # accounts.account_type only knows 'checking' and 'credit'.
+    #
+    # Money stays INTEGER paise. Units, prices and rates are INTEGER at
+    # 1e-4 (to_e4 / from_e4), because a NAV is quoted to four decimals and
+    # a fund holds fractional units -- paise would round both away.
+    """
+    CREATE TABLE instruments (
+        id TEXT PRIMARY KEY,                     -- MF|<isin>, EQ|NSE|<symbol>, US|<ticker>, EPF|<id>
+        kind TEXT NOT NULL,                      -- mf, equity, us_equity, etf, bond, epf, nps, fd, gold, crypto, reit, pms, aif, cash, other
+        name TEXT NOT NULL,
+        isin TEXT,
+        symbol TEXT,
+        category TEXT,                           -- 'Flexi Cap', 'Large Cap', once enrichment fills it
+        amc TEXT,                                -- fund house, or the exchange for a stock
+        currency TEXT NOT NULL DEFAULT 'INR',
+        ind_key TEXT,                            -- INDmoney's own identifier, for re-querying
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL
+    );
+    CREATE INDEX instruments_by_kind ON instruments (kind, name);
+
+    -- What is held right now: one row per instrument per broker, replaced
+    -- on every fetch. INDmoney aggregates external brokers, so the same
+    -- fund can sit in two places and they do not add up into one holding.
+    CREATE TABLE holdings (
+        instrument_id TEXT NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+        broker TEXT NOT NULL DEFAULT '',
+        units_e4 INTEGER,
+        avg_cost_e4 INTEGER,
+        invested_paise INTEGER,
+        price_e4 INTEGER,                        -- NAV, or last traded price
+        value_paise INTEGER,
+        pnl_paise INTEGER,
+        pnl_pct_e4 INTEGER,
+        xirr_e4 INTEGER,
+        day_change_paise INTEGER,
+        as_of TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY (instrument_id, broker)
+    );
+
+    -- The same row kept per day, the way balance_history keeps a bank
+    -- balance. Everything the widget can say about a portfolio over time
+    -- -- and every derived buy and sell -- comes out of this table.
+    CREATE TABLE holding_history (
+        instrument_id TEXT NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+        broker TEXT NOT NULL DEFAULT '',
+        as_of TEXT NOT NULL,
+        units_e4 INTEGER,
+        avg_cost_e4 INTEGER,
+        invested_paise INTEGER,
+        price_e4 INTEGER,
+        value_paise INTEGER,
+        pnl_paise INTEGER,
+        xirr_e4 INTEGER,
+        PRIMARY KEY (instrument_id, broker, as_of)
+    );
+    CREATE INDEX holding_history_by_date ON holding_history (as_of);
+
+    CREATE TABLE portfolio_totals (
+        as_of TEXT PRIMARY KEY,
+        net_worth_paise INTEGER,
+        assets_paise INTEGER,
+        liabilities_paise INTEGER,
+        invested_paise INTEGER,
+        value_paise INTEGER,
+        pnl_paise INTEGER,
+        day_change_paise INTEGER,
+        xirr_e4 INTEGER,
+        fetched_at TEXT NOT NULL
+    );
+
+    CREATE TABLE allocation_history (
+        as_of TEXT NOT NULL,
+        bucket TEXT NOT NULL,
+        value_paise INTEGER,
+        pct_e4 INTEGER,
+        PRIMARY KEY (as_of, bucket)
+    );
+
+    -- Portfolio "transactions". INDmoney exposes no transaction history,
+    -- so every row here is worked out by diffing two snapshots and is
+    -- flagged inferred, the same honesty rule transactions.balance_derived
+    -- follows: a number nobody read off a statement says so.
+    CREATE TABLE portfolio_activity (
+        id TEXT PRIMARY KEY,
+        instrument_id TEXT NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+        broker TEXT NOT NULL DEFAULT '',
+        date TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('buy', 'sell', 'sip', 'new', 'exit', 'corporate')),
+        units_e4 INTEGER,
+        price_e4 INTEGER,
+        amount_paise INTEGER,
+        inferred INTEGER NOT NULL DEFAULT 1,
+        note TEXT,
+        first_seen_at TEXT NOT NULL
+    );
+    CREATE INDEX portfolio_activity_by_date ON portfolio_activity (date DESC, id);
+
+    -- Every tool response as it arrived, so a later idea can mine a field
+    -- without another round trip. Same reasoning as card_cycles_raw.
+    CREATE TABLE indmoney_raw (
+        tool TEXT NOT NULL,
+        as_of TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY (tool, as_of)
+    );
+
+    CREATE VIEW portfolio_view AS
+        SELECT i.kind, i.name, i.symbol, i.isin, i.category, i.amc, h.broker,
+               h.units_e4 / 10000.0 AS units,
+               h.avg_cost_e4 / 10000.0 AS avg_cost,
+               h.price_e4 / 10000.0 AS price,
+               h.invested_paise / 100.0 AS invested,
+               h.value_paise / 100.0 AS value,
+               h.pnl_paise / 100.0 AS pnl,
+               h.xirr_e4 / 10000.0 AS xirr,
+               h.as_of, h.instrument_id
+        FROM holdings h JOIN instruments i ON i.id = h.instrument_id
+        ORDER BY h.value_paise DESC;
+    """,
 ]
 
 
@@ -354,3 +481,13 @@ def to_paise(amount) -> int | None:
 
 def from_paise(paise) -> float | None:
     return None if paise is None else paise / 100
+
+
+# Units, prices and rates: four decimals, stored as integers for the same
+# reason money is. A NAV of 123.4567 is 1234567; 8.4% XIRR is 840.
+def to_e4(value) -> int | None:
+    return None if value is None else int(round(float(value) * 10000))
+
+
+def from_e4(value) -> float | None:
+    return None if value is None else value / 10000

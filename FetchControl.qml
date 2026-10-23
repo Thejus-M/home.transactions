@@ -10,7 +10,8 @@ import qs.Ui
 Item {
   id: root
 
-  // "hdfc", "axis" or "sbi": which logo the button shows.
+  // Which logo the button shows: "hdfc", "axis", "sbi", "icici" or
+  // "indmoney" (the portfolio tab's own source, not a bank).
   property string bank: "hdfc"
   property bool running: false
   // False while the other bank's fetch runs (only one fetch at a time).
@@ -165,6 +166,12 @@ Item {
 
     SbiLogo {
       visible: root.bank === "sbi"
+      anchors.centerIn: parent
+      markSize: root.logoSize
+    }
+
+    IndmoneyLogo {
+      visible: root.bank === "indmoney"
       anchors.centerIn: parent
       markSize: root.logoSize
     }
