@@ -836,11 +836,12 @@ Panel {
 
           Item {
             width: parent.width
-            height: monthSummaryLabel.implicitHeight
+            height: Math.max(monthSummaryLabel.implicitHeight, fetchAllIcon.height)
 
             Text {
               id: monthSummaryLabel
               anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
               textFormat: Text.PlainText
               text: root.monthSummary.monthLabel + ": "
                 + Model.formatAmount({ amount: -root.monthSummary.spent, currency: root.monthSummary.currency })
@@ -852,13 +853,85 @@ Panel {
             }
 
             Text {
-              anchors.right: parent.right
+              anchors.right: fetchAllIcon.left
+              anchors.rightMargin: Style.spacing.sm
+              anchors.verticalCenter: parent.verticalCenter
               textFormat: Text.PlainText
               text: Model.formatAmount({ amount: root.monthSummary.income, currency: root.monthSummary.currency }) + " in"
               color: root.creditColor
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
               font.bold: true
+            }
+
+            // Fetch all: HDFC first (its QR needs a scan before anything
+            // else can start), then Axis, SBI and ICICI in turn, each one
+            // starting the moment the last exits cleanly. A cancel on
+            // whichever bank is running stops the chain too (see
+            // startFetchAll/advanceFetchQueue/cancelFetch above). Icon
+            // only, in the topmost row — the four bank chips below already
+            // carry the "reload one bank" affordance as their own logos.
+            BorderSurface {
+              id: fetchAllIcon
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.space(20)
+              height: width
+              radius: width / 2
+              readonly property bool _hot: fetchAllHover.hovered || fetchAllIcon.activeFocus
+              color: Style.controlFill(fetchAllIcon.activeFocus, _hot, root.foreground, Color.accent)
+              borderSpec: Border.controlSpec(
+                fetchAllIcon.activeFocus ? "focus" : (_hot ? "hover-cursor" : "normal"),
+                root.foreground, Color.accent)
+              opacity: root.anyFetchRunning && !root.fetchAllActive ? 0.4 : 1.0
+
+              activeFocusOnTab: true
+              Keys.onReturnPressed: if (!root.anyFetchRunning) root.startFetchAll()
+              Keys.onEnterPressed: if (!root.anyFetchRunning) root.startFetchAll()
+              Keys.onSpacePressed: if (!root.anyFetchRunning) root.startFetchAll()
+              Keys.onDownPressed: root.focusNext(fetchAllIcon, true)
+              Keys.onUpPressed: root.focusNext(fetchAllIcon, false)
+
+              Text {
+                id: fetchAllGlyph
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: "⟳"
+                color: root.foreground
+                font.pixelSize: Style.font.caption
+
+                // Keeps turning for the whole chain, not just one bank's
+                // own fetch — fetchAllActive covers HDFC through ICICI.
+                NumberAnimation on rotation {
+                  running: root.fetchAllActive
+                  from: 0; to: 360
+                  duration: 900
+                  loops: Animation.Infinite
+                }
+
+                // Stop level when the chain ends, wherever the spin had
+                // reached — same as FetchControl's own logo button.
+                Connections {
+                  target: root
+                  function onFetchAllActiveChanged() {
+                    if (!root.fetchAllActive) fetchAllGlyph.rotation = 0
+                  }
+                }
+              }
+
+              HoverHandler { id: fetchAllHover }
+              ToolTip.visible: fetchAllHover.hovered
+              ToolTip.text: root.fetchAllActive ? "Fetching all…" : "Fetch all (HDFC, Axis, SBI, ICICI)"
+              ToolTip.delay: 400
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  fetchAllIcon.forceActiveFocus()
+                  if (!root.anyFetchRunning) root.startFetchAll()
+                }
+              }
             }
           }
 
@@ -897,23 +970,6 @@ Panel {
               // No bank account on this profile, so the chip carries the
               // card's own line instead of a balance it will never have.
               balanceText: root.cardTextFor("ICICI")
-            }
-          }
-
-          // One button to chain all four: HDFC first (its QR needs a scan
-          // before anything else can start), then Axis, SBI and ICICI in
-          // turn, each one starting the moment the last exits cleanly. A
-          // cancel on whichever bank is running stops the chain too.
-          Item {
-            width: parent.width
-            height: fetchAllButton.height
-
-            TextAction {
-              id: fetchAllButton
-              anchors.right: parent.right
-              label: root.fetchAllActive ? "Fetching all…" : "Fetch all"
-              opacity: root.anyFetchRunning && !root.fetchAllActive ? 0.4 : 1.0
-              onTriggered: if (!root.anyFetchRunning) root.startFetchAll()
             }
           }
 
