@@ -892,13 +892,11 @@ Panel {
               Keys.onDownPressed: root.focusNext(fetchAllIcon, true)
               Keys.onUpPressed: root.focusNext(fetchAllIcon, false)
 
-              Text {
+              Icon {
                 id: fetchAllGlyph
                 anchors.centerIn: parent
-                textFormat: Text.PlainText
-                text: "⟳"
+                iconSize: Style.space(14)
                 color: root.foreground
-                font.pixelSize: Style.font.caption
 
                 // Keeps turning for the whole chain, not just one bank's
                 // own fetch — fetchAllActive covers HDFC through ICICI.
