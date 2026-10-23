@@ -2,22 +2,19 @@ import QtQuick
 import QtQuick.Shapes
 import qs.Commons
 
-// Personal, unofficial approximation of the ICICI mark: a solid lowercase
+// Personal, unofficial approximation of the ICICI mark: a white lowercase
 // "i" — a round dot and a tapered stem that sweeps down to the left — on a
-// white circular badge, the way ICICI shows it (red mark, white roundel),
-// not blended into whatever surface it sits on. Not the official ICICI
-// Bank logo and not a copy of one: its own proportions, drawn with shapes
-// only (no images, no Text), sized by markSize, the same contract AxisLogo
-// and SbiLogo use.
+// rounded-square orange-to-red badge, matching how ICICI actually shows
+// its mark (reference image supplied, not reproduced here — own geometry,
+// own gradient stops, drawn with shapes only, no images, no Text), sized
+// by markSize, the same contract AxisLogo and SbiLogo use.
 //
-// Was previously drawn as a solid ellipse with the "i" knocked out of it
-// (OddEvenFill) — rendered and checked (this sandbox can't run QML, so via
-// an equivalent SVG), it came out as a large red oval with a dark
-// silhouette hole, not a red "i". The ellipse is gone; dot and stem are
-// filled directly, now over a white circle rather than transparent.
-//
-// The colour is the one the single-colour glyph ships in; third-party
-// sources disagree on ICICI's palette, so treat it as approximate.
+// Went through two wrong builds first, both checked by rendering an
+// equivalent SVG (this sandbox can't run QML): a solid ellipse with the
+// "i" knocked out of it came out as a plain red oval with a dark hole, and
+// a red "i" on a white circle turned out to be backwards — ICICI's badge
+// is white-on-colour, not colour-on-white. This is the one that actually
+// matched the reference once rendered.
 Item {
   id: root
 
@@ -26,12 +23,13 @@ Item {
 
   // Hard-coded rather than themed: a bank mark that changed hue with the
   // wallpaper would stop being recognisable.
-  readonly property color brand: "#AE282E"
-  readonly property color badge: "#FFFFFF"
+  readonly property color badgeStart: "#F7941E"
+  readonly property color badgeEnd: "#AE282E"
+  readonly property color mark: "#FFFFFF"
 
   // The "i" is drawn in a 0..1 unit square, same as always, but mapped
   // into the middle (1 - 2*pad) of the badge rather than filling it edge
-  // to edge, so it doesn't touch the circle's rim.
+  // to edge, so it doesn't touch the badge's corners.
   readonly property real pad: 0.16
   function f(v) { return root.s * (root.pad + v * (1 - 2 * root.pad)) }
 
@@ -42,8 +40,11 @@ Item {
 
   Rectangle {
     anchors.fill: parent
-    radius: width / 2
-    color: root.badge
+    radius: width * 0.26
+    gradient: Gradient {
+      GradientStop { position: 0.0; color: root.badgeStart }
+      GradientStop { position: 1.0; color: root.badgeEnd }
+    }
   }
 
   Shape {
@@ -53,7 +54,7 @@ Item {
     layer.samples: 4
 
     ShapePath {
-      fillColor: root.brand
+      fillColor: root.mark
       strokeWidth: 0
 
       // The dot, upright.
