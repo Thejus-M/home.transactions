@@ -22,7 +22,7 @@ Panel {
   id: root
   moduleName: "home.transactions"
   ipcTarget: "home.transactions"
-  manageIpc: false
+  manageIpc: true
 
   // Sibling repo on this machine. Change here if that repo ever moves —
   // a single hardcoded path is simpler than a settings UI for a value
@@ -96,6 +96,9 @@ Panel {
   // the way home.library drives its seven views — see the tab strip at
   // the top of the popup and the TabChip component below.
   property string tab: "bank"
+  // The two tabs scroll independently; carrying one's offset into the
+  // other lands the reader halfway down a list they have not seen.
+  onTabChanged: if (flick) flick.contentY = 0
   // The strip's PORTFOLIO badge: figures a day or more old, or a fetch
   // that ended asking for a fresh sign-in. Both are states the number on
   // screen cannot show by itself.
@@ -285,7 +288,13 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  onOpenedChanged: if (opened) root.refreshData()
+  onOpenedChanged: if (opened) {
+    root.refreshData()
+    // Reopening deep inside a list hides the summary the panel exists to
+    // show, so every open starts at the top. The popup's content may not
+    // be built yet on the first open, hence the guard.
+    if (flick) flick.contentY = 0
+  }
 
   // --- Transactions database (data/transactions.db, see txdb/) ---
   // Every persistent piece of data lives in one SQLite file. The widget

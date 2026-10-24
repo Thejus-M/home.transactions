@@ -63,6 +63,29 @@ function activityLabel(kind) {
 // Money in (buy/sip/new) reads as an outflow, money back (sell/exit) as
 // an inflow — the same sign convention a bank row uses, so the colours
 // mean one thing across both tabs.
+// INDmoney equates invested with market value, and reports no profit, for
+// a holding whose purchase price it never had -- stock held at another
+// broker, mostly. A position whose price moved today cannot also be exactly
+// flat since purchase, so that pairing means the cost is unknown rather than
+// the gain nil. Reporting "+0.0%" there would state something untrue.
+// A fractional US share can be a few thousandths of a unit, so two decimal
+// places round it to a flat "0". Keep roughly four significant figures
+// below one unit, and drop the zeros that buys back.
+function formatUnits(units) {
+  var n = Number(units) || 0
+  if (!n) return "0"
+  var abs = Math.abs(n)
+  var decimals = Math.min(8, Math.max(2, 4 - Math.floor(Math.log(abs) / Math.LN10)))
+  var text = n.toFixed(decimals)
+  if (text.indexOf(".") !== -1) text = text.replace(/0+$/, "").replace(/\.$/, "")
+  return text
+}
+function costKnown(holding) {
+  if (!holding) return false
+  var invested = holding.invested || 0
+  return !((holding.pnl || 0) === 0 && (holding.dayChange || 0) !== 0
+           && invested !== 0 && invested === (holding.value || 0))
+}
 function activityIsOutflow(kind) {
   return kind === "buy" || kind === "sip" || kind === "new"
 }
@@ -169,7 +192,11 @@ function groupByKind(holdings) {
       value: _round(value),
       invested: _round(invested),
       pnl: _round(value - invested),
-      pnlPct: invested ? _round((value - invested) / invested * 100) : 0
+      pnlPct: invested ? _round((value - invested) / invested * 100) : 0,
+      // A group whose every holding has an unknown cost sums to no profit,
+      // which would read as "broke even" rather than "nothing to compare
+      // against". The header leaves the figure out instead -- see costKnown.
+      costKnown: rows.some(costKnown)
     })
   }
   return out

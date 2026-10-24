@@ -222,5 +222,70 @@ class LabelTests(Base):
         self.assertEqual(self.js("activityLabel('corporate')"), "BONUS")
 
 
+@unittest.skipUnless(NODE, "node is not installed")
+class CostBasisTests(Base):
+    """A holding INDmoney has no purchase price for comes back with its
+    invested amount set to its market value and no profit, which is not
+    the same claim as a position that has broken exactly even."""
+
+    def test_a_holding_that_moved_today_but_shows_no_profit_has_no_known_cost(self):
+        row = hold("Tata Motors", kind="equity", value=3168.0, invested=3168.0,
+                   pnl=0.0, pnlPct=0.0, dayChange=-146.0)
+        self.assertFalse(self.js("costKnown(input.row)", row=row))
+
+    def test_a_genuinely_flat_holding_keeps_its_cost(self):
+        # EPF really is worth what went into it, and it does not move daily.
+        row = hold("Provident fund", kind="epf", value=89507.0, invested=89507.0,
+                   pnl=0.0, pnlPct=0.0, dayChange=0.0)
+        self.assertTrue(self.js("costKnown(input.row)", row=row))
+
+    def test_an_ordinary_holding_is_unaffected(self):
+        self.assertTrue(self.js("costKnown(input.row)", row=hold("HDFC Flexi Cap")))
+
+    def test_a_group_of_unknown_cost_holdings_reports_no_percentage(self):
+        rows = [hold("Tata Motors", kind="equity", value=3168.0, invested=3168.0,
+                     pnl=0.0, pnlPct=0.0, dayChange=-146.0),
+                hold("NTPC", kind="equity", value=1490.0, invested=1490.0,
+                     pnl=0.0, pnlPct=0.0, dayChange=-23.0)]
+        group = self.js("groupByKind(input.rows)[0]", rows=rows)
+        self.assertFalse(group["costKnown"])
+
+    def test_one_known_cost_is_enough_for_the_group(self):
+        rows = [hold("Tata Motors", kind="equity", value=3168.0, invested=3168.0,
+                     pnl=0.0, pnlPct=0.0, dayChange=-146.0),
+                hold("Infosys", kind="equity", value=2000.0, invested=1800.0)]
+        group = self.js("groupByKind(input.rows)[0]", rows=rows)
+        self.assertTrue(group["costKnown"])
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class UnitFormatTests(Base):
+    """Fractional US shares are a few thousandths of a unit. Two decimals
+    turn those into a flat "0", which reads as holding nothing at all."""
+
+    def test_a_fraction_of_a_share_keeps_its_figures(self):
+        self.assertEqual(self.js("formatUnits(0.0042263)"), "0.0042263")
+        self.assertEqual(self.js("formatUnits(0.0148181)"), "0.014818")
+
+    def test_whole_units_stay_short(self):
+        self.assertEqual(self.js("formatUnits(95.42)"), "95.42")
+        self.assertEqual(self.js("formatUnits(8)"), "8")
+
+    def test_nothing_held_reads_as_zero(self):
+        self.assertEqual(self.js("formatUnits(0)"), "0")
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class MovedTests(Base):
+    """An opening position and a bonus issue move no money, so the row must
+    not be painted as an outflow -- the day total already leaves them out."""
+
+    def test_opening_and_bonus_rows_move_nothing(self):
+        self.assertEqual(
+            self.js("[activityMoved('new'), activityMoved('corporate'),"
+                    " activityMoved('buy'), activityMoved('sell')]"),
+            [False, False, True, True])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -90,6 +90,13 @@ Column {
   readonly property int holdingAvatarWidth: Style.space(30)
   readonly property int contentLeft: Style.spacing.rowPaddingX + holdingAvatarWidth + Style.spacing.md
 
+  // Thousands separators above a unit, significant figures below one --
+  // see Portfolio.formatUnits for why a fractional share needs them.
+  function unitText(units) {
+    var n = Math.abs(Number(units) || 0)
+    return n && n < 1 ? Portfolio.formatUnits(units) : Model.formatGrouped(units)
+  }
+
   function pnlColor(amount) {
     return amount < 0 ? section.debitColor : section.creditColor
   }
@@ -505,9 +512,11 @@ Column {
             anchors.right: parent.right
             anchors.verticalCenter: groupLabel.verticalCenter
             textFormat: Text.PlainText
-            text: section.money(modelData.value) + "   "
-              + section.signedPercent(modelData.pnlPct)
-            color: section.pnlColor(modelData.pnl)
+            text: section.money(modelData.value)
+              + (modelData.costKnown
+                  ? "   " + section.signedPercent(modelData.pnlPct) : "")
+            color: modelData.costKnown
+              ? section.pnlColor(modelData.pnl) : Qt.darker(section.foreground, 1.4)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
@@ -633,6 +642,7 @@ Column {
     readonly property bool _hot: holdingHover.hovered || holdingRow.activeFocus
     readonly property int collapsedHeight: Style.space(46)
     readonly property real pnl: holdingRow.holding.pnl || 0
+    readonly property bool costKnown: Portfolio.costKnown(holdingRow.holding)
 
     implicitHeight: holdingRow.collapsedHeight
       + (holdingRow.expanded ? holdingDetails.implicitHeight + Style.space(10) : 0)
@@ -771,9 +781,12 @@ Column {
           width: parent.width
           horizontalAlignment: Text.AlignRight
           textFormat: Text.PlainText
-          text: section.signedMoney(holdingRow.pnl)
-            + " (" + section.signedPercent(holdingRow.holding.pnlPct || 0) + ")"
-          color: section.pnlColor(holdingRow.pnl)
+          text: holdingRow.costKnown
+            ? section.signedMoney(holdingRow.pnl)
+              + " (" + section.signedPercent(holdingRow.holding.pnlPct || 0) + ")"
+            : "cost not known"
+          color: holdingRow.costKnown
+            ? section.pnlColor(holdingRow.pnl) : Qt.darker(section.foreground, 1.5)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }
@@ -796,7 +809,7 @@ Column {
       Repeater {
         model: [
           { label: "Units", value: holdingRow.holding.units
-              ? Model.formatGrouped(holdingRow.holding.units) : "" },
+              ? section.unitText(holdingRow.holding.units) : "" },
           { label: holdingRow.holding.kind === "mf" ? "Average NAV" : "Average price",
             value: holdingRow.holding.avgCost ? section.money(holdingRow.holding.avgCost) : "" },
           { label: holdingRow.holding.kind === "mf" ? "Current NAV" : "Last price",
@@ -860,6 +873,14 @@ Column {
     id: activityRow
     required property var entry
     readonly property bool outflow: Portfolio.activityIsOutflow(activityRow.entry.kind)
+    // A position that was simply there the first time we looked, and units
+    // from a bonus or split, moved no money. Painting those as an outflow
+    // claims a purchase that never happened, and contradicts the day total,
+    // which already leaves them out -- see Portfolio.activityMoved.
+    readonly property bool moved: Portfolio.activityMoved(activityRow.entry.kind)
+    readonly property color markColor: !activityRow.moved
+      ? Qt.darker(section.foreground, 1.5)
+      : (activityRow.outflow ? section.debitColor : section.creditColor)
     readonly property bool _hot: activityHover.hovered || activityRow.activeFocus
     readonly property int collapsedHeight: Style.space(40)
 
@@ -901,13 +922,13 @@ Column {
       width: Style.space(24)
       height: width
       radius: width / 2
-      color: Util.alpha(activityRow.outflow ? section.debitColor : section.creditColor, 0.20)
+      color: Util.alpha(activityRow.markColor, 0.20)
 
       Text {
         anchors.centerIn: parent
         textFormat: Text.PlainText
-        text: activityRow.outflow ? "↓" : "↑"
-        color: activityRow.outflow ? section.debitColor : section.creditColor
+        text: !activityRow.moved ? "•" : (activityRow.outflow ? "↓" : "↑")
+        color: activityRow.markColor
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
         font.bold: true
@@ -938,7 +959,7 @@ Column {
         elide: Text.ElideRight
         text: Portfolio.activityLabel(activityRow.entry.kind)
           + (activityRow.entry.units
-              ? "  ·  " + Model.formatGrouped(activityRow.entry.units) + " units" : "")
+              ? "  ·  " + section.unitText(activityRow.entry.units) + " units" : "")
           + (activityRow.entry.price
               ? " @ " + section.money(activityRow.entry.price) : "")
           // Said on every row, not once in the header: a figure nobody
@@ -957,7 +978,7 @@ Column {
       anchors.verticalCenter: parent.verticalCenter
       textFormat: Text.PlainText
       text: section.money(activityRow.entry.shown || 0)
-      color: activityRow.outflow ? section.debitColor : section.creditColor
+      color: activityRow.markColor
       font.family: Style.font.family
       font.pixelSize: Style.font.bodySmall
       font.bold: true

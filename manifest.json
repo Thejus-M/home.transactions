@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "home.transactions",
   "name": "Transactions",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "author": "iam033720+claude@gmail.com",
   "license": "MIT",
   "description": "Bank transactions, credit-card bills and the INDmoney investment portfolio, in one popup.",

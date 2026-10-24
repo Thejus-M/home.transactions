@@ -69,8 +69,25 @@ within 2% about a month apart is a SIP — and a value that moved while the
 units stood still is the market, not a trade, and produces nothing. Every
 such row is flagged `inferred` and says so on its face, the same rule
 `balance_derived` follows on the bank side. The first fetch therefore
-shows holdings and almost no activity: there is nothing yet to diff
-against.
+shows every holding with an opening NEW row and no buys or sells: there
+is nothing yet to diff against.
+
+**An opening position moved no money.** A holding seen for the first
+time becomes a NEW row dated that day, but nothing was bought that day —
+the money went in long before, and the server cannot say when. Those
+rows, and bonus or split rows, carry a neutral dot rather than the
+spend arrow and are left out of the day's total, so a first fetch reads
+as an opening balance rather than as a day's worth of spending.
+
+**A holding INDmoney never knew the cost of says so.** Stock held at
+another broker comes back with `invested_amount` equal to `market_value`
+and zero profit, which is not the same claim as a position that has
+broken exactly even. A holding whose price moved today cannot also be
+exactly flat since purchase, so that pairing is read as a missing cost
+basis: the row reads "cost not known" rather than "+0.0%", and a group
+whose every holding is in that state shows its value with no percentage
+at all. EPF, which really is worth what was paid into it and does not
+move daily, keeps its honest zero.
 
 Money stays INTEGER paise. Prices and rates are INTEGER at 1e-4
 (`db.to_e4` / `db.from_e4`), because a NAV is quoted to four decimals.
@@ -396,3 +413,13 @@ omarchy plugin validate
 Confirm `{"id": "home.transactions"}` is in `bar.layout.right` in
 `~/.config/omarchy/shell.json` (append manually if `defaultSection` didn't
 place it automatically).
+
+The panel registers an IPC target, so it can be opened without the mouse
+— useful for a Hyprland keybind:
+
+```bash
+omarchy-shell home.transactions toggle   # also: open, close, show, hide
+```
+
+A changed `.qml` needs `omarchy-restart-shell`; `rescanPlugins` picks up
+plugins appearing and disappearing, not edits to one already loaded.
