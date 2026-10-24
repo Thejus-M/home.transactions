@@ -51,7 +51,7 @@ class Base(unittest.TestCase):
         self.dir.cleanup()
 
     def kinds(self):
-        return [(r["date"], r["kind"], r["units_e4"], r["amount_paise"]) for r in self.conn.execute(
+        return [(r["date"], r["kind"], r["units_e8"], r["amount_paise"]) for r in self.conn.execute(
             "SELECT * FROM portfolio_activity ORDER BY date, id")]
 
 
@@ -106,7 +106,7 @@ class DeriveTests(Base):
     def test_first_snapshot_is_a_new_position(self):
         portfolio.record_snapshot(self.conn, snap("2026-10-20", [holding()]))
         portfolio.derive_activity(self.conn)
-        self.assertEqual(self.kinds(), [("2026-10-20", "new", 1000000, 900000)])
+        self.assertEqual(self.kinds(), [("2026-10-20", "new", 10000000000, 900000)])
 
     def test_price_moving_alone_is_not_a_trade(self):
         portfolio.record_snapshot(self.conn, snap("2026-10-20", [holding()]))
@@ -119,7 +119,7 @@ class DeriveTests(Base):
         portfolio.record_snapshot(self.conn, snap("2026-10-21", [holding(units=150.0, invested=14000.0)]))
         portfolio.derive_activity(self.conn)
         row = self.conn.execute("SELECT * FROM portfolio_activity WHERE kind = 'buy'").fetchone()
-        self.assertEqual(row["units_e4"], 500000)          # 50 units
+        self.assertEqual(row["units_e8"], 5000000000)     # 50 units
         self.assertEqual(row["amount_paise"], 500000)      # ₹5,000 went in
         self.assertEqual(row["price_e4"], 1000000)         # ₹100 a unit, not the ₹100 NAV by luck
         self.assertEqual(row["inferred"], 1)
@@ -139,7 +139,7 @@ class DeriveTests(Base):
         portfolio.derive_activity(self.conn)
         self.assertEqual([k for _, k, _, _ in self.kinds()], ["new", "sell", "exit"])
         sale = self.conn.execute("SELECT * FROM portfolio_activity WHERE kind = 'sell'").fetchone()
-        self.assertEqual(sale["units_e4"], 400000)      # 40 units left
+        self.assertEqual(sale["units_e8"], 4000000000)  # 40 units sold
         self.assertEqual(sale["amount_paise"], 400000)  # at ₹100 each, ₹4,000 came back
 
     def test_a_holding_that_vanishes_was_sold(self):
@@ -154,7 +154,7 @@ class DeriveTests(Base):
             " ORDER BY date DESC").fetchone()
         self.assertEqual(gone["kind"], "exit")
         self.assertEqual(gone["date"], "2026-10-21")
-        self.assertEqual(gone["units_e4"], 500000)          # the 50 units it held
+        self.assertEqual(gone["units_e8"], 5000000000)      # the 50 units it held
         self.assertEqual(gone["amount_paise"], 1000000)     # at ₹200, ₹10,000 back
         self.assertIn("no longer in the portfolio", gone["note"])
 
@@ -273,13 +273,49 @@ class MigrationTests(unittest.TestCase):
                 conn.close()
 
             conn = db.connect(path)  # reopening runs v8
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 8)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], len(db.MIGRATIONS))
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0], 1)
             for table in ("instruments", "holdings", "holding_history", "portfolio_totals",
                           "allocation_history", "portfolio_activity", "indmoney_raw"):
                 self.assertEqual(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0)
             portfolio.record_snapshot(conn, snap("2026-10-20", [holding()]))
             self.assertEqual(len(portfolio.snapshot(conn)["holdings"]), 1)
+            conn.close()
+
+
+class PrecisionTests(Base):
+    """Migration v9. A fractional US share is quoted to seven decimals,
+    and the four the schema started with rounded enough away to make the
+    holding's own units-times-price check fail."""
+
+    def test_seven_decimal_units_survive_the_round_trip(self):
+        portfolio.record_snapshot(self.conn, snap("2026-10-20", [
+            holding(units=0.0081521, price=120310.6215, invested=900.0)]))
+        self.assertEqual(portfolio.snapshot(self.conn)["holdings"][0]["units"], 0.0081521)
+
+    def test_a_fractional_share_reconciles(self):
+        payload = snap("2026-10-20", [holding(units=0.0081521, price=120310.6215, invested=900.0)])
+        portfolio.record_snapshot(self.conn, payload)
+        self.assertEqual(portfolio.reconcile(self.conn), [])
+
+    def test_v9_rescales_the_units_an_existing_v8_database_holds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.db"
+            with unittest.mock.patch.object(db, "MIGRATIONS", db.MIGRATIONS[:8]):
+                conn = db.connect(path)
+                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 8)
+                with db.write(conn):
+                    conn.execute("INSERT INTO instruments (id, kind, name, currency, first_seen_at,"
+                                 " last_seen_at) VALUES ('MF|1','mf','Old','INR','x','x')")
+                    conn.execute("INSERT INTO holdings (instrument_id, broker, units_e4, as_of,"
+                                 " fetched_at) VALUES ('MF|1','',1234567,'2026-10-20','x')")
+                conn.close()
+
+            conn = db.connect(path)  # reopening runs v9
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 9)
+            # 123.4567 units before, the same 123.4567 units after.
+            self.assertEqual(conn.execute("SELECT units_e8 FROM holdings").fetchone()[0], 12345670000)
+            self.assertEqual(conn.execute("SELECT units FROM portfolio_view").fetchone()[0], 123.4567)
             conn.close()
 
 

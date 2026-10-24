@@ -72,9 +72,12 @@ such row is flagged `inferred` and says so on its face, the same rule
 shows holdings and almost no activity: there is nothing yet to diff
 against.
 
-Money stays INTEGER paise. Units, prices and rates are INTEGER at 1e-4
-(`db.to_e4` / `db.from_e4`), because a NAV is quoted to four decimals and
-a fund holds fractional units.
+Money stays INTEGER paise. Prices and rates are INTEGER at 1e-4
+(`db.to_e4` / `db.from_e4`), because a NAV is quoted to four decimals.
+Units are INTEGER at 1e-8 (`db.to_e8` / `db.from_e8`, schema v9): a
+fractional US share comes quoted to seven decimals — 0.0081521 of
+SanDisk — and four moved a holding's value by over a percent, enough for
+the units-times-price check below to call it a mismatch, which it was.
 
 `txdb check` reports the portfolio's own arithmetic beside the banks':
 units × price must equal a holding's value, and the holdings must add up

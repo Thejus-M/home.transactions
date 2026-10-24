@@ -394,6 +394,40 @@ MIGRATIONS = [
         FROM holdings h JOIN instruments i ON i.id = h.instrument_id
         ORDER BY h.value_paise DESC;
     """,
+    # v9: units need eight decimals, not four. A fractional US share is
+    # quoted to seven (0.0081521 of SanDisk), and rounding that to four
+    # moved a holding's value by over a percent -- enough for the
+    # portfolio's own units-times-price check to call it a mismatch,
+    # which it was. Prices stay at 1e-4: a NAV has four decimals and a
+    # price in rupees needs no more.
+    """
+    DROP VIEW portfolio_view;
+
+    ALTER TABLE holdings ADD COLUMN units_e8 INTEGER;
+    UPDATE holdings SET units_e8 = units_e4 * 10000;
+    ALTER TABLE holdings DROP COLUMN units_e4;
+
+    ALTER TABLE holding_history ADD COLUMN units_e8 INTEGER;
+    UPDATE holding_history SET units_e8 = units_e4 * 10000;
+    ALTER TABLE holding_history DROP COLUMN units_e4;
+
+    ALTER TABLE portfolio_activity ADD COLUMN units_e8 INTEGER;
+    UPDATE portfolio_activity SET units_e8 = units_e4 * 10000;
+    ALTER TABLE portfolio_activity DROP COLUMN units_e4;
+
+    CREATE VIEW portfolio_view AS
+        SELECT i.kind, i.name, i.symbol, i.isin, i.category, i.amc, h.broker,
+               h.units_e8 / 100000000.0 AS units,
+               h.avg_cost_e4 / 10000.0 AS avg_cost,
+               h.price_e4 / 10000.0 AS price,
+               h.invested_paise / 100.0 AS invested,
+               h.value_paise / 100.0 AS value,
+               h.pnl_paise / 100.0 AS pnl,
+               h.xirr_e4 / 10000.0 AS xirr,
+               h.as_of, h.instrument_id
+        FROM holdings h JOIN instruments i ON i.id = h.instrument_id
+        ORDER BY h.value_paise DESC;
+    """,
 ]
 
 
@@ -491,3 +525,14 @@ def to_e4(value) -> int | None:
 
 def from_e4(value) -> float | None:
     return None if value is None else value / 10000
+
+
+# Units: eight decimals. A fractional share of a US stock is quoted to
+# seven (0.0081521), and four would round away more than the value of
+# the holding can tolerate -- see migration v9.
+def to_e8(value) -> int | None:
+    return None if value is None else int(round(float(value) * 100000000))
+
+
+def from_e8(value) -> float | None:
+    return None if value is None else value / 100000000

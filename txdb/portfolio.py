@@ -20,10 +20,11 @@ import json
 import sqlite3
 from datetime import date, datetime
 
-from .db import from_e4, from_paise, now, to_e4, to_paise, write
+from .db import from_e4, from_e8, from_paise, now, to_e4, to_e8, to_paise, write
 
 # Below this, a unit change is rounding in the broker's feed, not a trade.
-UNIT_EPS_E4 = 5          # 0.0005 units
+# Small, because a fractional US share is a few thousandths of one.
+UNIT_EPS = 1000          # 0.00001 units, at the e8 scale
 # A buy whose rupee amount repeats within this, at roughly a month's
 # spacing, is an instalment rather than a one-off purchase.
 SIP_TOLERANCE = 0.02
@@ -54,24 +55,24 @@ def record_snapshot(conn: sqlite3.Connection, snap: dict) -> int:
         conn.execute("DELETE FROM holdings")
         for h in holdings:
             conn.execute(
-                """INSERT INTO holdings (instrument_id, broker, units_e4, avg_cost_e4, invested_paise,
+                """INSERT INTO holdings (instrument_id, broker, units_e8, avg_cost_e4, invested_paise,
                                          price_e4, value_paise, pnl_paise, pnl_pct_e4, xirr_e4,
                                          day_change_paise, as_of, fetched_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (h["id"], h.get("broker") or "", to_e4(h.get("units")), to_e4(h.get("avg_cost")),
+                (h["id"], h.get("broker") or "", to_e8(h.get("units")), to_e4(h.get("avg_cost")),
                  to_paise(h.get("invested")), to_e4(h.get("price")), to_paise(h.get("value")),
                  to_paise(h.get("pnl")), to_e4(h.get("pnl_pct")), to_e4(h.get("xirr")),
                  to_paise(h.get("day_change")), as_of, fetched_at))
             conn.execute(
-                """INSERT INTO holding_history (instrument_id, broker, as_of, units_e4, avg_cost_e4,
+                """INSERT INTO holding_history (instrument_id, broker, as_of, units_e8, avg_cost_e4,
                                                 invested_paise, price_e4, value_paise, pnl_paise, xirr_e4)
                    VALUES (?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(instrument_id, broker, as_of) DO UPDATE SET
-                     units_e4 = excluded.units_e4, avg_cost_e4 = excluded.avg_cost_e4,
+                     units_e8 = excluded.units_e8, avg_cost_e4 = excluded.avg_cost_e4,
                      invested_paise = excluded.invested_paise, price_e4 = excluded.price_e4,
                      value_paise = excluded.value_paise, pnl_paise = excluded.pnl_paise,
                      xirr_e4 = excluded.xirr_e4""",
-                (h["id"], h.get("broker") or "", as_of, to_e4(h.get("units")), to_e4(h.get("avg_cost")),
+                (h["id"], h.get("broker") or "", as_of, to_e8(h.get("units")), to_e4(h.get("avg_cost")),
                  to_paise(h.get("invested")), to_e4(h.get("price")), to_paise(h.get("value")),
                  to_paise(h.get("pnl")), to_e4(h.get("xirr"))))
 
@@ -169,10 +170,10 @@ def derive_activity(conn: sqlite3.Connection) -> int:
                 # zero units often enough, but a sold-out position is
                 # usually just absent, and an exit nobody recorded would
                 # leave the activity list ending mid-story.
-                if previous is not None and (previous["units_e4"] or 0) >= UNIT_EPS_E4:
+                if previous is not None and (previous["units_e8"] or 0) >= UNIT_EPS:
                     events.append({
                         "instrument_id": instrument_id, "broker": broker, "date": as_of,
-                        "kind": "exit", "units_e4": previous["units_e4"],
+                        "kind": "exit", "units_e8": previous["units_e8"],
                         "price_e4": previous["price_e4"],
                         "amount_paise": _proceeds(previous),
                         "note": _join(_gap_note(previous["as_of"], as_of),
@@ -195,14 +196,14 @@ def derive_activity(conn: sqlite3.Connection) -> int:
         for event in events:
             event["id"] = _activity_id(event)
             conn.execute(
-                """INSERT INTO portfolio_activity (id, instrument_id, broker, date, kind, units_e4,
+                """INSERT INTO portfolio_activity (id, instrument_id, broker, date, kind, units_e8,
                                                    price_e4, amount_paise, inferred, note, first_seen_at)
                    VALUES (?,?,?,?,?,?,?,?,1,?,?)
                    ON CONFLICT(id) DO UPDATE SET
-                     kind = excluded.kind, units_e4 = excluded.units_e4, price_e4 = excluded.price_e4,
+                     kind = excluded.kind, units_e8 = excluded.units_e8, price_e4 = excluded.price_e4,
                      amount_paise = excluded.amount_paise, note = excluded.note""",
                 (event["id"], event["instrument_id"], event["broker"], event["date"],
-                 event["kind"], event["units_e4"], event["price_e4"], event["amount_paise"],
+                 event["kind"], event["units_e8"], event["price_e4"], event["amount_paise"],
                  event.get("note"), ts))
         keep = {e["id"] for e in events}
         for (row_id,) in conn.execute("SELECT id FROM portfolio_activity").fetchall():
@@ -219,17 +220,17 @@ def _classify(previous: sqlite3.Row | None, row: sqlite3.Row) -> dict | None:
     amount stood still is a bonus or a split, not a purchase -- calling it
     a buy would invent money that was never paid.
     """
-    units = row["units_e4"] or 0
+    units = row["units_e8"] or 0
     price = row["price_e4"]
     if previous is None:
-        return {"date": row["as_of"], "kind": "new", "units_e4": units,
+        return {"date": row["as_of"], "kind": "new", "units_e8": units,
                 "price_e4": row["avg_cost_e4"] or price,
                 "amount_paise": row["invested_paise"],
                 "note": _gap_note(None, row["as_of"], "first seen")}
 
-    before = previous["units_e4"] or 0
+    before = previous["units_e8"] or 0
     delta = units - before
-    if abs(delta) < UNIT_EPS_E4:
+    if abs(delta) < UNIT_EPS:
         return None
 
     invested_delta = (row["invested_paise"] or 0) - (previous["invested_paise"] or 0)
@@ -237,30 +238,30 @@ def _classify(previous: sqlite3.Row | None, row: sqlite3.Row) -> dict | None:
 
     if delta > 0:
         if abs(invested_delta) < 100:      # under a rupee: no money changed hands
-            return {"date": row["as_of"], "kind": "corporate", "units_e4": delta,
+            return {"date": row["as_of"], "kind": "corporate", "units_e8": delta,
                     "price_e4": 0, "amount_paise": 0,
                     "note": _join(note, "units changed with nothing invested - bonus or split")}
         # What was actually paid a unit, which is the money that moved
         # divided by the units it bought -- not the NAV, which is the
         # price at the moment of the snapshot, days later.
-        implied = to_e4((invested_delta / 100) / (delta / 10000))
-        return {"date": row["as_of"], "kind": "buy", "units_e4": delta,
+        implied = to_e4((invested_delta / 100) / (delta / 100000000))
+        return {"date": row["as_of"], "kind": "buy", "units_e8": delta,
                 "price_e4": implied or price, "amount_paise": invested_delta, "note": note}
 
     sold = -delta
-    kind = "exit" if units < UNIT_EPS_E4 else "sell"
-    return {"date": row["as_of"], "kind": kind, "units_e4": sold, "price_e4": price,
+    kind = "exit" if units < UNIT_EPS else "sell"
+    return {"date": row["as_of"], "kind": kind, "units_e8": sold, "price_e4": price,
             "amount_paise": _proceeds(row, sold) if price else abs(invested_delta),
             "note": note}
 
 
-def _proceeds(row: sqlite3.Row, units_e4: int | None = None) -> int:
+def _proceeds(row: sqlite3.Row, units_e8: int | None = None) -> int:
     """What a sale brought in: the units times the price. A sale leaves no
     trace in the invested amount beyond the cost basis it removes, so the
     cost basis cannot stand in for it."""
-    units = units_e4 if units_e4 is not None else (row["units_e4"] or 0)
+    units = units_e8 if units_e8 is not None else (row["units_e8"] or 0)
     price = row["price_e4"] or 0
-    return round(units / 10000 * price / 100)
+    return round(units / 100000000 * price / 100)
 
 
 def _gap_note(previous_date: str | None, as_of: str, prefix: str = "") -> str:
@@ -308,7 +309,7 @@ def _mark_sips(events: list[dict]) -> None:
 
 
 def _activity_id(event: dict) -> str:
-    key = "|".join(str(event[k]) for k in ("instrument_id", "broker", "date", "kind", "units_e4"))
+    key = "|".join(str(event[k]) for k in ("instrument_id", "broker", "date", "kind", "units_e8"))
     return "ind-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
@@ -322,9 +323,9 @@ def reconcile(conn: sqlite3.Connection) -> list[dict]:
     problems: list[dict] = []
     for row in conn.execute(
             """SELECT h.*, i.name FROM holdings h JOIN instruments i ON i.id = h.instrument_id"""):
-        if not row["units_e4"] or not row["price_e4"] or row["value_paise"] is None:
+        if not row["units_e8"] or not row["price_e4"] or row["value_paise"] is None:
             continue
-        expected = (row["units_e4"] / 10000) * (row["price_e4"] / 10000)
+        expected = (row["units_e8"] / 100000000) * (row["price_e4"] / 10000)
         found = from_paise(row["value_paise"])
         if abs(expected - found) > max(1.0, abs(found) * 0.01):
             problems.append({"kind": "holding", "instrument": row["name"], "broker": row["broker"],
@@ -375,7 +376,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "instrumentId": r["instrument_id"], "kind": r["kind"], "name": r["name"],
         "symbol": r["symbol"] or "", "isin": r["isin"] or "", "category": r["category"] or "",
         "amc": r["amc"] or "", "broker": r["broker"] or "", "currency": r["currency"],
-        "units": from_e4(r["units_e4"]), "avgCost": from_e4(r["avg_cost_e4"]),
+        "units": from_e8(r["units_e8"]), "avgCost": from_e4(r["avg_cost_e4"]),
         "invested": from_paise(r["invested_paise"]), "price": from_e4(r["price_e4"]),
         "value": from_paise(r["value_paise"]), "pnl": from_paise(r["pnl_paise"]),
         "pnlPct": from_e4(r["pnl_pct_e4"]), "xirr": from_e4(r["xirr_e4"]),
@@ -387,7 +388,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
 
     activity = [{
         "id": r["id"], "date": r["date"], "instrumentId": r["instrument_id"], "name": r["name"],
-        "kind": r["kind"], "broker": r["broker"] or "", "units": from_e4(r["units_e4"]),
+        "kind": r["kind"], "broker": r["broker"] or "", "units": from_e8(r["units_e8"]),
         "price": from_e4(r["price_e4"]), "amount": from_paise(r["amount_paise"]),
         "inferred": bool(r["inferred"]), "note": r["note"] or "", "tracked": bool(r["tracked"]),
     } for r in conn.execute(
