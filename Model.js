@@ -1417,3 +1417,201 @@ function txnExplain(t, ctx) {
                               + (ctx.receiptMerchant ? "  Receipt: " + ctx.receiptMerchant : "") })
   return { kind: "", title: "Transaction", glyph: _INFO_GLYPH, certainty: "", rows: rows, why: "", next: "" }
 }
+
+// --- RECENT filter ------------------------------------------------------------
+//
+// One plain object describes every filter on RECENT, so the panel, the
+// summary chips and the saved file all work from the same shape:
+//   q          search text (name, raw merchant, counterparty, note); never saved
+//   accounts   account keys (accountKey); empty = all accounts
+//   dir        "any" | "in" | "out"
+//   tracked    "any" | "tracked" | "untracked"
+//   transfers  "any" | "only" | "hide"
+//   bill       "any" | "has" | "none"   (has / has no linked receipt)
+//   min, max   bounds on |amount| in RUPEES (t.amount is rupees, see
+//              formatAmount: no division by 100), or null; inclusive
+//   month      "" (all) | "YYYY-MM" | "30d"; never saved
+// Pure functions only, so tests/test_filter_js.py can run them under node.
+
+function defaultFilter() {
+  return { q: "", accounts: [], dir: "any", tracked: "any", transfers: "any", bill: "any", min: null, max: null, month: "" }
+}
+
+function _pad2(n) { return (n < 10 ? "0" : "") + n }
+
+function _todayIso() {
+  var d = new Date()
+  return d.getFullYear() + "-" + _pad2(d.getMonth() + 1) + "-" + _pad2(d.getDate())
+}
+
+// ISO date `days` before `iso` (calendar arithmetic in UTC, so no DST drift).
+function _isoMinusDays(iso, days) {
+  var p = iso.split("-")
+  var d = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2])))
+  d.setUTCDate(d.getUTCDate() - days)
+  return d.getUTCFullYear() + "-" + _pad2(d.getUTCMonth() + 1) + "-" + _pad2(d.getUTCDate())
+}
+
+// "2026-11" moved by `delta` months.
+function shiftMonth(ym, delta) {
+  var p = ym.split("-")
+  var idx = Number(p[0]) * 12 + (Number(p[1]) - 1) + delta
+  return Math.floor(idx / 12) + "-" + _pad2((idx % 12) + 1)
+}
+
+function monthLabel(ym) {
+  var p = (ym || "").split("-")
+  if (p.length !== 2) return ""
+  return _MONTH_NAMES[Number(p[1]) - 1] + " " + p[0]
+}
+
+function _isTransferRow(t) { return !!(t.transferId || t.transferSelf) }
+
+// A transfer belongs to BOTH accounts it moved money between: filtering to
+// Axis keeps the HDFC side of an HDFC -> Axis transfer too, so the pair
+// still folds into one card instead of leaving a lone half that looks like
+// income. `byId` maps transaction id -> row.
+function _accountPasses(t, f, byId) {
+  var key = accountKey(t)
+  if (f.accounts.indexOf(key) !== -1) return true
+  if (!t.transferId) return false
+  var ids = t.transferId.split(">")
+  var peer = byId[ids[0] === t.id ? ids[1] : ids[0]]
+  return !!peer && f.accounts.indexOf(accountKey(peer)) !== -1
+}
+
+// ctx: { nameOverrides, linkedIds (txn id -> true), today (ISO, for tests) }
+function filterTransactions(rows, f, ctx) {
+  ctx = ctx || {}
+  var byId = {}
+  rows.forEach(function (t) { byId[t.id] = t })
+  var q = (f.q || "").toLowerCase()
+  var today = ctx.today || _todayIso()
+  var since = f.month === "30d" ? _isoMinusDays(today, 29) : ""
+  var thisMonth = f.month === "30d" ? "" : (f.month || "")
+  var linked = ctx.linkedIds || {}
+  return rows.filter(function (t) {
+    if (f.accounts.length && !_accountPasses(t, f, byId)) return false
+    if (f.dir === "in" && !(t.amount > 0)) return false
+    if (f.dir === "out" && !(t.amount < 0)) return false
+    if (f.tracked !== "any" && (f.tracked === "tracked") !== !!t.tracked) return false
+    if (f.transfers !== "any" && (f.transfers === "only") !== _isTransferRow(t)) return false
+    if (f.bill !== "any" && (f.bill === "has") !== !!linked[t.id]) return false
+    var abs = Math.abs(Number(t.amount))
+    if (f.min !== null && f.min !== undefined && abs < f.min) return false
+    if (f.max !== null && f.max !== undefined && abs > f.max) return false
+    if (since && (t.date || "") < since) return false
+    if (thisMonth && (t.date || "").slice(0, 7) !== thisMonth) return false
+    if (q) {
+      var hay = [transactionDisplayName(t, ctx.nameOverrides), t.merchant, t.counterparty, transactionNote(t)]
+        .join("\n").toLowerCase()
+      if (hay.indexOf(q) === -1) return false
+    }
+    return true
+  })
+}
+
+// Sensible limits for the amount fields and month stepper, from the data.
+// max rounds UP to the next 1,000 (57,614 -> 58,000).
+function filterBounds(rows) {
+  var max = 0, first = "", last = ""
+  rows.forEach(function (t) {
+    var a = Math.abs(Number(t.amount))
+    if (a > max) max = a
+    var m = (t.date || "").slice(0, 7)
+    if (m && (!first || m < first)) first = m
+    if (m && m > last) last = m
+  })
+  return { min: 0, max: Math.ceil(max / 1000) * 1000, firstMonth: first, lastMonth: last }
+}
+
+function _amountText(n) { return formatGrouped(n) }
+
+// One entry per active part, in display order: { id, label }. Ids:
+// "q", "acct:<key>", "dir", "tracked", "transfers", "bill", "min", "max", "month".
+function activeFilterChips(f, options) {
+  var chips = []
+  if (f.q) chips.push({ id: "q", label: "“" + f.q + "”" })
+  f.accounts.forEach(function (key) {
+    var label = key
+    for (var i = 0; i < (options || []).length; i++) {
+      var o = options[i]
+      // A bank account's label is just "••9373"; the chip needs the bank too.
+      if (o.key === key) label = (o.accountType === "checking" && o.bank ? o.bank + " " : "") + o.label
+    }
+    chips.push({ id: "acct:" + key, label: label })
+  })
+  if (f.dir === "in") chips.push({ id: "dir", label: "In" })
+  if (f.dir === "out") chips.push({ id: "dir", label: "Out" })
+  if (f.tracked !== "any") chips.push({ id: "tracked", label: f.tracked === "tracked" ? "Tracked" : "Not tracked" })
+  if (f.transfers !== "any") chips.push({ id: "transfers", label: f.transfers === "only" ? "Transfers only" : "No transfers" })
+  if (f.bill !== "any") chips.push({ id: "bill", label: f.bill === "has" ? "Has bill" : "No bill" })
+  if (f.min !== null && f.min !== undefined) chips.push({ id: "min", label: "≥ " + _amountText(f.min) })
+  if (f.max !== null && f.max !== undefined) chips.push({ id: "max", label: "≤ " + _amountText(f.max) })
+  if (f.month === "30d") chips.push({ id: "month", label: "Last 30 days" })
+  else if (f.month) chips.push({ id: "month", label: monthLabel(f.month) })
+  return chips
+}
+
+// A copy of `f` with the part named by a chip id reset.
+function removeFilterPart(f, id) {
+  var n = JSON.parse(JSON.stringify(f))
+  if (id === "q") n.q = ""
+  else if (id.indexOf("acct:") === 0) {
+    var key = id.slice(5)
+    n.accounts = n.accounts.filter(function (k) { return k !== key })
+  }
+  else if (id === "dir") n.dir = "any"
+  else if (id === "tracked") n.tracked = "any"
+  else if (id === "transfers") n.transfers = "any"
+  else if (id === "bill") n.bill = "any"
+  else if (id === "min") n.min = null
+  else if (id === "max") n.max = null
+  else if (id === "month") n.month = ""
+  return n
+}
+
+// How many parts besides the search text are active (the Filter button's count).
+function countActive(f) {
+  return activeFilterChips(f, []).filter(function (c) { return c.id !== "q" }).length
+}
+
+// "5k" -> 5000, "1.2L" -> 120000, "2cr" -> 20000000, "1,200" -> 1200.
+// null for empty, negative or unreadable text.
+function parseAmountInput(s) {
+  var text = String(s === null || s === undefined ? "" : s).replace(/[,\s₹]/g, "").toLowerCase()
+  if (text === "") return null
+  var m = /^(\d+(?:\.\d+)?|\.\d+)(k|l|lac|lakh|cr|crore)?$/.exec(text)
+  if (!m) return null
+  var mult = { k: 1e3, l: 1e5, lac: 1e5, lakh: 1e5, cr: 1e7, crore: 1e7 }[m[2] || ""] || 1
+  return Math.round(Number(m[1]) * mult * 100) / 100
+}
+
+// What is saved between restarts: never the search text or the month.
+function serializeFilter(f) {
+  return JSON.stringify({
+    accounts: f.accounts.slice().sort(), dir: f.dir, tracked: f.tracked,
+    transfers: f.transfers, bill: f.bill, min: f.min, max: f.max
+  })
+}
+
+function restoreFilter(json, options) {
+  var f = defaultFilter()
+  var data
+  try { data = JSON.parse(json) } catch (e) { return f }
+  if (!data || typeof data !== "object") return f
+  var known = {}
+  ;(options || []).forEach(function (o) { known[o.key] = true })
+  if (Array.isArray(data.accounts)) {
+    f.accounts = data.accounts.filter(function (k) { return typeof k === "string" && known[k] })
+  }
+  if (["in", "out"].indexOf(data.dir) !== -1) f.dir = data.dir
+  if (["tracked", "untracked"].indexOf(data.tracked) !== -1) f.tracked = data.tracked
+  if (["only", "hide"].indexOf(data.transfers) !== -1) f.transfers = data.transfers
+  if (["has", "none"].indexOf(data.bill) !== -1) f.bill = data.bill
+  ;["min", "max"].forEach(function (k) {
+    var v = data[k]
+    if (typeof v === "number" && isFinite(v) && v >= 0) f[k] = v
+  })
+  return f
+}

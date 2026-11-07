@@ -207,58 +207,84 @@ Panel {
     selectedIds = ({})
   }
 
-  // Selected account keys (Model.accountKey); empty means "all accounts".
-  property var accountFilters: []
+  // Everything RECENT is filtered by, as one object (see Model.defaultFilter):
+  // search text, accounts, direction, tracked, transfers, bill, amount, month.
+  // Always replace it, never mutate it, so bindings re-evaluate.
+  property var filter: Model.defaultFilter()
+  // The search text, kept as its own name because PortfolioSection reads it.
+  readonly property string searchQuery: root.filter.q
+  // The inline filter panel under the RECENT header is open.
+  property bool filterOpen: false
+  function setFilterPart(part, value) {
+    if (JSON.stringify(root.filter[part]) === JSON.stringify(value)) return
+    var next = JSON.parse(JSON.stringify(root.filter))
+    next[part] = value
+    root.filter = next
+  }
   function toggleAccountFilter(key) {
-    var list = root.accountFilters.slice()
+    var list = root.filter.accounts.slice()
     var at = list.indexOf(key)
     if (at === -1) list.push(key)
     else list.splice(at, 1)
-    root.accountFilters = list
+    root.setFilterPart("accounts", list)
   }
-  property string searchQuery: ""
-  // Search box is hidden by default (toggled via "/" or the search button)
-  // — see the header Row replacing the old always-visible TextField.
-  property bool searchVisible: false
+  function clearFilterPart(id) { root.filter = Model.removeFilterPart(root.filter, id) }
+  function clearAllFilters() { root.filter = Model.defaultFilter() }
+  function cycleFilterPart(part, order) {
+    var at = order.indexOf(root.filter[part])
+    root.setFilterPart(part, order[(at + 1) % order.length])
+  }
   readonly property var accountOptions: Model.accountOptions(store.transactions, store.cardOverviews, store.accountNameOverrides)
-  // Tracking view from the Filter popover: "all", "tracked" or "untracked".
-  property string trackFilter: "all"
-  // The filter menu is a layer INSIDE the popup panel (see filterLayer), not a
-  // floating popup: a popup was drawn outside the widget, or not at all.
-  property bool filterOpen: false
-  // Transfers between your own accounts: "all", "only" or "hide".
-  property string transferFilter: "all"
-  readonly property var txnById: {
-    var m = {}
-    root.transactions.forEach(function (t) { m[t.id] = t })
-    return m
+  // Same accounts, grouped by bank (bank accounts before cards) for the chips.
+  readonly property var accountChipOptions: root.accountOptions.slice().sort(function (a, b) {
+    if (a.bank !== b.bank) return a.bank < b.bank ? -1 : 1
+    if (a.accountType !== b.accountType) return a.accountType === "checking" ? -1 : 1
+    return a.label < b.label ? -1 : (a.label > b.label ? 1 : 0)
+  })
+  readonly property var filterChips: Model.activeFilterChips(root.filter, root.accountOptions)
+  readonly property var filterBounds: Model.filterBounds(root.transactions)
+  readonly property var filteredTransactions: Model.filterTransactions(root.transactions, root.filter,
+    { nameOverrides: store.transactionNameOverrides, linkedIds: root.linkedTransactionIds })
+
+  // The filter is saved between restarts (never the search text or the
+  // month). Restored once, after the accounts are known, so a saved account
+  // that no longer exists is dropped. Writes are debounced and skipped when
+  // the JSON has not changed.
+  property bool filterRestored: false
+  property string filterSavedJson: ""
+  property string filterFileText: ""
+  function restoreSavedFilter() {
+    if (root.filterRestored || root.filterFileText === "") return
+    if (root.accountOptions.length === 0) return
+    root.filterRestored = true
+    var restored = Model.restoreFilter(root.filterFileText, root.accountOptions)
+    root.filterSavedJson = Model.serializeFilter(restored)
+    root.filter = restored
   }
-  // A transfer belongs to BOTH accounts it moved money between: filtering to
-  // Axis keeps the HDFC side of an HDFC -> Axis transfer too, so the pair still
-  // folds into one card instead of leaving a lone half that looks like income.
-  function accountPasses(t) { return root.accountFilters.indexOf(Model.accountKey(t)) !== -1 }
-  readonly property var filteredTransactions: root.transactions
-    .filter(function (t) {
-      if (root.accountFilters.length === 0 || root.accountPasses(t)) return true
-      if (!t.transferId) return false
-      var ids = t.transferId.split(">")
-      var peer = root.txnById[ids[0] === t.id ? ids[1] : ids[0]]
-      return !!peer && root.accountPasses(peer)
-    })
-    .filter(function (t) {
-      if (root.trackFilter === "all") return true
-      return (root.trackFilter === "tracked") === !!t.tracked
-    })
-    .filter(function (t) {
-      if (root.transferFilter === "all") return true
-      var isTransfer = !!(t.transferId || t.transferSelf)
-      return root.transferFilter === "only" ? isTransfer : !isTransfer
-    })
-    .filter(function (t) {
-      if (!root.searchQuery) return true
-      return Model.transactionDisplayName(t, store.transactionNameOverrides)
-        .toLowerCase().indexOf(root.searchQuery.toLowerCase()) !== -1
-    })
+  onAccountOptionsChanged: root.restoreSavedFilter()
+  onFilterChanged: if (root.filterRestored) filterSaveTimer.restart()
+  Timer {
+    id: filterSaveTimer
+    interval: 400
+    onTriggered: {
+      var json = Model.serializeFilter(root.filter)
+      if (json === root.filterSavedJson) return
+      root.filterSavedJson = json
+      filterFile.setText(json + "\n")
+    }
+  }
+  FileView {
+    id: filterFile
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/transactions-filter.json"
+    atomicWrites: true
+    printErrors: false
+    onLoaded: {
+      root.filterFileText = text() || ""
+      if (root.filterFileText === "") root.filterRestored = true
+      else root.restoreSavedFilter()
+    }
+    onLoadFailed: root.filterRestored = true
+  }
   readonly property var groupedTransactions: Model.groupByDate(Model.collapseTransfers(root.filteredTransactions, store.transfers))
 
   // Biggest bill first, then by card, so rows do not reshuffle between
@@ -1423,16 +1449,24 @@ Panel {
         Keys.onDownPressed: root.focusNext(column, true)
         Keys.onUpPressed: root.focusNext(column, false)
 
-        // "/" toggles the search box (hidden by default — see the header
-        // Row below). Only reaches here when no focused child already
-        // claimed it: a focused TextField (search or rename) consumes the
-        // printable "/" itself by typing it, the same reason F2 safely
-        // no-ops while a TransactionCard is mid-rename.
+        // "/" or Ctrl+F: focus the search box (BANK: the filter bar,
+        // PORTFOLIO: the holdings search). Alt+1..6 toggle the first six
+        // account chips; Ctrl+Backspace clears every filter. Only reaches
+        // here when no focused child already claimed the key: a focused
+        // TextField (search, amount, rename) consumes printable keys itself.
         Keys.onPressed: function (event) {
-          if (event.text === "/") {
-            root.searchVisible = !root.searchVisible
-            if (root.searchVisible) Qt.callLater(function () { searchField.forceActiveFocus() })
-            else { root.searchQuery = ""; column.forceActiveFocus() }
+          var ctrl = (event.modifiers & Qt.ControlModifier) !== 0
+          var alt = (event.modifiers & Qt.AltModifier) !== 0
+          if (event.text === "/" || (ctrl && event.key === Qt.Key_F)) {
+            if (root.tab === "bank") filterBar.focusSearch()
+            else Qt.callLater(function () { portfolioSearch.forceActiveFocus() })
+            event.accepted = true
+          } else if (alt && root.tab === "bank" && event.key >= Qt.Key_1 && event.key <= Qt.Key_6) {
+            var opt = root.accountChipOptions[event.key - Qt.Key_1]
+            if (opt) root.toggleAccountFilter(opt.key)
+            event.accepted = true
+          } else if (ctrl && event.key === Qt.Key_Backspace) {
+            root.clearAllFilters()
             event.accepted = true
           }
         }
@@ -2219,9 +2253,8 @@ Panel {
 
         PanelSeparator { visible: root.tab === "bank" && root.receiptsSectionShown; foreground: root.foreground }
 
-        // RECENT's own header shares its row with the Filter popover +
-        // search-toggle button (right-aligned) instead of sitting on a
-        // separate row above it — saves a full row of vertical space,
+        // RECENT's own header shares its row with the action buttons
+        // (right-aligned) instead of sitting on a separate row above it — saves a full row of vertical space,
         // and a separator between them would've been redundant with the
         // one above this Item anyway.
         Item {
@@ -2260,27 +2293,6 @@ Panel {
               Keys.onDownPressed: root.focusNext(filedToggleRecentBtn, true)
               Keys.onUpPressed: root.focusNext(filedToggleRecentBtn, false)
               onClicked: root.showFiled = !root.showFiled
-            }
-
-            FilterMenuButton { id: filterMenuButton }
-
-            PanelActionButton {
-              id: searchToggleBtn
-              size: Style.space(28)
-              fontSize: Style.font.bodySmall
-              iconText: "⌕"
-              tooltipText: root.searchVisible ? "Hide search" : "Search (/)"
-              foreground: root.foreground
-              hoverColor: Color.accent
-              bordered: true
-              focusable: true
-              Keys.onDownPressed: root.focusNext(searchToggleBtn, true)
-              Keys.onUpPressed: root.focusNext(searchToggleBtn, false)
-              onClicked: {
-                root.searchVisible = !root.searchVisible
-                if (root.searchVisible) Qt.callLater(function () { searchField.forceActiveFocus() })
-                else { root.searchQuery = ""; searchField.focus = false }
-              }
             }
 
             PanelActionButton {
@@ -2344,24 +2356,30 @@ Panel {
           }
         }
 
-        TextField {
-          id: searchField
-          visible: root.searchVisible
+        FilterBar {
+          id: filterBar
+          visible: root.tab === "bank"
           width: parent.width
-          // One box for both tabs: on BANK it narrows RECENT, on
-          // PORTFOLIO it narrows HOLDINGS (PortfolioSection reads the
-          // same root.searchQuery).
-          placeholderText: root.tab === "bank" ? "Search transactions…" : "Search holdings…"
+        }
+
+        // PORTFOLIO keeps a plain holdings search; PortfolioSection reads
+        // root.searchQuery (the same filter.q).
+        TextField {
+          id: portfolioSearch
+          visible: root.tab === "portfolio"
+          width: parent.width
+          placeholderText: "Search holdings…  (/)"
           text: root.searchQuery
           font.family: Style.font.family
           font.pixelSize: Style.font.body
-          onTextChanged: root.searchQuery = text
+          onTextChanged: root.setFilterPart("q", text)
           Keys.onEscapePressed: function (event) {
-            event.accepted = true
-            root.searchQuery = ""
-            root.searchVisible = false
-            searchField.focus = false
-            Qt.callLater(function () { column.forceActiveFocus() })
+            if (portfolioSearch.text !== "") {
+              root.setFilterPart("q", "")
+              event.accepted = true
+            } else {
+              event.accepted = false
+            }
           }
         }
 
@@ -2432,15 +2450,34 @@ Panel {
             }
           }
 
-          Text {
+          Column {
             visible: root.filteredTransactions.length === 0
             width: parent.width
-            textFormat: Text.PlainText
-            text: root.accountFilters.length === 0 ? "Nothing pending." : "No transactions for the selected accounts."
-            color: Qt.darker(root.foreground, 1.5)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
-            horizontalAlignment: Text.AlignHCenter
+            spacing: Style.spacing.sm
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              wrapMode: Text.Wrap
+              text: root.filterChips.length === 0 ? "Nothing pending."
+                : "No matches for: " + root.filterChips.map(function (c) { return c.label }).join(", ")
+              color: Qt.darker(root.foreground, 1.5)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Item {
+              visible: root.filterChips.length > 0
+              width: parent.width
+              height: emptyClear.height
+              TextAction {
+                id: emptyClear
+                anchors.horizontalCenter: parent.horizontalCenter
+                label: "Clear all"
+                onTriggered: root.clearAllFilters()
+              }
+            }
           }
         }
 
@@ -2480,172 +2517,11 @@ Panel {
       }
     }
 
-    ScrollWheelArea { anchors.fill: flick; target: flick }
-
-    // The filter menu, drawn inside this panel: centred at the top, every
-    // option visible, scrolling when it is taller than the panel. A click on
-    // the dimmed area behind it (or Escape) closes it.
-    Item {
-      id: filterLayer
-      anchors.fill: parent
-      visible: root.filterOpen
-      z: 100
-
-      onVisibleChanged: if (visible) Qt.callLater(function () { filterMenuColumn.forceActiveFocus() })
-
-      MouseArea {
-        anchors.fill: parent
-        onClicked: root.filterOpen = false
-        onWheel: function (event) { event.accepted = true }
-      }
-      Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.35) }
-
-      BorderSurface {
-        id: filterCard
-        x: Math.round((parent.width - width) / 2)
-        y: Style.space(12)
-        width: Math.min(Style.space(260), parent.width - Style.space(24))
-        height: Math.min(filterMenuColumn.implicitHeight + Style.space(4), parent.height - Style.space(24))
-        color: Color.popups.background
-        borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
-        radius: Style.cornerRadius
-
-        // swallow clicks so the card itself does not close the layer
-        MouseArea { anchors.fill: parent }
-
-        Flickable {
-          id: filterScroll
-          anchors.fill: parent
-          anchors.margins: Style.spacing.hairline
-          clip: true
-          contentWidth: width
-          contentHeight: filterMenuColumn.implicitHeight
-          boundsBehavior: Flickable.StopAtBounds
-          interactive: contentHeight > height
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-      Column {
-        id: filterMenuColumn
-        width: filterScroll.width
-        spacing: Style.space(2)
-        focus: true
-
-        // Escape closes the popover, but a now-hidden row/column keeps
-        // activeFocus until something else explicitly takes it (same
-        // class of bug as searchField's and editField's own Escape
-        // handlers) — without restoring it to filterButton, Tab/arrow
-        // keys go nowhere until the user clicks something.
-        Keys.onEscapePressed: function (event) {
-          root.filterOpen = false
-          Qt.callLater(function () { filterMenuButton.forceActiveFocus() })
-          event.accepted = true
-        }
-
-        // Confined stand-in for root.focusNext, for the rows in this
-        // popover. root.focusNext also calls root.scrollIntoView, which
-        // maps the item into `column` — meaningless for a row floating in
-        // this popup, since it's never actually inside column/flick — and
-        // its whole-scene walk could step straight out of the still-open
-        // popover into the list behind it. This aborts instead of
-        // following `next` once it leaves filterMenuColumn.
-        function focusNext(item, forward) {
-          var next = item
-          for (var i = 0; i < 64 && next; i++) {
-            next = next.nextItemInFocusChain(forward)
-            if (!next || next === item) return
-            var scan = next
-            var inMenu = false
-            while (scan) {
-              if (scan === filterMenuColumn) { inMenu = true; break }
-              scan = scan.parent
-            }
-            if (!inMenu) return
-            if (next.activeFocusOnTab) { next.forceActiveFocus(); return }
-          }
-        }
-
-        FilterMenuRow {
-          width: parent.width
-          label: "All accounts"
-          selected: root.accountFilters.length === 0
-          onClicked: root.accountFilters = []
-        }
-
-        Repeater {
-          model: root.accountOptions
-          delegate: FilterMenuRow {
-            required property var modelData
-            width: parent.width
-            label: modelData.label
-            network: modelData.network || ""
-            bank: modelData.accountType === "checking" ? modelData.bank : ""
-            selected: root.accountFilters.indexOf(modelData.key) !== -1
-            onClicked: root.toggleAccountFilter(modelData.key)
-          }
-        }
-
-        Rectangle {
-          width: parent.width
-          height: Style.spacing.hairline
-          color: Qt.darker(root.foreground, 1.8)
-        }
-
-        // Tracking view: which rows RECENT shows. The chosen one is highlighted
-        // like the account pick above, and the popover stays open while you pick.
-        FilterMenuRow {
-          width: parent.width
-          label: "All transactions"
-          selected: root.trackFilter === "all"
-          onClicked: root.trackFilter = "all"
-        }
-
-        FilterMenuRow {
-          width: parent.width
-          label: "Tracked only"
-          selected: root.trackFilter === "tracked"
-          onClicked: root.trackFilter = "tracked"
-        }
-
-        FilterMenuRow {
-          width: parent.width
-          label: "Not tracked only"
-          selected: root.trackFilter === "untracked"
-          onClicked: root.trackFilter = "untracked"
-        }
-
-        Rectangle {
-          width: parent.width
-          height: Style.spacing.hairline
-          color: Qt.darker(root.foreground, 1.8)
-        }
-
-        // Transfers between your own accounts.
-        FilterMenuRow {
-          width: parent.width
-          label: "With transfers"
-          selected: root.transferFilter === "all"
-          onClicked: root.transferFilter = "all"
-        }
-
-        FilterMenuRow {
-          width: parent.width
-          label: "Transfers only"
-          selected: root.transferFilter === "only"
-          onClicked: root.transferFilter = "only"
-        }
-
-        FilterMenuRow {
-          width: parent.width
-          label: "Hide transfers"
-          selected: root.transferFilter === "hide"
-          onClicked: root.transferFilter = "hide"
-        }
-
-      }
-        }
-
-        ScrollWheelArea { anchors.fill: filterScroll; target: filterScroll }
-      }
+    ScrollWheelArea {
+      anchors.fill: flick
+      target: flick
+      // The amount fields and the month stepper take the wheel first.
+      interceptWheel: function (source, event) { return filterBar.handleWheel(source, event) }
     }
 
     // The receipt review window: a true full-screen overlay — its own
@@ -5166,185 +5042,559 @@ Panel {
     }
   }
 
-  // Compact trigger + popover replacing the old always-expanded account
-  // FilterChip Flow — both just narrow what RECENT shows, so they're folded into one popover that
-  // costs a single small row while closed AND while open (a popover floats
-  // over the content below instead of pushing it down, unlike an inline
-  // disclosure). The accent dot shows at a glance whether any non-default
-  // filter is active without opening it.
-  component FilterMenuButton: BorderSurface {
-    id: filterButton
-    readonly property bool filterActive: root.accountFilters.length > 0 || root.trackFilter !== "all"
-      || root.transferFilter !== "all"
-    readonly property bool _hot: mouse.containsMouse || filterButton.activeFocus
+  // ---- The RECENT filter: inline, under the RECENT header ------------------
+  // A plain Item tree (no Popup, Menu or ComboBox), so it scrolls with the
+  // list and can never draw outside the widget. Changing the filter only
+  // changes bindings: no TextField and no transaction delegate is rebuilt.
 
-    // What is being filtered by, for the hover tip: "Filter" when nothing is.
-    function summary() {
-      var parts = []
-      if (root.accountFilters.length > 0) parts.push(filterButton.currentLabel())
-      if (root.trackFilter !== "all") parts.push(root.trackFilter === "tracked" ? "tracked only" : "not tracked only")
-      if (root.transferFilter !== "all") parts.push(root.transferFilter === "only" ? "transfers only" : "no transfers")
-      return parts.length ? "Filter · " + parts.join(", ") : "Filter"
-    }
+  // One toggle chip. Left click or Space/Enter: clicked(). Right or middle
+  // click, or Delete: cleared(). Left/Right move to the neighbouring chip.
+  component FilterChip: BorderSurface {
+    id: chip
+    property string label: ""
+    property string bank: ""
+    property string network: ""
+    property bool active: false
+    property bool closable: false
+    property bool focusable: true
+    property string tip: ""
+    signal clicked()
+    signal cleared()
 
-    function currentLabel() {
-      var n = root.accountFilters.length
-      if (n === 0) return "Filter"
-      if (n > 1) return n + " accounts"
-      for (var i = 0; i < root.accountOptions.length; i++) {
-        if (root.accountOptions[i].key === root.accountFilters[0]) return root.accountOptions[i].label.split(" ••")[0]
-      }
-      return "Filter"
-    }
+    readonly property bool _hot: chipMouse.containsMouse || chip.activeFocus
 
-    implicitHeight: Style.space(28)
-    implicitWidth: Math.max(Style.space(28), triggerRow.implicitWidth + Style.space(16))
+    implicitHeight: Style.space(24)
+    implicitWidth: chipRow.implicitWidth + Style.space(14)
     radius: Style.cornerRadius
-    color: Style.controlFill(filterButton.activeFocus, filterButton._hot, root.foreground, Color.accent)
-    borderSpec: Border.controlSpec(filterButton.activeFocus ? "focus" : (filterButton._hot ? "hover-cursor" : "normal"), root.foreground, Color.accent)
+    opacity: chipMouse.pressed ? 0.7 : 1
+    color: chip.active
+      ? Style.controlFill(true, false, root.foreground, Color.accent)
+      : Style.controlFill(chip.activeFocus, chip._hot, root.foreground, Color.accent)
+    borderSpec: Border.controlSpec(chip.activeFocus ? "focus" : (chip._hot ? "hover-cursor" : "normal"), root.foreground, Color.accent)
 
-    activeFocusOnTab: true
-    Keys.onReturnPressed: root.filterOpen = !root.filterOpen
-    Keys.onEnterPressed: root.filterOpen = !root.filterOpen
-    Keys.onSpacePressed: root.filterOpen = !root.filterOpen
-    Keys.onDownPressed: root.focusNext(filterButton, true)
-    Keys.onUpPressed: root.focusNext(filterButton, false)
+    activeFocusOnTab: chip.focusable && chip.visible
+    Keys.onReturnPressed: chip.clicked()
+    Keys.onEnterPressed: chip.clicked()
+    Keys.onSpacePressed: chip.clicked()
+    Keys.onDeletePressed: chip.cleared()
+    Keys.onLeftPressed: root.focusNext(chip, false)
+    Keys.onRightPressed: root.focusNext(chip, true)
+    Keys.onDownPressed: root.focusNext(chip, true)
+    Keys.onUpPressed: root.focusNext(chip, false)
+    Keys.onEscapePressed: function (event) {
+      if (!root.filterOpen) { event.accepted = false; return }
+      root.filterOpen = false
+      event.accepted = true
+      Qt.callLater(function () { column.forceActiveFocus() })
+    }
 
     Behavior on color { ColorAnimation { duration: 100 } }
 
-    // Icon only: the name shows on hover (what is being filtered by).
-    ToolTip.visible: mouse.containsMouse && !root.filterOpen
-    ToolTip.text: filterButton.summary()
-    ToolTip.delay: 400
-
     Row {
-      id: triggerRow
+      id: chipRow
       anchors.centerIn: parent
-      spacing: Style.space(5)
+      spacing: Style.space(4)
 
+      HdfcLogo {
+        variant: "icon"
+        visible: chip.bank === "HDFC"
+        markSize: Style.spaceReal(9)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      AxisLogo {
+        visible: chip.bank === "AXIS"
+        markSize: Style.spaceReal(9)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      SbiLogo {
+        visible: chip.bank === "SBI"
+        markSize: Style.spaceReal(9)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      BrandMark {
+        network: chip.network
+        markHeight: Style.spaceReal(9)
+        anchors.verticalCenter: parent.verticalCenter
+      }
       Text {
         textFormat: Text.PlainText
-        text: "󰈳"
-        color: root.foreground
+        text: chip.label
+        color: chip.active ? Color.accent : root.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        font.bold: chip.active
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      Text {
+        visible: chip.closable
+        textFormat: Text.PlainText
+        text: "×"
+        color: Color.accent
+        font.family: Style.font.family
         font.pixelSize: Style.font.caption
         anchors.verticalCenter: parent.verticalCenter
       }
-
-      Rectangle {
-        visible: filterButton.filterActive
-        width: Style.space(6)
-        height: width
-        radius: width / 2
-        color: Color.accent
-        anchors.verticalCenter: parent.verticalCenter
-      }
     }
 
+    ToolTip.visible: chipMouse.containsMouse && chip.tip !== ""
+    ToolTip.text: chip.tip
+    ToolTip.delay: 500
+
     MouseArea {
-      id: mouse
+      id: chipMouse
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
-      onClicked: root.filterOpen = !root.filterOpen
+      acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+      onClicked: function (mouse) {
+        // Capture first: the handlers can change what this chip shows, and a
+        // summary chip is destroyed when its filter part is removed.
+        var left = mouse.button === Qt.LeftButton
+        if (left) chip.clicked()
+        else chip.cleared()
+      }
     }
   }
 
-  // One row inside FilterMenuButton's popover — a selectable account (or
-  // "All accounts"). Multi-select: each click toggles membership in
-  // accountFilters, and the popover stays open while you pick more.
-  component FilterMenuRow: BorderSurface {
-    id: menuRow
-    property string label: ""
-    property string network: ""
-    property string bank: ""
-    property bool selected: false
-    signal clicked()
+  // Min / Max amount field. Takes "5k", "1.2L", "1,200". The wheel steps by
+  // 100 (Shift: 1,000); the wheel is routed here by the list's
+  // ScrollWheelArea (see FilterBar.handleWheel).
+  component FilterAmountField: TextField {
+    id: field
+    property string which: "min"
 
-    readonly property bool _hot: mouse.containsMouse || menuRow.activeFocus
-
+    implicitWidth: Style.space(76)
     implicitHeight: Style.space(28)
-    radius: Style.cornerRadius
-    color: menuRow.selected
-      ? Style.controlFill(true, false, root.foreground, Color.accent)
-      : Style.controlFill(false, menuRow._hot, root.foreground, Color.accent)
-    borderSpec: Border.none()
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption
+    horizontalAlignment: TextInput.AlignRight
+    selectByMouse: true
 
-    activeFocusOnTab: true
-    Keys.onReturnPressed: menuRow.clicked()
-    Keys.onEnterPressed: menuRow.clicked()
-    Keys.onSpacePressed: menuRow.clicked()
-    // Every other focusable control in this widget wires Up/Down to a
-    // focusNext — this one didn't, so arrow keys silently did nothing
-    // while a filter-popover row was focused (Tab/Shift+Tab still
-    // worked). filterMenuColumn's own confined focusNext, not
-    // root.focusNext (see its definition for why).
-    Keys.onDownPressed: filterMenuColumn.focusNext(menuRow, true)
-    Keys.onUpPressed: filterMenuColumn.focusNext(menuRow, false)
-
-    HdfcLogo {
-      id: rowBankMark
-      variant: "icon"
-      visible: menuRow.bank === "HDFC"
-      markSize: Style.spaceReal(9)
-      anchors.left: parent.left
-      anchors.leftMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
+    function syncFromFilter() {
+      var v = root.filter[field.which]
+      var want = (v === null || v === undefined) ? "" : Model.formatGrouped(v)
+      if (!field.activeFocus && field.text !== want) field.text = want
+    }
+    function commit() {
+      var parsed = Model.parseAmountInput(field.text)
+      root.setFilterPart(field.which, parsed)
+      field.text = parsed === null ? "" : Model.formatGrouped(parsed)
+    }
+    function step(up, big) {
+      var cur = root.filter[field.which]
+      if (cur === null || cur === undefined) cur = field.which === "max" ? root.filterBounds.max : 0
+      var next = Math.max(0, cur + (up ? 1 : -1) * (big ? 1000 : 100))
+      var value = (field.which === "min" && next === 0) ? null : next
+      root.setFilterPart(field.which, value)
+      field.text = value === null ? "" : Model.formatGrouped(value)
     }
 
-    AxisLogo {
-      id: rowAxisMark
-      visible: menuRow.bank === "AXIS"
-      markSize: Style.spaceReal(9)
-      anchors.left: parent.left
-      anchors.leftMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
+    Component.onCompleted: field.syncFromFilter()
+    Connections {
+      target: root
+      function onFilterChanged() { field.syncFromFilter() }
     }
 
-    SbiLogo {
-      id: rowSbiMark
-      visible: menuRow.bank === "SBI"
-      markSize: Style.spaceReal(9)
-      anchors.left: parent.left
-      anchors.leftMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
+    onEditingFinished: field.commit()
+    Keys.onReturnPressed: function (event) {
+      field.commit()
+      event.accepted = true
+      Qt.callLater(function () { column.forceActiveFocus() })
+    }
+    Keys.onEnterPressed: function (event) {
+      field.commit()
+      event.accepted = true
+      Qt.callLater(function () { column.forceActiveFocus() })
+    }
+    Keys.onEscapePressed: function (event) {
+      event.accepted = true
+      root.filterOpen = false
+      Qt.callLater(function () { column.forceActiveFocus() })
+    }
+  }
+
+  component FilterBar: Column {
+    id: bar
+    spacing: Style.space(4)
+
+    // The summary strip lists every active part except the search text,
+    // which is already visible in the search field.
+    readonly property var summary: root.filterChips.filter(function (c) { return c.id !== "q" })
+    readonly property int activeCount: Model.countActive(root.filter)
+    readonly property bool anyActive: root.filterChips.length > 0
+    readonly property string thisMonth: Qt.formatDate(new Date(), "yyyy-MM")
+
+    function focusSearch() {
+      searchInput.forceActiveFocus()
+      searchInput.selectAll()
     }
 
-    // Whichever bank mark this row shows (none for cards and "All accounts").
-    readonly property bool hasBankMark: menuRow.bank === "HDFC" || menuRow.bank === "AXIS" || menuRow.bank === "SBI"
-    readonly property Item bankMark: menuRow.bank === "AXIS" ? rowAxisMark
-      : (menuRow.bank === "SBI" ? rowSbiMark : rowBankMark)
-
-    BrandMark {
-      id: rowMark
-      network: menuRow.network
-      markHeight: Style.spaceReal(9)
-      anchors.left: menuRow.hasBankMark ? menuRow.bankMark.right : parent.left
-      anchors.leftMargin: menuRow.hasBankMark ? Style.space(4) : Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
+    function stepMonth(dir) {
+      var b = root.filterBounds
+      var cur = root.filter.month
+      if (!b.lastMonth) return
+      var next
+      if (cur === "" || cur === "30d") next = dir < 0 ? b.lastMonth : ""
+      else {
+        next = Model.shiftMonth(cur, dir)
+        if (next > b.lastMonth) next = ""
+        else if (next < b.firstMonth) next = b.firstMonth
+      }
+      root.setFilterPart("month", next)
     }
 
-    Text {
-      anchors.left: rowMark.visible ? rowMark.right : (menuRow.hasBankMark ? menuRow.bankMark.right : parent.left)
-      // Axis and SBI rows show only "••NNNN" after the logo, so give it more room.
-      anchors.leftMargin: menuRow.bank === "AXIS" || menuRow.bank === "SBI" ? Style.space(12) : Style.space(6)
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.rightMargin: Style.space(8)
-      textFormat: Text.PlainText
-      text: menuRow.label
-      color: menuRow.selected ? Color.accent : root.foreground
-      font.family: Style.font.family
-      font.pixelSize: Style.font.caption
-      font.bold: menuRow.selected
-      elide: Text.ElideRight
+    function _inside(source, item, event) {
+      if (!item.visible) return false
+      var p = source.mapToItem(item, event.x, event.y)
+      return p.x >= 0 && p.y >= 0 && p.x < item.width && p.y < item.height
     }
 
-    MouseArea {
-      id: mouse
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onClicked: menuRow.clicked()
+    // The list's wheel area asks here first. True = the wheel was used on an
+    // amount field or the month stepper and must not scroll the list.
+    function handleWheel(source, event) {
+      if (!bar.visible || !root.filterOpen) return false
+      var up = (event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y) > 0
+      var big = (event.modifiers & Qt.ShiftModifier) !== 0
+      if (bar._inside(source, minField, event)) { minField.step(up, big); return true }
+      if (bar._inside(source, maxField, event)) { maxField.step(up, big); return true }
+      if (bar._inside(source, monthStepper, event)) { bar.stepMonth(up ? 1 : -1); return true }
+      return false
+    }
+
+    // Row 1: search + the Filter toggle.
+    Item {
+      width: bar.width
+      height: Style.space(28)
+
+      BorderSurface {
+        id: toggle
+        anchors.right: parent.right
+        height: parent.height
+        width: toggleRow.implicitWidth + Style.space(16)
+        radius: Style.cornerRadius
+        readonly property bool _hot: toggleMouse.containsMouse || toggle.activeFocus
+        opacity: toggleMouse.pressed ? 0.7 : 1
+        color: root.filterOpen
+          ? Style.controlFill(true, false, root.foreground, Color.accent)
+          : Style.controlFill(toggle.activeFocus, toggle._hot, root.foreground, Color.accent)
+        borderSpec: Border.controlSpec(toggle.activeFocus ? "focus" : (toggle._hot ? "hover-cursor" : "normal"), root.foreground, Color.accent)
+
+        activeFocusOnTab: toggle.visible
+        Keys.onReturnPressed: root.filterOpen = !root.filterOpen
+        Keys.onEnterPressed: root.filterOpen = !root.filterOpen
+        Keys.onSpacePressed: root.filterOpen = !root.filterOpen
+        Keys.onDownPressed: root.focusNext(toggle, true)
+        Keys.onUpPressed: root.focusNext(toggle, false)
+
+        Row {
+          id: toggleRow
+          anchors.centerIn: parent
+          spacing: Style.space(5)
+
+          Text {
+            textFormat: Text.PlainText
+            text: "󰈳"
+            color: bar.activeCount > 0 ? Color.accent : root.foreground
+            font.pixelSize: Style.font.caption
+            anchors.verticalCenter: parent.verticalCenter
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: "Filter"
+            color: bar.activeCount > 0 ? Color.accent : root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: bar.activeCount > 0
+            anchors.verticalCenter: parent.verticalCenter
+          }
+          Text {
+            visible: bar.activeCount > 0
+            textFormat: Text.PlainText
+            text: String(bar.activeCount)
+            color: Color.accent
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            anchors.verticalCenter: parent.verticalCenter
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: root.filterOpen ? "▴" : "▾"
+            color: root.foreground
+            font.pixelSize: Style.font.caption
+            anchors.verticalCenter: parent.verticalCenter
+          }
+        }
+
+        MouseArea {
+          id: toggleMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.filterOpen = !root.filterOpen
+        }
+      }
+
+      TextField {
+        id: searchInput
+        anchors.left: parent.left
+        anchors.right: toggle.left
+        anchors.rightMargin: Style.space(6)
+        height: parent.height
+        placeholderText: "Search merchant or note…  (/)"
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        selectByMouse: true
+
+        // The text reaches root.filter after a short pause (and on Enter),
+        // not on every key, and is never bound back: no binding loop.
+        onTextChanged: searchDebounce.restart()
+        onEditingFinished: { searchDebounce.stop(); root.setFilterPart("q", searchInput.text) }
+        Keys.onReturnPressed: function (event) {
+          searchDebounce.stop()
+          root.setFilterPart("q", searchInput.text)
+          event.accepted = true
+          Qt.callLater(function () { column.forceActiveFocus(); root.focusNext(column, true) })
+        }
+        Keys.onEnterPressed: function (event) {
+          searchDebounce.stop()
+          root.setFilterPart("q", searchInput.text)
+          event.accepted = true
+          Qt.callLater(function () { column.forceActiveFocus(); root.focusNext(column, true) })
+        }
+        Keys.onDownPressed: root.focusNext(searchInput, true)
+        // Esc: clear the text, then collapse the panel, then close the popup
+        // (the event goes on to the column's own Escape handler).
+        Keys.onEscapePressed: function (event) {
+          if (searchInput.text !== "") {
+            searchDebounce.stop()
+            searchInput.text = ""
+            root.setFilterPart("q", "")
+            event.accepted = true
+          } else if (root.filterOpen) {
+            root.filterOpen = false
+            event.accepted = true
+          } else {
+            event.accepted = false
+          }
+        }
+
+        Timer {
+          id: searchDebounce
+          interval: 150
+          onTriggered: root.setFilterPart("q", searchInput.text)
+        }
+        // Clear all / the x on a chip empty the field from outside.
+        Connections {
+          target: root
+          function onFilterChanged() {
+            if (root.filter.q === "" && searchInput.text !== "" && !searchDebounce.running) searchInput.text = ""
+          }
+        }
+      }
+    }
+
+    // Row 2: one chip per active part, the count, Clear all.
+    Flow {
+      width: bar.width
+      spacing: Style.space(4)
+      visible: bar.anyActive
+
+      Repeater {
+        model: bar.summary
+        delegate: FilterChip {
+          required property var modelData
+          label: modelData.label
+          active: true
+          closable: true
+          focusable: false
+          tip: "Click or right-click to remove"
+          onClicked: { var id = modelData.id; root.clearFilterPart(id) }
+          onCleared: { var id = modelData.id; root.clearFilterPart(id) }
+        }
+      }
+
+      Text {
+        height: Style.space(24)
+        verticalAlignment: Text.AlignVCenter
+        textFormat: Text.PlainText
+        text: root.filteredTransactions.length + " of " + root.transactions.length
+        color: Qt.darker(root.foreground, 1.4)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      TextAction {
+        label: "Clear all"
+        onTriggered: root.clearAllFilters()
+      }
+    }
+
+    // The expanded panel.
+    Column {
+      id: panel
+      width: bar.width
+      spacing: Style.space(4)
+      visible: root.filterOpen
+
+      // Accounts, grouped by bank. Alt+1..6 toggle the first six.
+      Flow {
+        width: panel.width
+        spacing: Style.space(4)
+
+        Repeater {
+          model: root.accountChipOptions
+          delegate: FilterChip {
+            required property var modelData
+            required property int index
+            label: modelData.label
+            bank: modelData.accountType === "checking" ? modelData.bank : ""
+            network: modelData.network || ""
+            active: root.filter.accounts.indexOf(modelData.key) !== -1
+            tip: index < 6 ? "Alt+" + (index + 1) + " · right-click clears" : ""
+            onClicked: { var key = modelData.key; root.toggleAccountFilter(key) }
+            onCleared: {
+              var key = modelData.key
+              if (root.filter.accounts.indexOf(key) !== -1) root.toggleAccountFilter(key)
+            }
+          }
+        }
+      }
+
+      // Flow: direction and the three-state chips.
+      Flow {
+        width: panel.width
+        spacing: Style.space(4)
+
+        FilterChip {
+          label: "In"
+          active: root.filter.dir === "in"
+          onClicked: root.setFilterPart("dir", root.filter.dir === "in" ? "any" : "in")
+          onCleared: root.setFilterPart("dir", "any")
+        }
+        FilterChip {
+          label: "Out"
+          active: root.filter.dir === "out"
+          onClicked: root.setFilterPart("dir", root.filter.dir === "out" ? "any" : "out")
+          onCleared: root.setFilterPart("dir", "any")
+        }
+        FilterChip {
+          label: root.filter.tracked === "untracked" ? "Not tracked" : "Tracked"
+          active: root.filter.tracked !== "any"
+          tip: "Click cycles any, tracked, not tracked"
+          onClicked: root.cycleFilterPart("tracked", ["any", "tracked", "untracked"])
+          onCleared: root.setFilterPart("tracked", "any")
+        }
+        FilterChip {
+          label: root.filter.transfers === "hide" ? "No transfers" : (root.filter.transfers === "only" ? "Transfers only" : "Transfers")
+          active: root.filter.transfers !== "any"
+          tip: "Click cycles any, only, hide"
+          onClicked: root.cycleFilterPart("transfers", ["any", "only", "hide"])
+          onCleared: root.setFilterPart("transfers", "any")
+        }
+        FilterChip {
+          visible: store.receipts.length > 0 || root.filter.bill !== "any"
+          label: root.filter.bill === "none" ? "No bill" : (root.filter.bill === "has" ? "Has bill" : "Bill")
+          active: root.filter.bill !== "any"
+          tip: "Click cycles any, has bill, no bill"
+          onClicked: root.cycleFilterPart("bill", ["any", "has", "none"])
+          onCleared: root.setFilterPart("bill", "any")
+        }
+      }
+
+      // Flow: amount range and month.
+      Flow {
+        width: panel.width
+        spacing: Style.space(10)
+
+        Row {
+          spacing: Style.space(4)
+          Text {
+            height: Style.space(28)
+            verticalAlignment: Text.AlignVCenter
+            textFormat: Text.PlainText
+            text: "Amount"
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          FilterAmountField { id: minField; which: "min"; placeholderText: "min" }
+          Text {
+            height: Style.space(28)
+            verticalAlignment: Text.AlignVCenter
+            textFormat: Text.PlainText
+            text: "–"
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          FilterAmountField {
+            id: maxField
+            which: "max"
+            placeholderText: root.filterBounds.max > 0 ? Model.formatGrouped(root.filterBounds.max) : "max"
+          }
+        }
+
+        Row {
+          spacing: Style.space(4)
+
+          Row {
+            id: monthStepper
+            spacing: Style.space(2)
+            FilterChip {
+              label: "‹"
+              tip: "Earlier month (wheel)"
+              onClicked: bar.stepMonth(-1)
+              onCleared: root.setFilterPart("month", "")
+            }
+            Text {
+              height: Style.space(24)
+              width: Style.space(84)
+              horizontalAlignment: Text.AlignHCenter
+              verticalAlignment: Text.AlignVCenter
+              textFormat: Text.PlainText
+              text: root.filter.month === "" ? "All months" : (root.filter.month === "30d" ? "Last 30 days" : Model.monthLabel(root.filter.month))
+              color: root.filter.month === "" ? Qt.darker(root.foreground, 1.4) : Color.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: root.filter.month !== ""
+            }
+            FilterChip {
+              label: "›"
+              tip: "Later month (wheel)"
+              onClicked: bar.stepMonth(1)
+              onCleared: root.setFilterPart("month", "")
+            }
+          }
+          FilterChip {
+            label: "30d"
+            active: root.filter.month === "30d"
+            onClicked: root.setFilterPart("month", root.filter.month === "30d" ? "" : "30d")
+            onCleared: root.setFilterPart("month", "")
+          }
+          FilterChip {
+            label: "This month"
+            active: root.filter.month === bar.thisMonth
+            onClicked: root.setFilterPart("month", root.filter.month === bar.thisMonth ? "" : bar.thisMonth)
+            onCleared: root.setFilterPart("month", "")
+          }
+          FilterChip {
+            label: "All"
+            active: root.filter.month === ""
+            onClicked: root.setFilterPart("month", "")
+          }
+        }
+      }
+
+      Text {
+        width: panel.width
+        textFormat: Text.PlainText
+        text: root.filteredTransactions.length + " of " + root.transactions.length + " shown  ·  Esc closes  ·  Ctrl+Backspace clears all"
+        color: Qt.darker(root.foreground, 1.6)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
     }
   }
 
@@ -5420,6 +5670,8 @@ Panel {
     // animation, to make scrolling faster or slower. 5 = ~300 px a notch.
     property real speed: 5.0
     property double _lastWheel: 0
+    // Optional function(source, event) -> bool. True = it used the wheel.
+    property var interceptWheel: null
 
     acceptedButtons: Qt.NoButton
 
@@ -5432,6 +5684,10 @@ Panel {
     }
 
     onWheel: function (event) {
+      if (scrollWheel.interceptWheel && scrollWheel.interceptWheel(scrollWheel, event)) {
+        event.accepted = true
+        return
+      }
       // A touchpad reports smooth scrolling via pixelDelta (already real
       // pixels); angleDelta.y (eighths of a degree, 120 per notch on a
       // normal mouse wheel) is normalised against the same ~60px-per-
