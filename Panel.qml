@@ -226,8 +226,23 @@ Panel {
   property bool filterOpen: false
   // Transfers between your own accounts: "all", "only" or "hide".
   property string transferFilter: "all"
+  readonly property var txnById: {
+    var m = {}
+    root.transactions.forEach(function (t) { m[t.id] = t })
+    return m
+  }
+  // A transfer belongs to BOTH accounts it moved money between: filtering to
+  // Axis keeps the HDFC side of an HDFC -> Axis transfer too, so the pair still
+  // folds into one card instead of leaving a lone half that looks like income.
+  function accountPasses(t) { return root.accountFilters.indexOf(Model.accountKey(t)) !== -1 }
   readonly property var filteredTransactions: root.transactions
-    .filter(function (t) { return root.accountFilters.length === 0 || root.accountFilters.indexOf(Model.accountKey(t)) !== -1 })
+    .filter(function (t) {
+      if (root.accountFilters.length === 0 || root.accountPasses(t)) return true
+      if (!t.transferId) return false
+      var ids = t.transferId.split(">")
+      var peer = root.txnById[ids[0] === t.id ? ids[1] : ids[0]]
+      return !!peer && root.accountPasses(peer)
+    })
     .filter(function (t) {
       if (root.trackFilter === "all") return true
       return (root.trackFilter === "tracked") === !!t.tracked
@@ -6412,6 +6427,7 @@ Panel {
         Row {
           width: parent.width
           spacing: Style.space(6)
+          clip: true          // never runs under the amount / balance on the right
 
           BrandMark {
             network: Model.cardNetwork(card.txn, store.cardOverviews)
@@ -6482,7 +6498,7 @@ Panel {
               id: legTagText
               anchors.centerIn: parent
               textFormat: Text.PlainText
-              text: "TRANSFER " + (card.txn.transferRole === "in" ? "FROM " : "TO ") + (card.txn.transferPeerBank || "YOUR ACCOUNT")
+              text: (card.txn.transferRole === "in" ? "FROM " : "TO ") + (card.txn.transferPeerBank || "OWN ACCOUNT")
               color: Color.accent
               font.family: Style.font.family
               font.bold: true
