@@ -5843,9 +5843,12 @@ Panel {
         id: apText
         anchors.centerIn: parent
         textFormat: Text.PlainText
-        text: ap.txn.ghost ? (ap.txn.bank || "Other account") + " ?" : (ap.isSavings ? ap.txn.bank + " ••" + ap.txn.last4 : ap.accountName)
-        color: root.foreground
+        text: ap.txn.ghost ? (ap.txn.bank || "Other account") : (ap.isSavings ? ap.txn.bank + " ••" + ap.txn.last4 : ap.accountName)
+        // A side that is not in your statements: the bank's name, dimmed and
+        // in italics instead of a ••last4 (which is not known).
+        color: ap.txn.ghost ? Qt.darker(root.foreground, 1.4) : root.foreground
         font.family: Style.font.family
+        font.italic: !!ap.txn.ghost
         font.pixelSize: Style.font.caption
       }
     }
