@@ -24,6 +24,14 @@ the same day are not a transfer. So:
      amount, a date within a few days and the "payment" wording; only when
      that match is unambiguous both ways.
 
+  3. "self": a transfer whose OTHER side is not in your data at all - HDFC
+     history that starts later than Axis's, a bank not fetched. It is still
+     plainly a transfer when the counterparty is YOU: the name is learned from
+     the pairs found by (1) and (2) ("THEJUS M", "THEJUS M MANOJ" - whichever
+     way each bank truncates it), and any other UPI row with that same name is
+     one of your own transfers, shown with its missing side marked (the other
+     bank is read off the text: "/HDFC/", "SBIN0001000" ...).
+
 Pure functions over plain rows, no database - the snapshot computes it live,
 so there is nothing to go stale. The user can split a wrong pair
 (`transfer_splits`), which is remembered.
@@ -32,6 +40,8 @@ from __future__ import annotations
 
 import re
 from datetime import date
+
+from . import keys
 
 _REF = re.compile(r"(?<!\d)(\d{12})(?!\d)")
 _CARD_PAYMENT = re.compile(
@@ -94,3 +104,66 @@ def detect(rows: list[dict]) -> list[dict]:
         if len(cs) == 1 and len(taken_by[cs[0]["id"]]) == 1:       # unambiguous both ways
             pairs.append(_pair(d, cs[0], "card", None))
     return pairs
+
+
+# ---------------------------------------------------------------- one-sided
+
+_BANK_WORDS = (("HDFC", "HDFC"), ("SBIN", "SBI"), ("STATE BANK", "SBI"), ("UTIB", "AXIS"),
+               ("AXIS", "AXIS"), ("ICIC", "ICICI"))
+
+
+def _norm(name: str | None) -> str:
+    return re.sub(r"[^A-Z]", "", (name or "").upper().replace("0", "O"))
+
+
+def _same_person(a: str, b: str) -> bool:
+    """Equal once spaces are ignored, or one a bank's truncation of the other
+    ("THEJUS M" / "THEJUS M MANOJ"): the shorter is a prefix, at least 7
+    letters, and the rest of the longer is letters only."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    short, long_ = sorted((a, b), key=len)
+    return len(short) >= 7 and long_.startswith(short)
+
+
+def other_bank_hint(own_bank: str, merchant: str) -> str | None:
+    """Which bank the other side was, read off the statement text."""
+    upper = (merchant or "").upper()
+    found = [bank for word, bank in _BANK_WORDS if word in upper and bank != own_bank]
+    return found[0] if found else None
+
+
+def own_names(pairs: list[dict], rows: list[dict]) -> set[str]:
+    """The names you appear under - learned from the counterparty on both sides
+    of every pair found by reference (the other party there is you)."""
+    by_id = {r["id"]: r for r in rows}
+    names: set[str] = set()
+    for p in pairs:
+        if p["matchedBy"] != "ref":
+            continue
+        for tid in (p["outId"], p["inId"]):
+            r = by_id.get(tid)
+            parsed = keys.parsed_counterparty(r["bank"], r["merchant"]) if r and r.get("bank") else None
+            if parsed and _norm(parsed["name"]):
+                names.add(_norm(parsed["name"]))
+    return names
+
+
+def detect_self(rows: list[dict], paired_ids: set[str], names: set[str]) -> list[dict]:
+    """Rows that are one side of a transfer between your own accounts whose
+    other side is not in `rows`: [{id, other}] (`other` = the bank read off the
+    text, or None). Only UPI/NEFT rows of a bank account whose counterparty is
+    you; a card or an unparseable row is never guessed at."""
+    out = []
+    for r in rows:
+        if r["id"] in paired_ids or r.get("account_type") == "credit" or not r.get("bank"):
+            continue
+        parsed = keys.parsed_counterparty(r["bank"], r["merchant"])
+        if not parsed:
+            continue
+        who = _norm(parsed["name"])
+        if any(_same_person(who, n) for n in names):
+            out.append({"id": r["id"], "other": other_bank_hint(r["bank"], r["merchant"])})
+    return out

@@ -73,6 +73,49 @@ class Pairing(unittest.TestCase):
         self.assertEqual(transfers.detect(rows), [])
 
 
+AXIS_FROM_HDFC = "UPI/P2A/121419291563/THEJUS M /HDFC/MF and R/"
+
+
+class OwnNameTransfers(unittest.TestCase):
+    """Transfers whose other side is not in the data (HDFC history starts later)."""
+
+    def rows(self):
+        return [
+            # a real pair, which teaches that "THEJUS M ..." is you
+            dict(r("h1", "2026-09-30", -20000, HDFC_DR), bank="HDFC"),
+            dict(r("s1", "2026-09-30", 20000, SBI_CR, "SBI|checking|9373"), bank="SBI"),
+            # an Axis credit from HDFC with no HDFC row, and a stranger, and a card row
+            dict(r("a1", "2026-08-31", 14000, AXIS_FROM_HDFC, "AXIS|checking|2934"), bank="AXIS"),
+            dict(r("a2", "2026-08-31", -300, "UPI/P2A/777777777777/RAVI KUMAR /HDFC/lunch/", "AXIS|checking|2934"), bank="AXIS"),
+            dict(r("c1", "2026-08-31", 100, "THEJUS M REFUND", "HDFC|credit|0220", "credit"), bank="HDFC"),
+        ]
+
+    def test_the_name_is_learned_from_the_pairs_and_applied_to_unpaired_rows(self):
+        rows = self.rows()
+        pairs = transfers.detect(rows)
+        names = transfers.own_names(pairs, rows)
+        self.assertIn("THEJUSM", names)
+        hits = transfers.detect_self(rows, {"h1", "s1"}, names)
+        self.assertEqual([(h["id"], h["other"]) for h in hits], [("a1", "HDFC")])   # not RAVI, not the card
+
+    def test_without_any_pair_nothing_is_guessed(self):
+        rows = self.rows()[2:]
+        self.assertEqual(transfers.detect_self(rows, set(), transfers.own_names([], rows)), [])
+
+    def test_truncated_and_lookalike_names(self):
+        same = transfers._same_person
+        self.assertTrue(same("THEJUSM", "THEJUSMMANOJ"))
+        self.assertTrue(same("THEJUSMM", "THEJUSMMANOJ"))
+        self.assertFalse(same("THEJUSM", "THEJUSMO"[:0] + "RAVIKUMAR"))
+        self.assertFalse(same("THEJ", "THEJUSMMANOJ"))                  # too short to trust
+
+    def test_the_other_bank_is_read_off_the_text(self):
+        self.assertEqual(transfers.other_bank_hint("AXIS", "UPI/P2A/1/THEJUS M /HDFC BANK/MF/"), "HDFC")
+        self.assertEqual(transfers.other_bank_hint("HDFC", "UPI-X-Y@UPI-SBIN0001000-1-N"), "SBI")
+        self.assertEqual(transfers.other_bank_hint("HDFC", "UPI-X-Y@OKHDFCBANK-1-N"), None)   # its own bank
+        self.assertEqual(transfers.other_bank_hint("SBI", "UPI/DR/1/THEJUS M/ICIC/x"), "ICICI")
+
+
 class InTheSnapshot(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -112,6 +155,20 @@ class InTheSnapshot(unittest.TestCase):
         legs = {t["id"]: t for t in queries.snapshot(self.conn)["transactions"]}
         self.assertEqual(legs["t-h"]["transferRole"], "out")
         self.assertNotIn("transferSplitId", legs["t-h"])
+
+    def test_an_own_name_row_with_no_other_side_is_tagged_and_can_be_split(self):
+        a = ingest.ensure_account(self.conn, "AXIS", "checking", "2934")
+        ingest.upsert_rows(self.conn, a, [{"id": "t-a", "date": "2026-08-31", "merchant": AXIS_FROM_HDFC,
+                                           "amount": 14000.0, "currency": "INR"}])
+        legs = {t["id"]: t for t in queries.snapshot(self.conn)["transactions"]}
+        self.assertTrue(legs["t-a"]["transferSelf"])
+        self.assertEqual(legs["t-a"]["transferOther"], "HDFC")
+        self.cli("transfer-split", "t-a")
+        legs = {t["id"]: t for t in queries.snapshot(self.conn)["transactions"]}
+        self.assertNotIn("transferSelf", legs["t-a"])
+        self.assertTrue(legs["t-a"]["transferSelfSplit"])
+        self.cli("transfer-restore", "t-a")
+        self.assertTrue({t["id"]: t for t in queries.snapshot(self.conn)["transactions"]}["t-a"]["transferSelf"])
 
     def test_renaming_one_side_does_not_touch_the_other(self):
         # the per-bank rename keys (v17) keep the two legs' names apart

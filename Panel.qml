@@ -5808,7 +5808,7 @@ Panel {
     required property var txn
     spacing: Style.space(6)
     readonly property bool isSavings: ap.txn.accountType === "checking" && (ap.txn.bank === "AXIS" || ap.txn.bank === "SBI")
-    readonly property string accountName: Model.accountLabel(Model.cardLabelParts(
+    readonly property string accountName: ap.txn.ghost ? "" : Model.accountLabel(Model.cardLabelParts(
       Model.cardFallbackName(ap.txn.accountType, ap.txn.last4, store.cardOverviews, ap.txn.bank),
       store.accountNameOverrides[ap.txn.last4],
       (store.cardOverviews[ap.txn.last4] || {}).network).label, ap.txn.last4)
@@ -5843,7 +5843,7 @@ Panel {
         id: apText
         anchors.centerIn: parent
         textFormat: Text.PlainText
-        text: ap.isSavings ? ap.txn.bank + " ••" + ap.txn.last4 : ap.accountName
+        text: ap.txn.ghost ? (ap.txn.bank || "Other account") + " ?" : (ap.isSavings ? ap.txn.bank + " ••" + ap.txn.last4 : ap.accountName)
         color: root.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -5867,7 +5867,10 @@ Panel {
     readonly property color tone: Color.accent
     readonly property bool _hot: xHover.hovered || xc.activeFocus
     readonly property int collapsedHeight: Style.space(56)
-    readonly property string how: xc.transfer.matchedBy === "card" ? "card bill payment" : "same UPI reference"
+    readonly property var amountLeg: xc.transfer.oneSided ? xc.transfer.real : xc.outLeg
+    readonly property var legsList: xc.transfer.oneSided ? [xc.transfer.real] : [xc.outLeg, xc.inLeg]
+    readonly property string how: xc.transfer.matchedBy === "card" ? "card bill payment"
+      : (xc.transfer.matchedBy === "self" ? "your own name" : "same UPI reference")
 
     implicitHeight: xc.collapsedHeight + (xc.expanded ? xDetails.implicitHeight + Style.space(12) : 0)
     radius: Style.cornerRadius
@@ -5882,7 +5885,7 @@ Panel {
 
     HoverHandler { id: xHover }
 
-    function toggleTracked() { store.setTrackedMany([xc.outLeg, xc.inLeg], !xc.transfer.tracked) }
+    function toggleTracked() { store.setTrackedMany(xc.legsList, !xc.transfer.tracked) }
 
     activeFocusOnTab: true
     Keys.onReturnPressed: xc.toggleTracked()
@@ -5996,7 +5999,7 @@ Panel {
         Text {
           anchors.right: parent.right
           textFormat: Text.PlainText
-          text: Model.formatAmount({ amount: Math.abs(xc.outLeg.amount), currency: xc.outLeg.currency })
+          text: Model.formatAmount({ amount: Math.abs(xc.amountLeg.amount), currency: xc.amountLeg.currency })
           color: root.foreground
           font.family: Style.font.family
           font.bold: true
@@ -6058,6 +6061,7 @@ Panel {
             }
             AcctPill { txn: legCol.modelData.leg; anchors.verticalCenter: parent.verticalCenter }
             Text {
+              visible: !legCol.modelData.leg.ghost
               anchors.verticalCenter: parent.verticalCenter
               textFormat: Text.PlainText
               text: Model.formatAmount(legCol.modelData.leg)
@@ -6068,6 +6072,18 @@ Panel {
             }
           }
           Text {
+            visible: !!legCol.modelData.leg.ghost
+            width: parent.width
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            text: "This side is not in your statements - it is older than what is fetched, or another account. "
+              + "The amount is the same."
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          Text {
+            visible: !legCol.modelData.leg.ghost
             width: parent.width
             textFormat: Text.PlainText
             wrapMode: Text.WrapAnywhere
@@ -6077,7 +6093,7 @@ Panel {
             font.pixelSize: Style.font.caption
           }
           Text {
-            visible: legCol.modelData.leg.balance !== null && legCol.modelData.leg.balance !== undefined
+            visible: !legCol.modelData.leg.ghost && legCol.modelData.leg.balance !== null && legCol.modelData.leg.balance !== undefined
             textFormat: Text.PlainText
             text: "balance after: " + Model.currencySymbol(legCol.modelData.leg.currency)
               + Model.formatGrouped(legCol.modelData.leg.balance)
@@ -6092,8 +6108,10 @@ Panel {
         width: parent.width
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
-        text: "Paired by " + xc.how + (xc.transfer.ref ? " " + xc.transfer.ref : "")
-          + ". Not counted as spending or income."
+        text: (xc.transfer.oneSided
+          ? "The other party is you (" + "matched on your own name), and the other side is not in your data. "
+          : "Paired by " + xc.how + (xc.transfer.ref ? " " + xc.transfer.ref : "") + ". ")
+          + "Not counted as spending or income."
         color: Qt.darker(root.foreground, 1.5)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -6103,12 +6121,12 @@ Panel {
         width: parent.width
         spacing: Style.space(10)
         TextAction {
-          label: xc.transfer.tracked ? "Untrack both" : "Track both"
+          label: xc.transfer.oneSided ? (xc.transfer.tracked ? "Untrack" : "Track") : (xc.transfer.tracked ? "Untrack both" : "Track both")
           onTriggered: xc.toggleTracked()
         }
         TextAction {
           label: "Not a transfer"
-          onTriggered: root.txdb(["transfer-split", xc.outLeg.id, xc.inLeg.id])
+          onTriggered: root.txdb(["transfer-split"].concat(xc.legsList.map(function (l) { return l.id })))
         }
       }
     }
@@ -6575,7 +6593,7 @@ Panel {
 
       // A pair that was split ("Not a transfer"): bring it back.
       Row {
-        visible: !!card.txn.transferSplitId
+        visible: !!card.txn.transferSplitId || !!card.txn.transferSelfSplit
         spacing: Style.space(8)
         Text {
           anchors.verticalCenter: parent.verticalCenter
@@ -6587,7 +6605,8 @@ Panel {
         }
         TextAction {
           label: "Treat as a transfer"
-          onTriggered: root.txdb(["transfer-restore"].concat((card.txn.transferSplitId || "").split(">")))
+          onTriggered: root.txdb(["transfer-restore"].concat(card.txn.transferSplitId
+            ? card.txn.transferSplitId.split(">") : [card.txn.id]))
         }
       }
 

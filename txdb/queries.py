@@ -29,9 +29,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
            ORDER BY t.date DESC, t.seq DESC, t.id""")]
     # Pair the two sides of a movement between your own accounts (txdb/transfers.py).
     split = {r[0] for r in conn.execute("SELECT txn_id FROM transfer_splits")}
-    detected = transfers.detect(
-        [{"id": t["id"], "date": t["date"], "merchant": t["merchant"], "amount_paise": round(t["amount"] * 100),
-          "account_id": t["accountId"], "account_type": t["accountType"]} for t in transactions])
+    tx_rows = [{"id": t["id"], "date": t["date"], "merchant": t["merchant"], "amount_paise": round(t["amount"] * 100),
+                "account_id": t["accountId"], "account_type": t["accountType"], "bank": t["bank"]}
+               for t in transactions]
+    detected = transfers.detect(tx_rows)
     by_id = {t["id"]: t for t in transactions}
     transfer_list = []
     for p in detected:
@@ -46,6 +47,14 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             else:
                 by_id[tid]["transferId"] = p["id"]
                 by_id[tid]["transferRole"] = role
+    # Own-name transfers whose other side is not in the data (txdb/transfers.py, rule 3).
+    pair_ids = {tid for p in detected for tid in (p["outId"], p["inId"])}
+    for hit in transfers.detect_self(tx_rows, pair_ids, transfers.own_names(detected, tx_rows)):
+        if hit["id"] in split:
+            by_id[hit["id"]]["transferSelfSplit"] = True
+        else:
+            by_id[hit["id"]]["transferSelf"] = True
+            by_id[hit["id"]]["transferOther"] = hit["other"]
     balances = [{
         "bank": r["bank"], "accountType": r["account_type"], "last4": r["last4"], "accountId": r["account_id"],
         "balance": from_paise(r["balance_paise"]), "currency": r["currency"], "asOf": r["as_of"],

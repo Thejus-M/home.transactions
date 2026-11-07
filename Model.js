@@ -137,6 +137,16 @@ function collapseTransfers(rows, transferList) {
         continue
       }
     }
+    // Your own name on the other side, but the other side is not in the data:
+    // still a transfer, with the missing side drawn as a placeholder.
+    if (t.transferSelf && !t.transferId) {
+      var ghost = { ghost: true, bank: t.transferOther || "", accountType: "checking", last4: "",
+                    amount: -t.amount, currency: t.currency, date: t.date, merchant: "", balance: null }
+      out.push({ isTransfer: true, oneSided: true, id: "self:" + t.id, date: t.date, amount: 0,
+                 currency: t.currency, out: t.amount < 0 ? t : ghost, in: t.amount > 0 ? t : ghost,
+                 real: t, tracked: !!t.tracked, matchedBy: "self", ref: null, inDate: t.date })
+      continue
+    }
     out.push(t)
   }
   return out
@@ -743,7 +753,7 @@ function monthSummary(transactions, referenceDateIso) {
     if (t.date.slice(0, 7) !== ym) continue
     // Money that only moved between your own accounts (or paid a card bill)
     // is neither spending nor income.
-    if (t.transferId) continue
+    if (t.transferId || t.transferSelf) continue
     if (t.amount < 0) spent += -t.amount
     else income += t.amount
   }

@@ -54,6 +54,26 @@ class Collapse(Harness):
         rows[1]["tracked"] = True
         self.assertTrue(self.js("collapseTransfers(input.rows, [])", rows=rows)[0]["tracked"])
 
+    def test_an_own_name_transfer_with_no_other_side_is_a_one_sided_entry_with_a_placeholder(self):
+        rows = [tx("a", "2026-08-31", 14000, bank="AXIS", transferSelf=True, transferOther="HDFC"),
+                tx("o", "2026-08-31", -50)]
+        out = self.js("collapseTransfers(input.rows, [])", rows=rows)
+        self.assertEqual([e.get("isTransfer", False) for e in out], [True, False])
+        t = out[0]
+        self.assertTrue(t["oneSided"])
+        self.assertTrue(t["out"]["ghost"])                       # the missing sender
+        self.assertEqual((t["out"]["bank"], t["in"]["id"]), ("HDFC", "a"))
+        self.assertEqual(t["real"]["id"], "a")
+        # a debit makes the placeholder the receiver
+        rows = [tx("d", "2026-07-19", -4000, bank="AXIS", transferSelf=True, transferOther="HDFC")]
+        t = self.js("collapseTransfers(input.rows, [])", rows=rows)[0]
+        self.assertEqual((t["out"]["id"], t["in"]["ghost"]), ("d", True))
+
+    def test_own_name_transfers_are_not_spending_or_income(self):
+        rows = [tx("a", "2026-09-30", 14000, transferSelf=True), tx("o", "2026-09-30", -50)]
+        s = self.js("monthSummary(input.rows, '2026-09-30')", rows=rows)
+        self.assertEqual((s["spent"], s["income"]), (50, 0))
+
     def test_a_transfer_adds_nothing_to_a_days_total_or_the_month_summary(self):
         groups = self.js("groupByDate(collapseTransfers(input.rows, []))", rows=self.PAIR)
         self.assertEqual(groups[0]["total"], -50)
