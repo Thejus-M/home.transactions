@@ -16,6 +16,8 @@
   txdb receipt-add-item <receiptId> <desc> [qty] [unit] [rate] [amount] [gstRate]
   txdb receipt-delete-item <receiptId> <lineNo>
   txdb receipt-edit-tax <receiptId> <rate> <cgst|sgst|igst|cess|taxable> [value]
+  txdb transfer-split <txnId>...         say a detected transfer pair is NOT a transfer
+  txdb transfer-restore <txnId>...       undo that
   txdb receipt-add-fee <receiptId> <label> <amount>   platform / delivery / service fee
   txdb receipt-edit-fee <receiptId> <lineNo> <label|amount> <value>
   txdb receipt-delete-fee <receiptId> <lineNo>
@@ -133,6 +135,14 @@ def main(argv: list[str]) -> int:
         receipts.delete_item(conn, args[0], args[1])
     elif cmd == "receipt-edit-tax":
         receipts.edit_tax_field(conn, args[0], args[1], args[2], " ".join(args[3:]))
+    elif cmd == "transfer-split":
+        with write(conn):
+            for tid in args:
+                conn.execute("INSERT OR REPLACE INTO transfer_splits (txn_id, split_at) VALUES (?, ?)", (tid, now()))
+    elif cmd == "transfer-restore":
+        with write(conn):
+            for tid in args:
+                conn.execute("DELETE FROM transfer_splits WHERE txn_id = ?", (tid,))
     elif cmd == "receipt-add-fee":
         receipts.add_fee(conn, args[0], args[1], args[2])
     elif cmd == "receipt-edit-fee":

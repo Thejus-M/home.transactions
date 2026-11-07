@@ -628,6 +628,14 @@ MIGRATIONS = [
     """,
     # v17: one rename key per bank (see _split_names_by_bank).
     _split_names_by_bank,
+    # v18: a detected transfer pair the user said is NOT a transfer. Keyed by
+    # the transaction, so it survives the re-fetches that rewrite other fields.
+    """
+    CREATE TABLE transfer_splits (
+        txn_id    TEXT PRIMARY KEY,
+        split_at  TEXT NOT NULL
+    );
+    """,
 ]
 
 

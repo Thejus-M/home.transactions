@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from . import portfolio, receipts
+from . import portfolio, receipts, transfers
 from .db import from_paise
 from .ingest import OVERVIEW_FIELDS
 
@@ -27,6 +27,25 @@ def snapshot(conn: sqlite3.Connection) -> dict:
            FROM transactions t JOIN accounts a ON a.id = t.account_id
            LEFT JOIN tracked k ON k.transaction_id = t.id
            ORDER BY t.date DESC, t.seq DESC, t.id""")]
+    # Pair the two sides of a movement between your own accounts (txdb/transfers.py).
+    split = {r[0] for r in conn.execute("SELECT txn_id FROM transfer_splits")}
+    detected = transfers.detect(
+        [{"id": t["id"], "date": t["date"], "merchant": t["merchant"], "amount_paise": round(t["amount"] * 100),
+          "account_id": t["accountId"], "account_type": t["accountType"]} for t in transactions])
+    by_id = {t["id"]: t for t in transactions}
+    transfer_list = []
+    for p in detected:
+        is_split = p["outId"] in split or p["inId"] in split
+        transfer_list.append({
+            "id": p["id"], "outId": p["outId"], "inId": p["inId"], "amount": p["amountPaise"] / 100,
+            "date": p["date"], "inDate": p["inDate"], "matchedBy": p["matchedBy"], "ref": p["ref"],
+            "split": is_split})
+        for tid, role in ((p["outId"], "out"), (p["inId"], "in")):
+            if is_split:
+                by_id[tid]["transferSplitId"] = p["id"]
+            else:
+                by_id[tid]["transferId"] = p["id"]
+                by_id[tid]["transferRole"] = role
     balances = [{
         "bank": r["bank"], "accountType": r["account_type"], "last4": r["last4"], "accountId": r["account_id"],
         "balance": from_paise(r["balance_paise"]), "currency": r["currency"], "asOf": r["as_of"],
@@ -53,6 +72,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     } for r in conn.execute("SELECT * FROM accounts ORDER BY bank, account_type, last4")]
     return {
         "transactions": transactions,
+        "transfers": transfer_list,
         "balances": balances,
         "cardOverviews": card_overviews,
         "accounts": accounts,

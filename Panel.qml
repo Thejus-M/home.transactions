@@ -232,7 +232,7 @@ Panel {
       return Model.transactionDisplayName(t, store.transactionNameOverrides)
         .toLowerCase().indexOf(root.searchQuery.toLowerCase()) !== -1
     })
-  readonly property var groupedTransactions: Model.groupByDate(root.filteredTransactions)
+  readonly property var groupedTransactions: Model.groupByDate(Model.collapseTransfers(root.filteredTransactions, store.transfers))
 
   // Biggest bill first, then by card, so rows do not reshuffle between
   // snapshots. (Object.values alone put ••7462 before ••0220: JavaScript
@@ -460,6 +460,7 @@ Panel {
     id: store
     property var trackedOverrides: ({})   // optimistic tracked changes not yet in a snapshot
     property var rawTransactions: []
+    property var transfers: []         // detected transfer pairs (txdb/transfers.py)
     property var transactions: []
     property var cardOverviews: ({})   // map: last4 -> overview entry
     property var accountBalances: []   // list of {bank, accountType, last4, balance, currency}
@@ -506,6 +507,7 @@ Panel {
       portfolioHistory = snap.portfolioHistory || []
       trackedOverrides = {}
       rawTransactions = snap.transactions || []
+      transfers = snap.transfers || []
       rawReceipts = snap.receipts || []
       receiptOverrides = {}
       recompute()
@@ -2370,11 +2372,21 @@ Panel {
 
                 Repeater {
                   model: modelData.rows
-                  delegate: TransactionCard {
+                  // A transfer between your own accounts is one TransferCard;
+                  // everything else is an ordinary TransactionCard.
+                  delegate: Item {
+                    id: rowSlot
                     required property var modelData
                     width: parent.width
-                    txn: modelData
-                    selectable: true
+                    height: slotLoader.height
+
+                    Loader {
+                      id: slotLoader
+                      width: parent.width
+                      sourceComponent: rowSlot.modelData.isTransfer ? transferCardC : txnCardC
+                    }
+                    Component { id: txnCardC; TransactionCard { txn: rowSlot.modelData; selectable: true } }
+                    Component { id: transferCardC; TransferCard { transfer: rowSlot.modelData } }
                   }
                 }
               }
@@ -5789,6 +5801,319 @@ Panel {
     }
   }
 
+  // A bank logo + the account tag ("HDFC ••7367"), the way a transaction card
+  // draws the account its row sits in.
+  component AcctPill: Row {
+    id: ap
+    required property var txn
+    spacing: Style.space(6)
+    readonly property bool isSavings: ap.txn.accountType === "checking" && (ap.txn.bank === "AXIS" || ap.txn.bank === "SBI")
+    readonly property string accountName: Model.accountLabel(Model.cardLabelParts(
+      Model.cardFallbackName(ap.txn.accountType, ap.txn.last4, store.cardOverviews, ap.txn.bank),
+      store.accountNameOverrides[ap.txn.last4],
+      (store.cardOverviews[ap.txn.last4] || {}).network).label, ap.txn.last4)
+
+    BrandMark {
+      network: Model.cardNetwork(ap.txn, store.cardOverviews)
+      markHeight: Style.spaceReal(9)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+    HdfcLogo {
+      variant: "icon"
+      visible: ap.txn.accountType === "checking" && ap.txn.bank === "HDFC"
+      markSize: Style.spaceReal(9)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+    AxisLogo {
+      visible: ap.txn.accountType === "checking" && ap.txn.bank === "AXIS"
+      markSize: Style.spaceReal(9)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+    SbiLogo {
+      visible: ap.txn.accountType === "checking" && ap.txn.bank === "SBI"
+      markSize: Style.spaceReal(9)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+    Rectangle {
+      radius: Style.space(4)
+      color: Util.alpha(root.foreground, 0.12)
+      implicitWidth: apText.implicitWidth + Style.space(10)
+      implicitHeight: apText.implicitHeight + Style.space(4)
+      Text {
+        id: apText
+        anchors.centerIn: parent
+        textFormat: Text.PlainText
+        text: ap.isSavings ? ap.txn.bank + " ••" + ap.txn.last4 : ap.accountName
+        color: root.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
+  // Money that moved between two of your own accounts, drawn as ONE card in
+  // its own colour with a TRANSFER tag and "from -> to": both sides of it
+  // (the debit in one bank, the credit in the other) are folded together by
+  // txdb/transfers.py. Click to track both sides; open it (chevron, circle or
+  // the arrow keys) to look at each side - its own statement text, date,
+  // amount and balance - and, if the pairing is wrong, split it back into two
+  // ordinary transactions.
+  component TransferCard: BorderSurface {
+    id: xc
+    required property var transfer
+    property bool expanded: false
+    readonly property var outLeg: xc.transfer.out
+    readonly property var inLeg: xc.transfer.in
+    readonly property color tone: Color.accent
+    readonly property bool _hot: xHover.hovered || xc.activeFocus
+    readonly property int collapsedHeight: Style.space(56)
+    readonly property string how: xc.transfer.matchedBy === "card" ? "card bill payment" : "same UPI reference"
+
+    implicitHeight: xc.collapsedHeight + (xc.expanded ? xDetails.implicitHeight + Style.space(12) : 0)
+    radius: Style.cornerRadius
+    opacity: xMouse.pressed ? 0.75 : 1.0
+    color: xc.transfer.tracked ? Util.alpha(xc.tone, 0.18)
+      : (xc._hot ? Util.alpha(xc.tone, 0.14) : Util.alpha(xc.tone, 0.07))
+    borderSpec: xc.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.flat(Util.alpha(xc.tone, 0.45), 1)
+
+    Behavior on implicitHeight { NumberAnimation { duration: 120 } }
+    Behavior on color { ColorAnimation { duration: 100 } }
+    Behavior on opacity { NumberAnimation { duration: 80 } }
+
+    HoverHandler { id: xHover }
+
+    function toggleTracked() { store.setTrackedMany([xc.outLeg, xc.inLeg], !xc.transfer.tracked) }
+
+    activeFocusOnTab: true
+    Keys.onReturnPressed: xc.toggleTracked()
+    Keys.onEnterPressed: xc.toggleTracked()
+    Keys.onSpacePressed: xc.toggleTracked()
+    Keys.onUpPressed: root.focusNext(xc, false)
+    Keys.onDownPressed: root.focusNext(xc, true)
+    Keys.onLeftPressed: xc.expanded = false
+    Keys.onRightPressed: xc.expanded = true
+
+    Item {
+      id: xRow
+      anchors.top: parent.top
+      anchors.left: parent.left
+      anchors.right: parent.right
+      height: xc.collapsedHeight
+
+      MouseArea {
+        id: xMouse
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: xc.toggleTracked()
+      }
+
+      Rectangle {
+        id: xAvatar
+        width: Style.space(36)
+        height: width
+        radius: width / 2
+        color: Util.alpha(xc.tone, 0.28)
+        anchors.left: parent.left
+        anchors.leftMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+
+        MouseArea {
+          anchors.fill: parent
+          anchors.margins: -Style.space(4)
+          cursorShape: Qt.PointingHandCursor
+          onClicked: xc.expanded = !xc.expanded
+        }
+        Text {
+          anchors.centerIn: parent
+          textFormat: Text.PlainText
+          text: "⇄"
+          color: xc.tone
+          font.bold: true
+          font.pixelSize: Style.font.subtitle
+        }
+      }
+
+      Column {
+        anchors.left: xAvatar.right
+        anchors.leftMargin: Style.space(10)
+        anchors.right: xAmount.left
+        anchors.rightMargin: Style.space(8)
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(4)
+
+        Row {
+          spacing: Style.space(8)
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: "Transfer"
+            color: root.foreground
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.subtitle
+          }
+          Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            radius: Style.space(4)
+            color: Util.alpha(xc.tone, 0.25)
+            implicitWidth: xTag.implicitWidth + Style.space(10)
+            implicitHeight: xTag.implicitHeight + Style.space(4)
+            Text {
+              id: xTag
+              anchors.centerIn: parent
+              textFormat: Text.PlainText
+              text: "OWN ACCOUNTS"
+              color: xc.tone
+              font.family: Style.font.family
+              font.bold: true
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
+        Row {
+          spacing: Style.space(6)
+          AcctPill { txn: xc.outLeg; anchors.verticalCenter: parent.verticalCenter }
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: "→"
+            color: xc.tone
+            font.bold: true
+            font.pixelSize: Style.font.body
+          }
+          AcctPill { txn: xc.inLeg; anchors.verticalCenter: parent.verticalCenter }
+        }
+      }
+
+      Column {
+        id: xAmount
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(2)
+
+        Text {
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          text: Model.formatAmount({ amount: Math.abs(xc.outLeg.amount), currency: xc.outLeg.currency })
+          color: root.foreground
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.subtitle
+        }
+        Text {
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          text: xc.how
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+
+    Column {
+      id: xDetails
+      visible: xc.expanded
+      anchors.top: xRow.bottom
+      anchors.topMargin: Style.space(6)
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.leftMargin: Style.spacing.rowPaddingX + Style.space(46)
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      spacing: Style.space(6)
+
+      Rectangle { width: parent.width; height: Style.spacing.hairline; color: Util.alpha(xc.tone, 0.5) }
+
+      Repeater {
+        model: [
+          { role: "OUT", leg: xc.outLeg, color: root.debitColor },
+          { role: "IN", leg: xc.inLeg, color: root.creditColor },
+        ]
+        delegate: Column {
+          id: legCol
+          required property var modelData
+          width: parent.width
+          spacing: Style.space(3)
+
+          Row {
+            spacing: Style.space(8)
+            Rectangle {
+              anchors.verticalCenter: parent.verticalCenter
+              radius: Style.space(4)
+              color: Util.alpha(legCol.modelData.color, 0.22)
+              implicitWidth: legTag.implicitWidth + Style.space(10)
+              implicitHeight: legTag.implicitHeight + Style.space(4)
+              Text {
+                id: legTag
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: legCol.modelData.role
+                color: legCol.modelData.color
+                font.family: Style.font.family
+                font.bold: true
+                font.pixelSize: Style.font.caption
+              }
+            }
+            AcctPill { txn: legCol.modelData.leg; anchors.verticalCenter: parent.verticalCenter }
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: Model.formatAmount(legCol.modelData.leg)
+              color: legCol.modelData.color
+              font.family: Style.font.family
+              font.bold: true
+              font.pixelSize: Style.font.caption
+            }
+          }
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            wrapMode: Text.WrapAnywhere
+            text: Model.formatFullDate(legCol.modelData.leg.date) + "  ·  " + legCol.modelData.leg.merchant
+            color: Qt.darker(root.foreground, 1.3)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          Text {
+            visible: legCol.modelData.leg.balance !== null && legCol.modelData.leg.balance !== undefined
+            textFormat: Text.PlainText
+            text: "balance after: " + Model.currencySymbol(legCol.modelData.leg.currency)
+              + Model.formatGrouped(legCol.modelData.leg.balance)
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+      }
+
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        text: "Paired by " + xc.how + (xc.transfer.ref ? " " + xc.transfer.ref : "")
+          + ". Not counted as spending or income."
+        color: Qt.darker(root.foreground, 1.5)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      Flow {
+        width: parent.width
+        spacing: Style.space(10)
+        TextAction {
+          label: xc.transfer.tracked ? "Untrack both" : "Track both"
+          onTriggered: xc.toggleTracked()
+        }
+        TextAction {
+          label: "Not a transfer"
+          onTriggered: root.txdb(["transfer-split", xc.outLeg.id, xc.inLeg.id])
+        }
+      }
+    }
+  }
+
   // One RECENT row, card-style: a circular direction icon, merchant name +
   // account pill, amount on the right — clicking the row toggles "tracked"
   // (shown as a tinted background instead of a switch), and hovering
@@ -6044,6 +6369,17 @@ Panel {
             ToolTip.delay: 300
           }
 
+          // One side of a transfer whose other side is not in this view.
+          Text {
+            visible: !!card.txn.transferId
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: "⇄"
+            color: Color.accent
+            font.bold: true
+            font.pixelSize: Style.font.caption
+          }
+
           Rectangle {
             radius: Style.space(4)
             color: Util.alpha(root.foreground, 0.12)
@@ -6234,6 +6570,24 @@ Panel {
         MiniBill {
           width: parent.width
           receipt: card.linkedReceipt || ({})
+        }
+      }
+
+      // A pair that was split ("Not a transfer"): bring it back.
+      Row {
+        visible: !!card.txn.transferSplitId
+        spacing: Style.space(8)
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: "Looks like one side of a transfer."
+          color: Qt.darker(root.foreground, 1.4)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        TextAction {
+          label: "Treat as a transfer"
+          onTriggered: root.txdb(["transfer-restore"].concat((card.txn.transferSplitId || "").split(">")))
         }
       }
 

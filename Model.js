@@ -107,6 +107,41 @@ function dateGroupLabel(dateIso) {
 // sorted newest-first (hdfc-statement-fetcher always writes/merges in
 // that order, and nothing in this widget re-sorts it), so the returned
 // groups — and each group's rows — come out newest-first too.
+// Folds the two sides of a transfer between your own accounts (txdb/transfers.py
+// tags both with the same `transferId`) into ONE entry, at the place its first
+// side appears: { isTransfer, id, date, amount: 0, currency, out, in, tracked,
+// matchedBy, ref }. Only when both sides are present - with one side filtered
+// away (an account filter, a search) that side stays an ordinary row. The
+// entry's amount is 0 so a day's net total is not thrown off by money that
+// only moved between your own accounts.
+function collapseTransfers(rows, transferList) {
+  var byId = {}
+  rows.forEach(function (t) { byId[t.id] = t })
+  var info = {}
+  ;(transferList || []).forEach(function (p) { info[p.id] = p })
+  var seen = {}
+  var out = []
+  for (var i = 0; i < rows.length; i++) {
+    var t = rows[i]
+    if (seen[t.id]) continue
+    if (t.transferId) {
+      var ids = t.transferId.split(">")
+      var a = byId[ids[0]], b = byId[ids[1]]
+      if (a && b) {
+        seen[a.id] = true
+        seen[b.id] = true
+        var p = info[t.transferId] || {}
+        out.push({ isTransfer: true, id: t.transferId, date: a.date, amount: 0, currency: a.currency,
+                   out: a, in: b, tracked: !!(a.tracked && b.tracked),
+                   matchedBy: p.matchedBy || "", ref: p.ref || null, inDate: b.date })
+        continue
+      }
+    }
+    out.push(t)
+  }
+  return out
+}
+
 function groupByDate(transactions) {
   var order = []
   var byDate = {}
@@ -706,6 +741,9 @@ function monthSummary(transactions, referenceDateIso) {
   for (var i = 0; i < transactions.length; i++) {
     var t = transactions[i]
     if (t.date.slice(0, 7) !== ym) continue
+    // Money that only moved between your own accounts (or paid a card bill)
+    // is neither spending nor income.
+    if (t.transferId) continue
     if (t.amount < 0) spent += -t.amount
     else income += t.amount
   }
