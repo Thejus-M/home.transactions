@@ -5051,17 +5051,30 @@ Panel {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
-      onClicked: filterPopup.opened ? filterPopup.close() : filterPopup.open()
+      // The press that lands on this button also counts as "outside" the
+      // popover and closes it first; without the time check the click would
+      // then reopen it, and the button could never close it.
+      onClicked: {
+        if (filterPopup.opened) filterPopup.close()
+        else if (Date.now() - filterPopup.closedAt > 250) filterPopup.open()
+      }
     }
 
     Popup {
       id: filterPopup
       // Clicks on the trigger are handled by its own onClicked (which toggles).
       // Without this, the press closes the popup and the click reopens it.
-      closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
-      y: filterButton.height + Style.space(4)
-      x: filterButton.width - width
-      width: Style.space(200)
+      // Always on top, in the middle of the popup panel - not hung under the
+      // button, where it ran off the bottom of the screen. Taller than the
+      // panel? It scrolls.
+      parent: Overlay.overlay
+      property double closedAt: 0
+      onClosed: closedAt = Date.now()
+      closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+      x: Math.round((parent.width - width) / 2)
+      y: Style.space(12)
+      width: Math.min(Style.space(260), parent.width - Style.space(24))
+      height: Math.min(filterMenuColumn.implicitHeight + Style.space(2), parent.height - Style.space(24))
       padding: Style.spacing.hairline
       focus: true
 
@@ -5078,9 +5091,18 @@ Panel {
       // Keys property ... is not an Item" and silently no-ops) — it has
       // to go on the contentItem, same as Dropdown.qml's own Escape
       // handling living on its ListView contentItem, not its Popup.
-      contentItem: Column {
+      contentItem: Flickable {
+        id: filterScroll
+        clip: true
+        contentWidth: width
+        contentHeight: filterMenuColumn.implicitHeight
+        boundsBehavior: Flickable.StopAtBounds
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+      Column {
         id: filterMenuColumn
-        width: filterPopup.width - Style.space(2)
+        width: filterScroll.width
         spacing: Style.space(2)
         focus: true
 
@@ -5197,6 +5219,7 @@ Panel {
           onClicked: root.transferFilter = "hide"
         }
 
+      }
       }
     }
   }
