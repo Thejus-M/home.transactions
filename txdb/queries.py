@@ -33,6 +33,12 @@ def snapshot(conn: sqlite3.Connection) -> dict:
                 "account_id": t["accountId"], "account_type": t["accountType"], "bank": t["bank"]}
                for t in transactions]
     detected = transfers.detect(tx_rows)
+    # Own-name rows whose other half is in another bank's data but carries no
+    # shared reference are joined here (and any half still alone is one-sided).
+    names = transfers.own_names(detected, tx_rows)
+    self_hits = transfers.detect_self(tx_rows, {tid for p in detected for tid in (p["outId"], p["inId"])}, names)
+    more, self_hits = transfers.pair_selfs(tx_rows, self_hits)
+    detected = detected + more
     by_id = {t["id"]: t for t in transactions}
     transfer_list = []
     for p in detected:
@@ -48,8 +54,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
                 by_id[tid]["transferId"] = p["id"]
                 by_id[tid]["transferRole"] = role
     # Own-name transfers whose other side is not in the data (txdb/transfers.py, rule 3).
-    pair_ids = {tid for p in detected for tid in (p["outId"], p["inId"])}
-    for hit in transfers.detect_self(tx_rows, pair_ids, transfers.own_names(detected, tx_rows)):
+    for hit in self_hits:
         if hit["id"] in split:
             by_id[hit["id"]]["transferSelfSplit"] = True
         else:

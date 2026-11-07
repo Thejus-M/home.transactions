@@ -32,6 +32,15 @@ the same day are not a transfer. So:
      one of your own transfers, shown with its missing side marked (the other
      bank is read off the text: "/HDFC/", "SBIN0001000" ...).
 
+  4. "self" pairs: two of those own-name rows in two different accounts with
+     equal and opposite amounts within a day, each the other's bank where the
+     text says so. This is what joins a transfer whose two halves arrive from
+     different fetches and carry no shared reference (HDFC's short statement
+     form has none), and it is why a half that is alone today pairs itself the
+     day the other bank is fetched. Never on amount alone: the banks the text
+     names must agree (Axis -4000 "to HDFC" and an SBI +4000 "from HDFC" are
+     two different things), and each side may have only one candidate.
+
 Pure functions over plain rows, no database - the snapshot computes it live,
 so there is nothing to go stale. The user can split a wrong pair
 (`transfer_splits`), which is remembered.
@@ -167,3 +176,35 @@ def detect_self(rows: list[dict], paired_ids: set[str], names: set[str]) -> list
         if any(_same_person(who, n) for n in names):
             out.append({"id": r["id"], "other": other_bank_hint(r["bank"], r["merchant"])})
     return out
+
+
+def pair_selfs(rows: list[dict], hits: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Join own-name one-sided rows (`hits` from detect_self) that are the two
+    halves of one transfer. Returns (new pairs, hits still alone)."""
+    by_id = {r["id"]: r for r in rows}
+    side = {h["id"]: h for h in hits}
+    outs = [by_id[h["id"]] for h in hits if by_id[h["id"]]["amount_paise"] < 0]
+    ins = [by_id[h["id"]] for h in hits if by_id[h["id"]]["amount_paise"] > 0]
+
+    def fits(o: dict, i: dict) -> bool:
+        if o["account_id"] == i["account_id"] or -o["amount_paise"] != i["amount_paise"]:
+            return False
+        if _days(o["date"], i["date"]) > 1:
+            return False
+        o_hint, i_hint = side[o["id"]]["other"], side[i["id"]]["other"]
+        # where a row names the bank on its other side, that must be the bank the
+        # other row is in
+        return (o_hint in (None, i.get("bank"))) and (i_hint in (None, o.get("bank")))
+
+    wanted = {o["id"]: [i for i in ins if fits(o, i)] for o in outs}
+    count_in: dict[str, int] = {}
+    for cs in wanted.values():
+        for i in cs:
+            count_in[i["id"]] = count_in.get(i["id"], 0) + 1
+    pairs, joined = [], set()
+    for o in outs:
+        cs = wanted[o["id"]]
+        if len(cs) == 1 and count_in[cs[0]["id"]] == 1:             # unambiguous both ways
+            pairs.append(_pair(o, cs[0], "self", None))
+            joined.update((o["id"], cs[0]["id"]))
+    return pairs, [h for h in hits if h["id"] not in joined]

@@ -170,6 +170,58 @@ class InTheSnapshot(unittest.TestCase):
         self.cli("transfer-restore", "t-a")
         self.assertTrue({t["id"]: t for t in queries.snapshot(self.conn)["transactions"]}["t-a"]["transferSelf"])
 
+    # ---- the other half arrives LATER (a later fetch of the other bank) ----
+    HDFC_TO_AXIS = "UPI-THEJUS M MANOJ-******8575@UPI-UTIB0000802-161703292778-RD AND FD"
+
+    def _axis_later(self, merchant, amount=15000.0, date="2026-10-30", row_id="t-axis"):
+        a = ingest.ensure_account(self.conn, "AXIS", "checking", "2934")
+        ingest.upsert_rows(self.conn, a, [{"id": row_id, "date": date, "merchant": merchant,
+                                           "amount": amount, "currency": "INR"}])
+
+    def _hdfc_alone(self):
+        h = db.connect(self.path)  # same file; the account already exists
+        ingest.upsert_rows(h, ingest.ensure_account(h, "HDFC", "checking", "7367"),
+                           [{"id": "t-h2", "date": "2026-10-30", "merchant": self.HDFC_TO_AXIS,
+                             "amount": -15000.0, "currency": "INR"}])
+        h.close()
+
+    def test_a_half_that_is_alone_today_pairs_itself_when_the_other_bank_is_fetched(self):
+        self._hdfc_alone()
+        legs = {t["id"]: t for t in queries.snapshot(self.conn)["transactions"]}
+        self.assertTrue(legs["t-h2"]["transferSelf"])                      # alone: one-sided
+        self.assertEqual(legs["t-h2"]["transferOther"], "AXIS")
+        # the Axis fetch brings the credit, with the same UPI reference
+        self._axis_later("UPI/P2A/161703292778/THEJUS M /HDFC/RD AND FD/")
+        snap = queries.snapshot(self.conn)
+        legs = {t["id"]: t for t in snap["transactions"]}
+        self.assertNotIn("transferSelf", legs["t-h2"])
+        self.assertEqual(legs["t-h2"]["transferId"], legs["t-axis"]["transferId"])
+        self.assertEqual((legs["t-h2"]["transferRole"], legs["t-axis"]["transferRole"]), ("out", "in"))
+        self.assertEqual([p["matchedBy"] for p in snap["transfers"] if p["outId"] == "t-h2"], ["ref"])
+
+    def test_a_later_half_with_no_shared_reference_still_joins_by_own_name_amount_and_bank(self):
+        self._hdfc_alone()
+        self._axis_later("UPI/P2A/999999999999/THEJUS M /HDFC BANK/rd/", date="2026-10-31")   # a day later, other ref
+        snap = queries.snapshot(self.conn)
+        legs = {t["id"]: t for t in snap["transactions"]}
+        self.assertEqual(legs["t-h2"]["transferId"], legs["t-axis"]["transferId"])
+        self.assertEqual([p["matchedBy"] for p in snap["transfers"] if p["outId"] == "t-h2"], ["self"])
+
+    def test_a_credit_from_a_different_bank_does_not_join_a_transfer_to_axis(self):
+        self._hdfc_alone()
+        # same amount and day, but this credit says it came from SBI, not from this HDFC row
+        self._axis_later("UPI/P2A/999999999999/THEJUS M /State Bank Of In/x/")
+        legs = {t["id"]: t for t in queries.snapshot(self.conn)["transactions"]}
+        self.assertTrue(legs["t-h2"]["transferSelf"])
+        self.assertNotIn("transferId", legs["t-h2"])
+
+    def test_two_possible_partners_are_not_guessed_between(self):
+        self._hdfc_alone()
+        self._axis_later("UPI/P2A/999999999991/THEJUS M /HDFC/a/", row_id="t-ax1")
+        self._axis_later("UPI/P2A/999999999992/THEJUS M /HDFC/b/", row_id="t-ax2")
+        legs = {t["id"]: t for t in queries.snapshot(self.conn)["transactions"]}
+        self.assertNotIn("transferId", legs["t-h2"])
+
     def test_renaming_one_side_does_not_touch_the_other(self):
         # the per-bank rename keys (v17) keep the two legs' names apart
         keys = {r[0]: r[1] for r in self.conn.execute("SELECT id, group_key FROM transactions")}
