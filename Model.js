@@ -164,7 +164,8 @@ function groupByDate(transactions) {
       order.push(bucket)
     }
     bucket.rows.push(t)
-    bucket.total += t.amount
+    // Money that only moved between your own accounts is not part of the day's net.
+    if (!t.transferId && !t.transferSelf) bucket.total += t.amount
   }
   return order
 }

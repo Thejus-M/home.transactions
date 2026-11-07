@@ -53,6 +53,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             else:
                 by_id[tid]["transferId"] = p["id"]
                 by_id[tid]["transferRole"] = role
+                # the bank on the other side, for "TRANSFER FROM HDFC" on a card
+                # whose other half is filtered out of view
+                peer = by_id[p["inId"] if role == "out" else p["outId"]]
+                by_id[tid]["transferPeerBank"] = peer["bank"]
     # Own-name transfers whose other side is not in the data (txdb/transfers.py, rule 3).
     for hit in self_hits:
         if hit["id"] in split:

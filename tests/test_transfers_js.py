@@ -54,6 +54,11 @@ class Collapse(Harness):
         rows[1]["tracked"] = True
         self.assertTrue(self.js("collapseTransfers(input.rows, [])", rows=rows)[0]["tracked"])
 
+    def test_a_transfer_leg_does_not_count_in_a_days_net_even_when_shown_alone(self):
+        rows = [tx("a", "2026-09-30", 15000, transferId="h>a", transferRole="in"), tx("o", "2026-09-30", -50)]
+        groups = self.js("groupByDate(input.rows)", rows=rows)       # no collapse: the other side is filtered out
+        self.assertEqual(groups[0]["total"], -50)
+
     def test_an_own_name_transfer_with_no_other_side_is_a_one_sided_entry_with_a_placeholder(self):
         rows = [tx("a", "2026-08-31", 14000, bank="AXIS", transferSelf=True, transferOther="HDFC"),
                 tx("o", "2026-08-31", -50)]

@@ -144,6 +144,11 @@ class InTheSnapshot(unittest.TestCase):
         (pair,) = snap["transfers"]
         self.assertEqual((pair["outId"], pair["inId"], pair["amount"], pair["split"]), ("t-h", "t-s", 20000.0, False))
 
+    def test_each_leg_knows_the_bank_on_the_other_side(self):
+        legs = {t["id"]: t for t in queries.snapshot(self.conn)["transactions"]}
+        self.assertEqual(legs["t-h"]["transferPeerBank"], "SBI")
+        self.assertEqual(legs["t-s"]["transferPeerBank"], "HDFC")
+
     def test_splitting_a_pair_untags_it_and_restoring_brings_it_back(self):
         self.cli("transfer-split", "t-h", "t-s")
         snap = queries.snapshot(self.conn)

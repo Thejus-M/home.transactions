@@ -312,8 +312,11 @@ Panel {
     return percent >= 50 ? root.debitColor : (percent >= 30 ? root.pendingColor : root.creditColor)
   }
 
-  function rowBg(t) { return t.amount < 0 ? root.debitBg : root.creditBg }
-  function directionColor(t) { return t.amount < 0 ? root.debitColor : root.creditColor }
+  // A transfer between your own accounts is neither spending (red) nor income
+  // (green): it gets the accent colour wherever it is drawn.
+  function isTransferLeg(t) { return !!(t.transferId || t.transferSelf) }
+  function rowBg(t) { return root.isTransferLeg(t) ? Util.alpha(Color.accent, 0.18) : (t.amount < 0 ? root.debitBg : root.creditBg) }
+  function directionColor(t) { return root.isTransferLeg(t) ? Color.accent : (t.amount < 0 ? root.debitColor : root.creditColor) }
 
   // Arrow-key navigation: every focusable item already participates in
   // the same chain Tab walks (and Tab order already matches visual
@@ -6375,7 +6378,7 @@ Panel {
         Text {
           anchors.centerIn: parent
           textFormat: Text.PlainText
-          text: card.isDebit ? "↓" : "↑"
+          text: root.isTransferLeg(card.txn) ? "⇄" : (card.isDebit ? "↓" : "↑")
           color: card.directionColor
           font.bold: true
           font.pixelSize: Style.font.subtitle
@@ -6465,15 +6468,26 @@ Panel {
             ToolTip.delay: 300
           }
 
-          // One side of a transfer whose other side is not in this view.
-          Text {
+          // One side of a transfer between your own accounts whose other side is
+          // not in this view (an account filter, a search): it says so, with the
+          // bank on the other end, instead of passing for an ordinary credit.
+          Rectangle {
             visible: !!card.txn.transferId
             anchors.verticalCenter: parent.verticalCenter
-            textFormat: Text.PlainText
-            text: "⇄"
-            color: Color.accent
-            font.bold: true
-            font.pixelSize: Style.font.caption
+            radius: Style.space(4)
+            color: Util.alpha(Color.accent, 0.25)
+            implicitWidth: legTagText.implicitWidth + Style.space(10)
+            implicitHeight: legTagText.implicitHeight + Style.space(4)
+            Text {
+              id: legTagText
+              anchors.centerIn: parent
+              textFormat: Text.PlainText
+              text: "TRANSFER " + (card.txn.transferRole === "in" ? "FROM " : "TO ") + (card.txn.transferPeerBank || "YOUR ACCOUNT")
+              color: Color.accent
+              font.family: Style.font.family
+              font.bold: true
+              font.pixelSize: Style.font.caption
+            }
           }
 
           Rectangle {
@@ -6518,7 +6532,9 @@ Panel {
           id: amountText
           anchors.right: parent.right
           textFormat: Text.PlainText
-          text: Model.formatAmount(card.txn)
+          text: root.isTransferLeg(card.txn)
+            ? Model.currencySymbol(card.txn.currency) + Model.formatGrouped(Math.abs(card.txn.amount))
+            : Model.formatAmount(card.txn)
           color: card.directionColor
           font.family: Style.font.family
           font.bold: true
