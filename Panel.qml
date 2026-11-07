@@ -221,6 +221,9 @@ Panel {
   readonly property var accountOptions: Model.accountOptions(store.transactions, store.cardOverviews, store.accountNameOverrides)
   // Tracking view from the Filter popover: "all", "tracked" or "untracked".
   property string trackFilter: "all"
+  // The filter menu is a layer INSIDE the popup panel (see filterLayer), not a
+  // floating popup: a popup was drawn outside the widget, or not at all.
+  property bool filterOpen: false
   // Transfers between your own accounts: "all", "only" or "hide".
   property string transferFilter: "all"
   readonly property var filteredTransactions: root.transactions
@@ -356,7 +359,9 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  onOpenedChanged: if (opened) {
+  onOpenedChanged: if (!opened) {
+    filterOpen = false          // the filter layer never outlives the popup
+  } else {
     root.refreshData()
     // Reopening deep inside a list hides the summary the panel exists to
     // show, so every open starts at the top. The popup's content may not
@@ -2450,6 +2455,172 @@ Panel {
     }
 
     ScrollWheelArea { anchors.fill: flick; target: flick }
+
+    // The filter menu, drawn inside this panel: centred at the top, every
+    // option visible, scrolling when it is taller than the panel. A click on
+    // the dimmed area behind it (or Escape) closes it.
+    Item {
+      id: filterLayer
+      anchors.fill: parent
+      visible: root.filterOpen
+      z: 100
+
+      onVisibleChanged: if (visible) Qt.callLater(function () { filterMenuColumn.forceActiveFocus() })
+
+      MouseArea {
+        anchors.fill: parent
+        onClicked: root.filterOpen = false
+        onWheel: function (event) { event.accepted = true }
+      }
+      Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.35) }
+
+      BorderSurface {
+        id: filterCard
+        x: Math.round((parent.width - width) / 2)
+        y: Style.space(12)
+        width: Math.min(Style.space(260), parent.width - Style.space(24))
+        height: Math.min(filterMenuColumn.implicitHeight + Style.space(4), parent.height - Style.space(24))
+        color: Color.popups.background
+        borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+        radius: Style.cornerRadius
+
+        // swallow clicks so the card itself does not close the layer
+        MouseArea { anchors.fill: parent }
+
+        Flickable {
+          id: filterScroll
+          anchors.fill: parent
+          anchors.margins: Style.spacing.hairline
+          clip: true
+          contentWidth: width
+          contentHeight: filterMenuColumn.implicitHeight
+          boundsBehavior: Flickable.StopAtBounds
+          interactive: contentHeight > height
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+      Column {
+        id: filterMenuColumn
+        width: filterScroll.width
+        spacing: Style.space(2)
+        focus: true
+
+        // Escape closes the popover, but a now-hidden row/column keeps
+        // activeFocus until something else explicitly takes it (same
+        // class of bug as searchField's and editField's own Escape
+        // handlers) — without restoring it to filterButton, Tab/arrow
+        // keys go nowhere until the user clicks something.
+        Keys.onEscapePressed: function (event) {
+          root.filterOpen = false
+          Qt.callLater(function () { filterMenuButton.forceActiveFocus() })
+          event.accepted = true
+        }
+
+        // Confined stand-in for root.focusNext, for the rows in this
+        // popover. root.focusNext also calls root.scrollIntoView, which
+        // maps the item into `column` — meaningless for a row floating in
+        // this popup, since it's never actually inside column/flick — and
+        // its whole-scene walk could step straight out of the still-open
+        // popover into the list behind it. This aborts instead of
+        // following `next` once it leaves filterMenuColumn.
+        function focusNext(item, forward) {
+          var next = item
+          for (var i = 0; i < 64 && next; i++) {
+            next = next.nextItemInFocusChain(forward)
+            if (!next || next === item) return
+            var scan = next
+            var inMenu = false
+            while (scan) {
+              if (scan === filterMenuColumn) { inMenu = true; break }
+              scan = scan.parent
+            }
+            if (!inMenu) return
+            if (next.activeFocusOnTab) { next.forceActiveFocus(); return }
+          }
+        }
+
+        FilterMenuRow {
+          width: parent.width
+          label: "All accounts"
+          selected: root.accountFilters.length === 0
+          onClicked: root.accountFilters = []
+        }
+
+        Repeater {
+          model: root.accountOptions
+          delegate: FilterMenuRow {
+            required property var modelData
+            width: parent.width
+            label: modelData.label
+            network: modelData.network || ""
+            bank: modelData.accountType === "checking" ? modelData.bank : ""
+            selected: root.accountFilters.indexOf(modelData.key) !== -1
+            onClicked: root.toggleAccountFilter(modelData.key)
+          }
+        }
+
+        Rectangle {
+          width: parent.width
+          height: Style.spacing.hairline
+          color: Qt.darker(root.foreground, 1.8)
+        }
+
+        // Tracking view: which rows RECENT shows. The chosen one is highlighted
+        // like the account pick above, and the popover stays open while you pick.
+        FilterMenuRow {
+          width: parent.width
+          label: "All transactions"
+          selected: root.trackFilter === "all"
+          onClicked: root.trackFilter = "all"
+        }
+
+        FilterMenuRow {
+          width: parent.width
+          label: "Tracked only"
+          selected: root.trackFilter === "tracked"
+          onClicked: root.trackFilter = "tracked"
+        }
+
+        FilterMenuRow {
+          width: parent.width
+          label: "Not tracked only"
+          selected: root.trackFilter === "untracked"
+          onClicked: root.trackFilter = "untracked"
+        }
+
+        Rectangle {
+          width: parent.width
+          height: Style.spacing.hairline
+          color: Qt.darker(root.foreground, 1.8)
+        }
+
+        // Transfers between your own accounts.
+        FilterMenuRow {
+          width: parent.width
+          label: "With transfers"
+          selected: root.transferFilter === "all"
+          onClicked: root.transferFilter = "all"
+        }
+
+        FilterMenuRow {
+          width: parent.width
+          label: "Transfers only"
+          selected: root.transferFilter === "only"
+          onClicked: root.transferFilter = "only"
+        }
+
+        FilterMenuRow {
+          width: parent.width
+          label: "Hide transfers"
+          selected: root.transferFilter === "hide"
+          onClicked: root.transferFilter = "hide"
+        }
+
+      }
+        }
+
+        ScrollWheelArea { anchors.fill: filterScroll; target: filterScroll }
+      }
+    }
 
     // The receipt review window: a true full-screen overlay — its own
     // layer-shell surface, not this popup's small ~340px card — with the
@@ -5007,16 +5178,16 @@ Panel {
     borderSpec: Border.controlSpec(filterButton.activeFocus ? "focus" : (filterButton._hot ? "hover-cursor" : "normal"), root.foreground, Color.accent)
 
     activeFocusOnTab: true
-    Keys.onReturnPressed: filterPopup.opened ? filterPopup.close() : filterPopup.open()
-    Keys.onEnterPressed: filterPopup.opened ? filterPopup.close() : filterPopup.open()
-    Keys.onSpacePressed: filterPopup.opened ? filterPopup.close() : filterPopup.open()
+    Keys.onReturnPressed: root.filterOpen = !root.filterOpen
+    Keys.onEnterPressed: root.filterOpen = !root.filterOpen
+    Keys.onSpacePressed: root.filterOpen = !root.filterOpen
     Keys.onDownPressed: root.focusNext(filterButton, true)
     Keys.onUpPressed: root.focusNext(filterButton, false)
 
     Behavior on color { ColorAnimation { duration: 100 } }
 
     // Icon only: the name shows on hover (what is being filtered by).
-    ToolTip.visible: mouse.containsMouse && !filterPopup.opened
+    ToolTip.visible: mouse.containsMouse && !root.filterOpen
     ToolTip.text: filterButton.summary()
     ToolTip.delay: 400
 
@@ -5048,174 +5219,7 @@ Panel {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
-      // The press that lands on this button also counts as "outside" the
-      // popover and closes it first; without the time check the click would
-      // then reopen it, and the button could never close it.
-      onClicked: {
-        if (filterPopup.opened) filterPopup.close()
-        else if (Date.now() - filterPopup.closedAt > 250) filterPopup.open()
-      }
-    }
-
-    Popup {
-      id: filterPopup
-      // Clicks on the trigger are handled by its own onClicked (which toggles).
-      // Without this, the press closes the popup and the click reopens it.
-      // Always on top, in the middle of the popup panel - not hung under the
-      // button, where it ran off the bottom of the screen. Taller than the
-      // panel? It scrolls.
-      parent: Overlay.overlay
-      property double closedAt: 0
-      onClosed: closedAt = Date.now()
-      closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-      x: Math.round((parent.width - width) / 2)
-      y: Style.space(12)
-      width: Math.min(Style.space(260), parent.width - Style.space(24))
-      height: Math.min(filterMenuColumn.implicitHeight + Style.space(2), parent.height - Style.space(24))
-      padding: Style.spacing.hairline
-      focus: true
-
-      background: BorderSurface {
-        color: Color.popups.background
-        borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
-        radius: Style.cornerRadius
-      }
-
-      onOpened: filterMenuColumn.forceActiveFocus()
-
-      // `Popup` itself isn't a QML Item, so `Keys` can't attach to it
-      // directly (confirmed: attaching it there logs "Could not attach
-      // Keys property ... is not an Item" and silently no-ops) — it has
-      // to go on the contentItem, same as Dropdown.qml's own Escape
-      // handling living on its ListView contentItem, not its Popup.
-      contentItem: Flickable {
-        id: filterScroll
-        clip: true
-        contentWidth: width
-        contentHeight: filterMenuColumn.implicitHeight
-        boundsBehavior: Flickable.StopAtBounds
-        interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-      Column {
-        id: filterMenuColumn
-        width: filterScroll.width
-        spacing: Style.space(2)
-        focus: true
-
-        // Escape closes the popover, but a now-hidden row/column keeps
-        // activeFocus until something else explicitly takes it (same
-        // class of bug as searchField's and editField's own Escape
-        // handlers) — without restoring it to filterButton, Tab/arrow
-        // keys go nowhere until the user clicks something.
-        Keys.onEscapePressed: function (event) {
-          filterPopup.close()
-          Qt.callLater(function () { filterButton.forceActiveFocus() })
-          event.accepted = true
-        }
-
-        // Confined stand-in for root.focusNext, for the rows in this
-        // popover. root.focusNext also calls root.scrollIntoView, which
-        // maps the item into `column` — meaningless for a row floating in
-        // this popup, since it's never actually inside column/flick — and
-        // its whole-scene walk could step straight out of the still-open
-        // popover into the list behind it. This aborts instead of
-        // following `next` once it leaves filterMenuColumn.
-        function focusNext(item, forward) {
-          var next = item
-          for (var i = 0; i < 64 && next; i++) {
-            next = next.nextItemInFocusChain(forward)
-            if (!next || next === item) return
-            var scan = next
-            var inMenu = false
-            while (scan) {
-              if (scan === filterMenuColumn) { inMenu = true; break }
-              scan = scan.parent
-            }
-            if (!inMenu) return
-            if (next.activeFocusOnTab) { next.forceActiveFocus(); return }
-          }
-        }
-
-        FilterMenuRow {
-          width: parent.width
-          label: "All accounts"
-          selected: root.accountFilters.length === 0
-          onClicked: root.accountFilters = []
-        }
-
-        Repeater {
-          model: root.accountOptions
-          delegate: FilterMenuRow {
-            required property var modelData
-            width: parent.width
-            label: modelData.label
-            network: modelData.network || ""
-            bank: modelData.accountType === "checking" ? modelData.bank : ""
-            selected: root.accountFilters.indexOf(modelData.key) !== -1
-            onClicked: root.toggleAccountFilter(modelData.key)
-          }
-        }
-
-        Rectangle {
-          width: parent.width
-          height: Style.spacing.hairline
-          color: Qt.darker(root.foreground, 1.8)
-        }
-
-        // Tracking view: which rows RECENT shows. The chosen one is highlighted
-        // like the account pick above, and the popover stays open while you pick.
-        FilterMenuRow {
-          width: parent.width
-          label: "All transactions"
-          selected: root.trackFilter === "all"
-          onClicked: root.trackFilter = "all"
-        }
-
-        FilterMenuRow {
-          width: parent.width
-          label: "Tracked only"
-          selected: root.trackFilter === "tracked"
-          onClicked: root.trackFilter = "tracked"
-        }
-
-        FilterMenuRow {
-          width: parent.width
-          label: "Not tracked only"
-          selected: root.trackFilter === "untracked"
-          onClicked: root.trackFilter = "untracked"
-        }
-
-        Rectangle {
-          width: parent.width
-          height: Style.spacing.hairline
-          color: Qt.darker(root.foreground, 1.8)
-        }
-
-        // Transfers between your own accounts.
-        FilterMenuRow {
-          width: parent.width
-          label: "With transfers"
-          selected: root.transferFilter === "all"
-          onClicked: root.transferFilter = "all"
-        }
-
-        FilterMenuRow {
-          width: parent.width
-          label: "Transfers only"
-          selected: root.transferFilter === "only"
-          onClicked: root.transferFilter = "only"
-        }
-
-        FilterMenuRow {
-          width: parent.width
-          label: "Hide transfers"
-          selected: root.transferFilter === "hide"
-          onClicked: root.transferFilter = "hide"
-        }
-
-      }
-      }
+      onClicked: root.filterOpen = !root.filterOpen
     }
   }
 
