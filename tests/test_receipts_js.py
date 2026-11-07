@@ -200,6 +200,13 @@ class Formatting(Harness):
         self.assertEqual(rows["File"], "bill.jpg")
         self.assertIn("vision-llm:gemma", rows["Last read"])
 
+    def test_the_info_rows_say_which_date_was_used_and_what_the_bill_printed(self):
+        r = receipt(date="2026-06-26", imageMeta={"taken": "2026-06-26 08:01:09", "date_source": "taken",
+                                                  "printed_date": "2026-06-25"})
+        rows = dict((x["label"], x["value"]) for x in self.js("receiptInfoRows(input.r)", r=r))
+        self.assertEqual(rows["Date used"], "photo taken date")
+        self.assertEqual(rows["Printed on the bill"], "2026-06-25")
+
     def test_the_photo_note_says_it_is_compressed_and_kept_never_deleted(self):
         saved = receipt(state="linked", imageSaved={"bytes": 145000, "originalBytes": 3200000})
         note = self.js("receiptPhotoNote(input.r)", r=saved)
