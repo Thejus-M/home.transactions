@@ -221,11 +221,18 @@ Panel {
   readonly property var accountOptions: Model.accountOptions(store.transactions, store.cardOverviews, store.accountNameOverrides)
   // Tracking view from the Filter popover: "all", "tracked" or "untracked".
   property string trackFilter: "all"
+  // Transfers between your own accounts: "all", "only" or "hide".
+  property string transferFilter: "all"
   readonly property var filteredTransactions: root.transactions
     .filter(function (t) { return root.accountFilters.length === 0 || root.accountFilters.indexOf(Model.accountKey(t)) !== -1 })
     .filter(function (t) {
       if (root.trackFilter === "all") return true
       return (root.trackFilter === "tracked") === !!t.tracked
+    })
+    .filter(function (t) {
+      if (root.transferFilter === "all") return true
+      var isTransfer = !!(t.transferId || t.transferSelf)
+      return root.transferFilter === "only" ? isTransfer : !isTransfer
     })
     .filter(function (t) {
       if (!root.searchQuery) return true
@@ -4973,7 +4980,17 @@ Panel {
   component FilterMenuButton: BorderSurface {
     id: filterButton
     readonly property bool filterActive: root.accountFilters.length > 0 || root.trackFilter !== "all"
+      || root.transferFilter !== "all"
     readonly property bool _hot: mouse.containsMouse || filterButton.activeFocus
+
+    // What is being filtered by, for the hover tip: "Filter" when nothing is.
+    function summary() {
+      var parts = []
+      if (root.accountFilters.length > 0) parts.push(filterButton.currentLabel())
+      if (root.trackFilter !== "all") parts.push(root.trackFilter === "tracked" ? "tracked only" : "not tracked only")
+      if (root.transferFilter !== "all") parts.push(root.transferFilter === "only" ? "transfers only" : "no transfers")
+      return parts.length ? "Filter · " + parts.join(", ") : "Filter"
+    }
 
     function currentLabel() {
       var n = root.accountFilters.length
@@ -4986,7 +5003,7 @@ Panel {
     }
 
     implicitHeight: Style.space(28)
-    implicitWidth: triggerRow.implicitWidth + Style.space(20)
+    implicitWidth: Math.max(Style.space(28), triggerRow.implicitWidth + Style.space(16))
     radius: Style.cornerRadius
     color: Style.controlFill(filterButton.activeFocus, filterButton._hot, root.foreground, Color.accent)
     borderSpec: Border.controlSpec(filterButton.activeFocus ? "focus" : (filterButton._hot ? "hover-cursor" : "normal"), root.foreground, Color.accent)
@@ -5000,6 +5017,11 @@ Panel {
 
     Behavior on color { ColorAnimation { duration: 100 } }
 
+    // Icon only: the name shows on hover (what is being filtered by).
+    ToolTip.visible: mouse.containsMouse && !filterPopup.opened
+    ToolTip.text: filterButton.summary()
+    ToolTip.delay: 400
+
     Row {
       id: triggerRow
       anchors.centerIn: parent
@@ -5010,16 +5032,6 @@ Panel {
         text: "󰈳"
         color: root.foreground
         font.pixelSize: Style.font.caption
-        anchors.verticalCenter: parent.verticalCenter
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        text: filterButton.currentLabel()
-        color: root.foreground
-        font.family: Style.font.family
-        font.pixelSize: Style.font.caption
-        font.bold: filterButton.filterActive
         anchors.verticalCenter: parent.verticalCenter
       }
 
@@ -5154,6 +5166,34 @@ Panel {
           label: "Not tracked only"
           selected: root.trackFilter === "untracked"
           onClicked: root.trackFilter = "untracked"
+        }
+
+        Rectangle {
+          width: parent.width
+          height: Style.spacing.hairline
+          color: Qt.darker(root.foreground, 1.8)
+        }
+
+        // Transfers between your own accounts.
+        FilterMenuRow {
+          width: parent.width
+          label: "With transfers"
+          selected: root.transferFilter === "all"
+          onClicked: root.transferFilter = "all"
+        }
+
+        FilterMenuRow {
+          width: parent.width
+          label: "Transfers only"
+          selected: root.transferFilter === "only"
+          onClicked: root.transferFilter = "only"
+        }
+
+        FilterMenuRow {
+          width: parent.width
+          label: "Hide transfers"
+          selected: root.transferFilter === "hide"
+          onClicked: root.transferFilter = "hide"
         }
 
       }
