@@ -4209,7 +4209,7 @@ Panel {
             anchors.leftMargin: billBrandMark.visible ? Style.space(6) : 0
             anchors.right: parent.right
             textFormat: Text.PlainText
-            text: Model.accountLabel(billRow.brand.label, billRow.overview.last4)
+            text: Model.accountChipText({ bank: billRow.bank, accountType: "credit", last4: billRow.overview.last4 }, store.cardOverviews, store.accountNameOverrides)
             color: root.foreground
             font.family: Style.font.family
             font.bold: true
@@ -4581,10 +4581,7 @@ Panel {
     opacity: pick.dimmed ? 0.5 : 1.0
 
     readonly property string displayMerchant: Model.transactionDisplayName(txn, store.transactionNameOverrides)
-    readonly property string accountName: Model.accountLabel(Model.cardLabelParts(
-      Model.cardFallbackName(txn.accountType, txn.last4, store.cardOverviews, txn.bank),
-      store.accountNameOverrides[txn.last4],
-      (store.cardOverviews[txn.last4] || {}).network).label, txn.last4)
+    readonly property string accountName: Model.accountChipText(txn, store.cardOverviews, store.accountNameOverrides)
     readonly property bool isDebit: txn.amount < 0
     readonly property color directionColor: root.directionColor(txn)
     readonly property bool isSavings: txn.accountType === "checking" && (txn.bank === "AXIS" || txn.bank === "SBI")
@@ -4677,7 +4674,7 @@ Panel {
             id: pickPill
             anchors.centerIn: parent
             textFormat: Text.PlainText
-            text: pick.isSavings ? "••" + pick.txn.last4 : pick.accountName
+            text: pick.accountName
             color: root.foreground
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -5152,9 +5149,7 @@ Panel {
           delegate: FilterMenuRow {
             required property var modelData
             width: parent.width
-            // Axis and SBI savings: the logo stands in for the name, so just the number.
-            label: (modelData.bank === "AXIS" || modelData.bank === "SBI") && modelData.accountType === "checking"
-              ? "••" + modelData.last4 : modelData.label
+            label: modelData.label
             network: modelData.network || ""
             bank: modelData.accountType === "checking" ? modelData.bank : ""
             selected: root.accountFilters.indexOf(modelData.key) !== -1
@@ -5875,10 +5870,7 @@ Panel {
     property real maxWidth: 100000
     spacing: Style.space(6)
     readonly property bool isSavings: ap.txn.accountType === "checking" && (ap.txn.bank === "AXIS" || ap.txn.bank === "SBI")
-    readonly property string accountName: ap.txn.ghost ? "" : Model.accountLabel(Model.cardLabelParts(
-      Model.cardFallbackName(ap.txn.accountType, ap.txn.last4, store.cardOverviews, ap.txn.bank),
-      store.accountNameOverrides[ap.txn.last4],
-      (store.cardOverviews[ap.txn.last4] || {}).network).label, ap.txn.last4)
+    readonly property string accountName: ap.txn.ghost ? "" : Model.accountChipText(ap.txn, store.cardOverviews, store.accountNameOverrides)
 
     BrandMark {
       network: Model.cardNetwork(ap.txn, store.cardOverviews)
@@ -5915,7 +5907,7 @@ Panel {
         anchors.rightMargin: Style.space(5)
         elide: Text.ElideRight
         textFormat: Text.PlainText
-        text: ap.txn.ghost ? (ap.txn.bank || "Other account") : (ap.isSavings ? ap.txn.bank + " ••" + ap.txn.last4 : ap.accountName)
+        text: ap.txn.ghost ? (ap.txn.bank || "Other account") : ap.accountName
         // A side that is not in your statements: the bank's name, dimmed and
         // in italics instead of a ••last4 (which is not known).
         color: ap.txn.ghost ? Qt.darker(root.foreground, 1.4) : root.foreground
@@ -6236,10 +6228,7 @@ Panel {
     readonly property bool isSbiSavings: card.txn.accountType === "checking" && card.txn.bank === "SBI"
     // Same rule as a BILLS row: a rename shows as typed, and the network
     // word is only stripped from the bank's own card name.
-    readonly property string accountName: Model.accountLabel(Model.cardLabelParts(
-      Model.cardFallbackName(txn.accountType, txn.last4, store.cardOverviews, txn.bank),
-      store.accountNameOverrides[txn.last4],
-      (store.cardOverviews[txn.last4] || {}).network).label, txn.last4)
+    readonly property string accountName: Model.accountChipText(txn, store.cardOverviews, store.accountNameOverrides)
     readonly property string note: Model.transactionNote(txn)
     // The bill filed against this transaction, if any - its note icon opens it.
     readonly property var linkedReceipt: Model.linkedReceiptForTransaction(txn, store.receipts)
@@ -6481,7 +6470,7 @@ Panel {
               anchors.centerIn: parent
               textFormat: Text.PlainText
               // Axis and SBI savings show the bank's logo beside the number, not the name.
-              text: card.isAxisSavings || card.isSbiSavings ? "••" + card.txn.last4 : card.accountName
+              text: card.accountName
               color: root.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.caption

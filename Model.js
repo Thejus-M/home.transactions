@@ -210,6 +210,43 @@ function accountLabel(label, last4) {
   return (text ? text + " " : "") + "••" + last4
 }
 
+// ---- The short account tag shown next to the bank / network logo ---------
+// The logo already says which bank (or card network) it is, so the tag does
+// not repeat it:
+//   bank account  ->  "••7367"                  (never "HDFC ••7367" / "Savings")
+//   credit card   ->  "HDFC Millennia ••7462"   (the card's own name, the words
+//                     Mastercard / Visa / RuPay / Credit / Card / Bank dropped -
+//                     the mark beside it is the network - and the BANK kept in
+//                     front, because a card mark alone does not say whose it is)
+var _ACRONYMS = { UPI: true, EMI: true, HDFC: true, ICICI: true, SBI: true, IDFC: true, RBL: true, AU: true }
+var _CARD_FILLER_RE = /\b(MASTERCARD|VISA|RUPAY|CREDIT|CARD|BANK|HDFC|ICICI|SBI|AXIS|IDFC|RBL)\b/gi
+var _BANKISH_RE = /\b(HDFC|ICICI|SBI|AXIS|IDFC|RBL|BANK|SAVINGS|SAVING|ACCOUNT|A\/C)\b/gi
+
+function prettyCardName(raw) {
+  var s = String(raw || "").replace(_CARD_FILLER_RE, " ").replace(/\s+/g, " ").trim()
+  if (!s) return ""
+  return s.split(" ").map(function (w) {
+    var up = w.toUpperCase()
+    if (_ACRONYMS[up]) return up
+    return up.charAt(0) + w.slice(1).toLowerCase()
+  }).join(" ")
+}
+
+// `a`: { bank, accountType, last4 }. A user-set name (accountNameOverrides) is
+// kept but tidied the same way; for a bank account it only survives if it says
+// more than the bank's name.
+function accountChipText(a, cardOverviewsByLast4, accountNameOverrides) {
+  var override = String((accountNameOverrides && accountNameOverrides[a.last4]) || "").trim()
+  if (a.accountType !== "credit") {
+    var custom = override.replace(_BANKISH_RE, " ").replace(/\s+/g, " ").trim()
+    return (custom ? custom + " " : "") + "••" + a.last4
+  }
+  var overview = cardOverviewsByLast4 && cardOverviewsByLast4[a.last4]
+  var name = prettyCardName(override || (overview && overview.name) || "")
+  var bank = String(a.bank || (overview && overview.bank) || "").toUpperCase()
+  return [bank, name].filter(function (x) { return x !== "" }).join(" ") + " ••" + a.last4
+}
+
 // Network of a card ("MASTERCARD" / "RUPAY" / "VISA" / "") for its brand mark.
 function cardNetwork(t, cardOverviewsByLast4) {
   if (t.accountType !== "credit") return ""
@@ -258,7 +295,7 @@ function accountOptions(transactions, cardOverviewsByLast4, accountNameOverrides
     }
     var name = accountDisplayName(fallback, t.last4, accountNameOverrides)
     var parts = cardLabelParts(name, "", overview && overview.network)
-    options.push({ key: key, label: accountLabel(parts.label, t.last4), network: parts.network, bank: t.bank, accountType: t.accountType, last4: t.last4 })
+    options.push({ key: key, label: accountChipText(t, cardOverviewsByLast4, accountNameOverrides), network: parts.network, bank: t.bank, accountType: t.accountType, last4: t.last4 })
   }
   // Cards with no settled transactions this cycle still deserve a filter
   // entry — the billing overview lists every card, transactions don't.
@@ -275,7 +312,7 @@ function accountOptions(transactions, cardOverviewsByLast4, accountNameOverrides
     seen[key] = true
     var name = accountDisplayName(overview && overview.name ? overview.name : "", last4, accountNameOverrides)
     var parts = cardLabelParts(name, "", overview && overview.network)
-    options.push({ key: key, label: accountLabel(parts.label, last4), network: parts.network, bank: bank, accountType: "credit" })
+    options.push({ key: key, label: accountChipText({ bank: bank, accountType: "credit", last4: last4 }, overviews, accountNameOverrides), network: parts.network, bank: bank, accountType: "credit" })
   })
   options.sort(function (a, b) { return a.label < b.label ? -1 : (a.label > b.label ? 1 : 0) })
   return options

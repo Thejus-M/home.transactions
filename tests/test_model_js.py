@@ -292,6 +292,47 @@ console.log(JSON.stringify(vm.runInContext(
 
 
 @unittest.skipUnless(NODE, "node is not installed")
+class AccountTagTests(unittest.TestCase):
+    """The short tag beside the bank / network logo: the logo already says the
+    bank, so a bank account is just its number, and a card is its own name with
+    the bank kept in front (a card mark alone does not say whose it is)."""
+
+    def tag(self, account, overviews=None, names=None):
+        script = "accountChipText(input.a, input.ov, input.names)"
+        result = subprocess.run(
+            [NODE, "-e", SECTION_SCRIPT, str(ROOT / "Model.js"),
+             json.dumps({"a": account, "ov": overviews or {}, "names": names or {}}), script],
+            capture_output=True, text=True, check=True)
+        return json.loads(result.stdout)
+
+    def test_a_bank_account_is_only_its_number_whatever_it_was_named(self):
+        for bank in ("HDFC", "AXIS", "SBI"):
+            self.assertEqual(self.tag({"bank": bank, "accountType": "checking", "last4": "7367"}), "••7367")
+        # a stored "HDFC" / "Savings" name is just the bank again
+        self.assertEqual(self.tag({"bank": "HDFC", "accountType": "checking", "last4": "7367"}, names={"7367": "HDFC"}), "••7367")
+        self.assertEqual(self.tag({"bank": "SBI", "accountType": "checking", "last4": "9373"}, names={"9373": "SBI Savings"}), "••9373")
+        # ...but a name that says more survives
+        self.assertEqual(self.tag({"bank": "SBI", "accountType": "checking", "last4": "9373"}, names={"9373": "Salary"}), "Salary ••9373")
+
+    def test_a_card_is_its_bank_and_own_name_without_the_repeated_words(self):
+        ov = {"7462": {"name": "MASTERCARD MILLENNIA", "bank": "HDFC"}, "0220": {"name": "RUPAY BIZ UPI", "bank": "HDFC"},
+              "2004": {"name": "Coral RuPay", "bank": "ICICI"}, "5896": {"name": "", "bank": "SBI"}}
+        t = lambda bank, last4: self.tag({"bank": bank, "accountType": "credit", "last4": last4}, ov)
+        self.assertEqual(t("HDFC", "7462"), "HDFC Millennia ••7462")
+        self.assertEqual(t("HDFC", "0220"), "HDFC Biz UPI ••0220")        # UPI stays an acronym
+        self.assertEqual(t("ICICI", "2004"), "ICICI Coral ••2004")
+        self.assertEqual(t("SBI", "5896"), "SBI ••5896")                  # a card the bank never named
+
+    def test_the_bank_is_not_said_twice_and_filler_words_go(self):
+        ov = {"1111": {"name": "HDFC Bank Regalia Credit Card", "bank": "HDFC"}}
+        self.assertEqual(self.tag({"bank": "HDFC", "accountType": "credit", "last4": "1111"}, ov), "HDFC Regalia ••1111")
+
+    def test_a_renamed_card_is_tidied_the_same_way(self):
+        ov = {"2004": {"name": "Coral RuPay", "bank": "ICICI"}}
+        self.assertEqual(self.tag({"bank": "ICICI", "accountType": "credit", "last4": "2004"}, ov, {"2004": "My Visa Gold Card"}),
+                         "ICICI My Gold ••2004")
+
+
 class AccountOptionTests(unittest.TestCase):
     """The filter chips, one per account. A card with no settled rows yet
     only exists in the billing overview, and its chip has to carry that
