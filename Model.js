@@ -133,7 +133,9 @@ function collapseTransfers(rows, transferList) {
         var p = info[t.transferId] || {}
         out.push({ isTransfer: true, id: t.transferId, date: a.date, amount: 0, currency: a.currency,
                    out: a, in: b, tracked: !!(a.tracked && b.tracked),
-                   matchedBy: p.matchedBy || "", ref: p.ref || null, inDate: b.date })
+                   matchedBy: p.matchedBy || "", ref: p.ref || null, inDate: b.date,
+                   certainty: p.certainty || 0, matchedAt: p.matchedAt || null, isNew: !!p.isNew,
+                   outBank: p.outBank || a.bank, inBank: p.inBank || b.bank })
         continue
       }
     }
@@ -144,7 +146,8 @@ function collapseTransfers(rows, transferList) {
                     amount: -t.amount, currency: t.currency, date: t.date, merchant: "", balance: null }
       out.push({ isTransfer: true, oneSided: true, id: "self:" + t.id, date: t.date, amount: 0,
                  currency: t.currency, out: t.amount < 0 ? t : ghost, in: t.amount > 0 ? t : ghost,
-                 real: t, tracked: !!t.tracked, matchedBy: "self", ref: null, inDate: t.date })
+                 real: t, tracked: !!t.tracked, matchedBy: "self", ref: null, inDate: t.date,
+                 certainty: 1, matchedAt: null, isNew: false, outBank: "", inBank: "" })
       continue
     }
     out.push(t)
@@ -1306,4 +1309,107 @@ function receiptNoteForTransaction(txn, receipts) {
     parts.push(descriptions.slice(0, 6).join(", ") + (descriptions.length > 6 ? ", …" : ""))
   }
   return parts.join(" — ")
+}
+
+// --- Transfer kinds and the "i" explain panel -------------------------------
+
+var _INFO_GLYPH = "󰋽"
+var _TRANSFER_META = {
+  ref:     { glyph: "󰌷", tag: "SAME REFERENCE", pips: 3, tone: "accent", certainty: "very sure" },
+  card:    { glyph: "󰿯", tag: "CARD BILL", pips: 2, tone: "accent", certainty: "sure" },
+  self:    { glyph: "󰓢", tag: "OWN NAME", pips: 2, tone: "accent", certainty: "fairly sure" },
+  missing: { glyph: "󰋗", tag: "ONE SIDE MISSING", pips: 1, tone: "amber", certainty: "a guess" },
+  lone:    { glyph: "󰌷", tag: "ONE LEG SHOWN", pips: 0, tone: "dim", certainty: "" }
+}
+
+// "ref" | "card" | "self" | "missing" | "lone" | "" for a collapsed entry or a transaction.
+function transferKind(x) {
+  if (!x) return ""
+  if (x.isTransfer) {
+    if (x.oneSided) return "missing"
+    return x.matchedBy === "card" ? "card" : (x.matchedBy === "self" ? "self" : "ref")
+  }
+  if (x.transferId) return "lone"
+  if (x.transferSelf) return "missing"
+  return ""
+}
+
+function transferMeta(kind) { return _TRANSFER_META[kind] || null }
+
+// "124028795174" -> "1240 2879 5174"
+function groupRef(ref) {
+  return String(ref || "").replace(/\s+/g, "").replace(/(.{4})(?=.)/g, "$1 ")
+}
+
+// "2026-11-08T10:00:00" -> "8 Nov 2026"; "" when unknown.
+function formatMatchedOn(iso) {
+  if (!iso) return ""
+  return formatShortDate(String(iso).slice(0, 10), true)
+}
+
+function _legRow(k, leg) {
+  return { k: k, v: formatShortDate(leg.date, true) + "  " + (leg.bank || "") + "  " + formatAmount(leg) }
+}
+
+// Texts for the "i" panel of a transfer (entry from collapseTransfers, or a lone-leg
+// transaction). ctx: { lastFetched: {BANK: iso}, accountTag }.
+function transferExplain(x, ctx) {
+  ctx = ctx || {}
+  var kind = transferKind(x)
+  var meta = _TRANSFER_META[kind]
+  if (!meta) return null
+  var res = { kind: kind, title: meta.tag, glyph: meta.glyph, certainty: meta.certainty, rows: [], why: "", next: "" }
+  var rows = res.rows
+  if (kind === "lone") {
+    var peer = x.transferPeerBank
+    rows.push({ k: "Other side", v: peer || "another account" })
+    if (ctx.accountTag) rows.push({ k: "This side", v: ctx.accountTag })
+    res.why = "The other side is hidden by a filter. Clear the filter to see both sides."
+    return res
+  }
+  var matchedOn = formatMatchedOn(x.matchedAt)
+  if (kind === "missing") {
+    var real = x.real || x
+    var ghost = x.out && x.out.ghost ? x.out : (x.in && x.in.ghost ? x.in : null)
+    var bank = String((ghost ? ghost.bank : real.transferOther) || "").toUpperCase()
+    var amt = formatAmount({ amount: -real.amount, currency: real.currency })
+    rows.push({ k: "Matched by", v: "your own name on this side only" })
+    rows.push({ k: "Missing", v: (bank ? bank + " side" : "Another account") + " (" + amt + " around "
+                                  + formatShortDate(real.date, true) + ")" })
+    var fetched = bank && ctx.lastFetched ? ctx.lastFetched[bank] : ""
+    res.why = "The other account is not in your data."
+    if (bank) res.why += " " + bank + " was last fetched " + (fetched ? formatShortDate(String(fetched).slice(0, 10), true) : "never") + "."
+    if (bank && fetched && String(fetched).slice(0, 10) > real.date)
+      res.next = "That fetch did not include this transfer. It may be older than the statement."
+    else
+      res.next = (bank ? "Fetch " + bank : "Fetch the other account") + " again. This will pair by itself."
+    return res
+  }
+  if (kind === "ref") rows.push({ k: "Matched by", v: "UPI reference " + groupRef(x.ref) })
+  else if (kind === "card") rows.push({ k: "Matched by", v: "amount, date and payment words" })
+  else rows.push({ k: "Matched by", v: "your name, same amount, 1 day or less, banks agree" })
+  if (matchedOn) rows.push({ k: "Matched on", v: matchedOn })
+  rows.push(_legRow("OUT", x.out))
+  rows.push(_legRow("IN", x.in))
+  res.why = kind === "ref" ? "Both sides carry the same UPI reference."
+    : (kind === "card" ? "A bank account paid your credit card."
+    : "No shared reference exists. Your own name and the amount match.")
+  return res
+}
+
+// Texts for the "i" panel of an ordinary transaction.
+// ctx: { accountTag, receiptMerchant }
+function txnExplain(t, ctx) {
+  ctx = ctx || {}
+  var rows = []
+  rows.push({ k: "Counterparty", v: t.counterparty || t.merchant })
+  rows.push({ k: "Account", v: [ctx.accountTag, t.accountType === "credit" ? "credit card" : "savings"]
+                              .filter(function (s) { return s }).join("  ") })
+  var note = transactionNote(t)
+  if (note) rows.push({ k: "Remark", v: note })
+  rows.push({ k: "Statement", v: t.merchant })
+  if (t.reference) rows.push({ k: "Reference", v: groupRef(t.reference) })
+  rows.push({ k: "Status", v: (t.tracked ? "Tracked" : "Not tracked")
+                              + (ctx.receiptMerchant ? "  Receipt: " + ctx.receiptMerchant : "") })
+  return { kind: "", title: "Transaction", glyph: _INFO_GLYPH, certainty: "", rows: rows, why: "", next: "" }
 }

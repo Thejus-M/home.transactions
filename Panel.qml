@@ -171,6 +171,8 @@ Panel {
   // Rows picked with their checkboxes (map: transaction id -> true). Separate
   // from "tracked": Track / Untrack act on the selection.
   property var selectedIds: ({})
+  // id of the one card whose "i" panel is open ("t:<pair id>" / "x:<txn id>"); empty = none.
+  property string infoOpenId: ""
   // Checkboxes and the selection controls show only in selection mode, which
   // the check button beside search turns on.
   property bool selectionMode: false
@@ -329,6 +331,7 @@ Panel {
 
   // A transfer between your own accounts is neither spending (red) nor income
   // (green): it gets the accent colour wherever it is drawn.
+  function toneColor(tone) { return tone === "amber" ? root.pendingColor : (tone === "dim" ? Util.alpha(Color.accent, 0.6) : Color.accent) }
   function isTransferLeg(t) { return !!(t.transferId || t.transferSelf) }
   function rowBg(t) { return root.isTransferLeg(t) ? Util.alpha(Color.accent, 0.18) : (t.amount < 0 ? root.debitBg : root.creditBg) }
   function directionColor(t) { return root.isTransferLeg(t) ? Color.accent : (t.amount < 0 ? root.debitColor : root.creditColor) }
@@ -379,6 +382,9 @@ Panel {
 
   onOpenedChanged: if (!opened) {
     filterOpen = false          // the filter layer never outlives the popup
+    infoOpenId = ""
+    // The "new" marks stay while the popup is open; closing it means they were seen.
+    if (store.transfers.some(function (t) { return t.isNew })) root.txdb(["transfers-mark-seen"])
   } else {
     root.refreshData()
     // Reopening deep inside a list hides the summary the panel exists to
@@ -491,6 +497,7 @@ Panel {
     property var trackedOverrides: ({})   // optimistic tracked changes not yet in a snapshot
     property var rawTransactions: []
     property var transfers: []         // detected transfer pairs (txdb/transfers.py)
+    property var lastFetched: ({})     // bank -> ISO time of its last successful fetch
     property var transactions: []
     property var cardOverviews: ({})   // map: last4 -> overview entry
     property var accountBalances: []   // list of {bank, accountType, last4, balance, currency}
@@ -538,6 +545,7 @@ Panel {
       trackedOverrides = {}
       rawTransactions = snap.transactions || []
       transfers = snap.transfers || []
+      lastFetched = snap.lastFetched || ({})
       rawReceipts = snap.receipts || []
       receiptOverrides = {}
       recompute()
@@ -5895,6 +5903,206 @@ Panel {
     }
   }
 
+  // Three small dots: how sure the match is (filled = accent, empty = faint).
+  component PipMeter: Row {
+    id: pm
+    property int count: 0
+    property int total: 3
+    spacing: Style.space(3)
+    Repeater {
+      model: pm.total
+      delegate: Rectangle {
+        required property int index
+        width: Style.space(6)
+        height: width
+        radius: width / 2
+        color: index < pm.count ? Color.accent : Util.alpha(Color.accent, 0.25)
+      }
+    }
+  }
+
+  // A small rounded tag ("SAME REFERENCE", "NEW").
+  component TagPill: Rectangle {
+    id: tp
+    property string label: ""
+    property color tone: Color.accent
+    property bool solid: false
+    radius: Style.space(4)
+    color: tp.solid ? tp.tone : Util.alpha(tp.tone, 0.22)
+    implicitWidth: tpText.implicitWidth + Style.space(10)
+    implicitHeight: tpText.implicitHeight + Style.space(4)
+    Text {
+      id: tpText
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: tp.label
+      color: tp.solid ? Color.popups.background : tp.tone
+      font.family: Style.font.family
+      font.bold: true
+      font.pixelSize: Style.font.caption
+    }
+  }
+
+  // The "i" button at the far right of a card.
+  component InfoButton: PanelActionButton {
+    id: ib
+    property bool infoShown: false
+    size: Style.space(24)
+    iconText: "󰋽"
+    tooltipText: "Explain"
+    foreground: ib.infoShown ? Color.accent : root.foreground
+    bordered: false
+    focusable: false
+  }
+
+  // An AcctPill in a frame; a side that is not in the data gets a dashed amber frame.
+  component PillSlot: Item {
+    id: ps
+    required property var txn
+    property real maxWidth: 100000
+    implicitWidth: psPill.implicitWidth + Style.space(8)
+    implicitHeight: psPill.implicitHeight + Style.space(6)
+    width: implicitWidth
+    height: implicitHeight
+    Canvas {
+      anchors.fill: parent
+      visible: !!ps.txn.ghost
+      onWidthChanged: requestPaint()
+      onHeightChanged: requestPaint()
+      onVisibleChanged: requestPaint()
+      onPaint: {
+        var g = getContext("2d")
+        g.reset()
+        g.strokeStyle = root.pendingColor
+        g.lineWidth = 1
+        g.setLineDash([3, 2])
+        g.strokeRect(0.5, 0.5, width - 1, height - 1)
+      }
+    }
+    AcctPill {
+      id: psPill
+      anchors.centerIn: parent
+      txn: ps.txn
+      maxWidth: ps.maxWidth - Style.space(8)
+    }
+  }
+
+  // The "i" panel: a bordered box inside the card (never a Popup, which would
+  // draw outside the widget). `info` comes from Model.transferExplain / txnExplain.
+  component InfoSection: Item {
+    id: inf
+    property var info: null
+    property bool open: false
+    readonly property bool shown: inf.open && !!inf.info
+    visible: inf.shown
+    implicitHeight: inf.shown ? infBox.implicitHeight + Style.space(6) : 0
+    height: implicitHeight
+
+    Rectangle {
+      id: infBox
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(6)
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.leftMargin: Style.spacing.rowPaddingX
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      radius: Style.space(6)
+      color: Util.alpha(root.foreground, 0.06)
+      border.width: 1
+      border.color: Util.alpha(root.foreground, 0.18)
+      implicitHeight: infCol.implicitHeight + Style.space(16)
+
+      Column {
+        id: infCol
+        x: Style.space(8)
+        y: Style.space(8)
+        width: parent.width - Style.space(16)
+        spacing: Style.space(4)
+
+        Row {
+          spacing: Style.space(6)
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: inf.info ? inf.info.glyph : ""
+            color: Color.accent
+            font.pixelSize: Style.font.body
+          }
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: inf.info ? inf.info.title : ""
+            color: root.foreground
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.caption
+          }
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: !!inf.info && inf.info.certainty !== ""
+            textFormat: Text.PlainText
+            text: inf.info ? "·  " + inf.info.certainty : ""
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+        Repeater {
+          model: inf.info ? inf.info.rows : []
+          delegate: Item {
+            id: infRow
+            required property var modelData
+            width: infCol.width
+            height: Math.max(infKey.implicitHeight, infVal.implicitHeight)
+            Text {
+              id: infKey
+              width: Style.space(84)
+              textFormat: Text.PlainText
+              text: infRow.modelData.k
+              color: Qt.darker(root.foreground, 1.5)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              id: infVal
+              anchors.left: infKey.right
+              anchors.right: parent.right
+              textFormat: Text.PlainText
+              wrapMode: Text.WrapAnywhere
+              text: infRow.modelData.v
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
+        Text {
+          visible: !!inf.info && inf.info.why !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          text: inf.info ? "Why: " + inf.info.why : ""
+          color: Qt.darker(root.foreground, 1.2)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          visible: !!inf.info && inf.info.next !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          text: inf.info ? "Next step: " + inf.info.next : ""
+          color: root.pendingColor
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+  }
+
   // A bank logo + the account tag ("HDFC ••7367"), the way a transaction card
   // draws the account its row sits in.
   component AcctPill: Row {
@@ -5971,10 +6179,12 @@ Panel {
     readonly property int collapsedHeight: Style.space(56)
     readonly property var amountLeg: xc.transfer.oneSided ? xc.transfer.real : xc.outLeg
     readonly property var legsList: xc.transfer.oneSided ? [xc.transfer.real] : [xc.outLeg, xc.inLeg]
-    readonly property string how: xc.transfer.matchedBy === "card" ? "card bill payment"
-      : (xc.transfer.matchedBy === "self" ? "your own name" : "same UPI reference")
+    readonly property var meta: Model.transferMeta(Model.transferKind(xc.transfer))
+    readonly property string infoId: "t:" + xc.transfer.id
+    readonly property bool infoOpen: root.infoOpenId === xc.infoId
+    function toggleInfo() { root.infoOpenId = xc.infoOpen ? "" : xc.infoId }
 
-    implicitHeight: xc.collapsedHeight + (xc.expanded ? xDetails.implicitHeight + Style.space(12) : 0)
+    implicitHeight: xc.collapsedHeight + xInfo.height + (xc.expanded ? xDetails.implicitHeight + Style.space(12) : 0)
     radius: Style.cornerRadius
     opacity: xMouse.pressed ? 0.75 : 1.0
     color: xc.transfer.tracked ? Util.alpha(xc.tone, 0.18)
@@ -5997,6 +6207,10 @@ Panel {
     Keys.onDownPressed: root.focusNext(xc, true)
     Keys.onLeftPressed: xc.expanded = false
     Keys.onRightPressed: xc.expanded = true
+    Keys.onPressed: function (event) {
+      if (event.key === Qt.Key_I) { xc.toggleInfo(); event.accepted = true }
+      else if (event.key === Qt.Key_Escape && xc.infoOpen) { root.infoOpenId = ""; event.accepted = true }
+    }
 
     Item {
       id: xRow
@@ -6031,9 +6245,8 @@ Panel {
         Text {
           anchors.centerIn: parent
           textFormat: Text.PlainText
-          text: "⇄"
+          text: xc.meta.glyph
           color: xc.tone
-          font.bold: true
           font.pixelSize: Style.font.subtitle
         }
       }
@@ -6047,32 +6260,42 @@ Panel {
         spacing: Style.space(4)
 
         Row {
+          id: xTitle
+          width: parent.width
           spacing: Style.space(8)
+          clip: true
           Text {
+            // Gives way (elides) before the tag, the dots or the NEW mark do.
+            width: Math.max(0, Math.min(implicitWidth, xTitle.width - xTag.width - xPips.width - xNew.width
+              - (xPips.visible ? xTitle.spacing : 0) - (xNew.visible ? xTitle.spacing : 0) - xTitle.spacing))
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
+            elide: Text.ElideRight
             text: "Transfer"
             color: root.foreground
             font.family: Style.font.family
             font.bold: true
             font.pixelSize: Style.font.subtitle
           }
-          Rectangle {
+          TagPill {
+            id: xTag
             anchors.verticalCenter: parent.verticalCenter
-            radius: Style.space(4)
-            color: Util.alpha(xc.tone, 0.25)
-            implicitWidth: xTag.implicitWidth + Style.space(10)
-            implicitHeight: xTag.implicitHeight + Style.space(4)
-            Text {
-              id: xTag
-              anchors.centerIn: parent
-              textFormat: Text.PlainText
-              text: "OWN ACCOUNTS"
-              color: xc.tone
-              font.family: Style.font.family
-              font.bold: true
-              font.pixelSize: Style.font.caption
-            }
+            label: xc.meta.tag
+            tone: root.toneColor(xc.meta.tone)
+          }
+          PipMeter {
+            id: xPips
+            visible: xc.meta.pips > 0
+            anchors.verticalCenter: parent.verticalCenter
+            count: xc.meta.pips
+          }
+          TagPill {
+            id: xNew
+            visible: !!xc.transfer.isNew
+            anchors.verticalCenter: parent.verticalCenter
+            label: "NEW"
+            tone: Color.accent
+            solid: true
           }
         }
 
@@ -6081,7 +6304,7 @@ Panel {
           width: parent.width
           spacing: Style.space(6)
           clip: true
-          AcctPill { txn: xc.outLeg; maxWidth: (xFlow.width - xArrow.width - 2 * xFlow.spacing) / 2; anchors.verticalCenter: parent.verticalCenter }
+          PillSlot { txn: xc.outLeg; maxWidth: (xFlow.width - xArrow.width - 2 * xFlow.spacing) / 2; anchors.verticalCenter: parent.verticalCenter }
           Text {
             id: xArrow
             anchors.verticalCenter: parent.verticalCenter
@@ -6091,14 +6314,23 @@ Panel {
             font.bold: true
             font.pixelSize: Style.font.body
           }
-          AcctPill { txn: xc.inLeg; maxWidth: (xFlow.width - xArrow.width - 2 * xFlow.spacing) / 2; anchors.verticalCenter: parent.verticalCenter }
+          PillSlot { txn: xc.inLeg; maxWidth: (xFlow.width - xArrow.width - 2 * xFlow.spacing) / 2; anchors.verticalCenter: parent.verticalCenter }
         }
+      }
+
+      InfoButton {
+        id: xInfoBtn
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+        infoShown: xc.infoOpen
+        onClicked: xc.toggleInfo()
       }
 
       Column {
         id: xAmount
-        anchors.right: parent.right
-        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.right: xInfoBtn.left
+        anchors.rightMargin: Style.space(4)
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.space(2)
 
@@ -6115,10 +6347,19 @@ Panel {
       }
     }
 
+    InfoSection {
+      id: xInfo
+      anchors.top: xRow.bottom
+      anchors.left: parent.left
+      anchors.right: parent.right
+      open: xc.infoOpen
+      info: xc.infoOpen ? Model.transferExplain(xc.transfer, { lastFetched: store.lastFetched }) : null
+    }
+
     Column {
       id: xDetails
       visible: xc.expanded
-      anchors.top: xRow.bottom
+      anchors.top: xInfo.bottom
       anchors.topMargin: Style.space(6)
       anchors.left: parent.left
       anchors.right: parent.right
@@ -6207,10 +6448,7 @@ Panel {
         width: parent.width
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
-        text: (xc.transfer.oneSided
-          ? "The other party is you (" + "matched on your own name), and the other side is not in your data. "
-          : "Paired by " + xc.how + (xc.transfer.ref ? " " + xc.transfer.ref : "") + ". ")
-          + "Not counted as spending or income."
+        text: "Not counted as spending or income."
         color: Qt.darker(root.foreground, 1.5)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -6271,8 +6509,11 @@ Panel {
     readonly property color directionColor: root.directionColor(txn)
     readonly property bool _hot: rowHover.hovered || card.activeFocus
     readonly property int collapsedHeight: Style.space(52)
+    readonly property string infoId: "x:" + card.txn.id
+    readonly property bool infoOpen: root.infoOpenId === card.infoId && !card.editing
+    function toggleInfo() { root.infoOpenId = root.infoOpenId === card.infoId ? "" : card.infoId }
 
-    implicitHeight: card.collapsedHeight + (card.showDetails ? detailsPanel.implicitHeight + Style.space(10) : 0)
+    implicitHeight: card.collapsedHeight + cInfo.height + (card.showDetails ? detailsPanel.implicitHeight + Style.space(10) : 0)
     radius: Style.cornerRadius
     opacity: cardMouse.pressed ? 0.75 : 1.0
     color: card.selected ? Util.alpha(Color.accent, 0.16)
@@ -6307,6 +6548,8 @@ Panel {
       if (card.editing) return
       if (event.key === Qt.Key_F2) { card.editing = true; event.accepted = true }
       else if (event.key === Qt.Key_X && card.selectable && root.selectionMode) { root.toggleSelected(card.txn.id); event.accepted = true }
+      else if (event.key === Qt.Key_I) { card.toggleInfo(); event.accepted = true }
+      else if (event.key === Qt.Key_Escape && card.infoOpen) { root.infoOpenId = ""; event.accepted = true }
     }
     Keys.onUpPressed: if (!card.editing) root.focusNext(card, false)
     Keys.onDownPressed: if (!card.editing) root.focusNext(card, true)
@@ -6485,25 +6728,13 @@ Panel {
           }
 
           // One side of a transfer between your own accounts whose other side is
-          // not in this view (an account filter, a search): it says so, with the
-          // bank on the other end, instead of passing for an ordinary credit.
-          Rectangle {
+          // not in this view (an account filter, a search): it says so instead of
+          // passing for an ordinary credit. The "i" panel names the other bank.
+          TagPill {
             visible: !!card.txn.transferId
             anchors.verticalCenter: parent.verticalCenter
-            radius: Style.space(4)
-            color: Util.alpha(Color.accent, 0.25)
-            implicitWidth: legTagText.implicitWidth + Style.space(10)
-            implicitHeight: legTagText.implicitHeight + Style.space(4)
-            Text {
-              id: legTagText
-              anchors.centerIn: parent
-              textFormat: Text.PlainText
-              text: (card.txn.transferRole === "in" ? "FROM " : "TO ") + (card.txn.transferPeerBank || "OWN ACCOUNT")
-              color: Color.accent
-              font.family: Style.font.family
-              font.bold: true
-              font.pixelSize: Style.font.caption
-            }
+            label: Model.transferMeta("lone").tag
+            tone: root.toneColor("dim")
           }
 
           Rectangle {
@@ -6540,7 +6771,7 @@ Panel {
         id: amountStack
         visible: !card.editing
         anchors.right: editBtn.left
-        anchors.rightMargin: Style.space(6)
+        anchors.rightMargin: Style.space(4)
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.space(2)
 
@@ -6569,13 +6800,23 @@ Panel {
         }
       }
 
+      InfoButton {
+        id: cInfoBtn
+        visible: !card.editing
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+        infoShown: card.infoOpen
+        onClicked: card.toggleInfo()
+      }
+
       // Reveals on hover OR keyboard focus (so Tab-only users can still
       // reach rename — hover alone would leave them unreachable).
       Text {
         id: editBtn
         visible: !card.editing && card._hot
-        anchors.right: parent.right
-        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.right: cInfoBtn.left
+        anchors.rightMargin: Style.space(4)
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
         text: "✎"
@@ -6628,10 +6869,23 @@ Panel {
     // full account name, and an explicit tracked checkbox — separate from
     // the row-click/Enter/Space toggle above, so expanding never changes
     // tracked state by itself.
+    InfoSection {
+      id: cInfo
+      anchors.top: collapsedRow.bottom
+      anchors.left: parent.left
+      anchors.right: parent.right
+      open: card.infoOpen
+      info: !card.infoOpen ? null
+        : (card.txn.transferId
+          ? Model.transferExplain(card.txn, { accountTag: card.accountName })
+          : Model.txnExplain(card.txn, { accountTag: card.accountName,
+              receiptMerchant: card.linkedReceipt ? (card.linkedReceipt.merchant || Model.receiptTitle(card.linkedReceipt)) : "" }))
+    }
+
     Column {
       id: detailsPanel
       visible: card.showDetails
-      anchors.top: collapsedRow.bottom
+      anchors.top: cInfo.bottom
       anchors.topMargin: Style.space(6)
       anchors.left: parent.left
       anchors.right: parent.right
