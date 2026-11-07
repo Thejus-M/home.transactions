@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from . import portfolio
+from . import portfolio, receipts
 from .db import from_paise
 from .ingest import OVERVIEW_FIELDS
 
@@ -35,11 +35,16 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "ORDER BY a.bank, a.last4")]
     card_overviews = [{
         "name": r["name"] or "", "last4": r["last4"], "accountId": r["account_id"], "bank": r["bank"],
+        # The network comes from the account, not from the card's name: a
+        # card the bank names without one ("RuPay" printed as a logo, not a
+        # word) still gets its brand mark.
+        "network": r["network"] or "",
         **{f: r[f] or "" for f in OVERVIEW_FIELDS},
         "billingDay": r["statement_day"], "statementDate": r["statement_date"] or "",
         "nextStatementDate": r["next_statement_date"] or "", "dueDate": r["due_date"] or "",
     } for r in conn.execute(
-        "SELECT c.*, a.last4, a.bank, d.statement_day, d.statement_date, d.next_statement_date, d.due_date "
+        "SELECT c.*, a.last4, a.bank, a.network, d.statement_day, d.statement_date, d.next_statement_date, "
+        "d.due_date "
         "FROM card_cycles_raw c JOIN accounts a ON a.id = c.account_id "
         "LEFT JOIN card_cycles d ON d.account_id = c.account_id ORDER BY a.last4")]
     accounts = [{
@@ -61,6 +66,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         # portfolioActivity, portfolioHistory. Additive, so a widget that
         # predates them simply ignores the keys (see txdb/portfolio.py).
         **portfolio.snapshot(conn),
+        **receipts.snapshot(conn),
     }
 
 

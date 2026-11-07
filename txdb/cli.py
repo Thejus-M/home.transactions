@@ -5,6 +5,24 @@
   txdb set-tracked-many <0|1> <id>...
   txdb rename <groupKey> [name]          no name = clear the rename
   txdb account-name <account> [name]     account = id (BANK|type|last4) or last4
+  txdb receipt-link <receiptId> <txnId>  file a bill against a transaction
+  txdb receipt-unlink <receiptId>        back to the top of the list
+  txdb receipt-cash <receiptId>          paid in cash: park it, stop asking
+  txdb receipt-ignore <receiptId>        not a bill, or a duplicate photo
+  txdb receipt-review <receiptId> <0|1>  raise or clear "check this parse"
+  txdb receipt-forget <receiptId>        drop the row
+  txdb receipt-edit <receiptId> <field> [value]   empty value clears it
+  txdb receipt-edit-item <receiptId> <lineNo> <field> [value]
+  txdb receipt-add-item <receiptId> <desc> [qty] [unit] [rate] [amount] [gstRate]
+  txdb receipt-delete-item <receiptId> <lineNo>
+  txdb receipt-edit-tax <receiptId> <rate> <cgst|sgst|igst|cess|taxable> [value]
+  txdb receipt-add-fee <receiptId> <label> <amount>   platform / delivery / service fee
+  txdb receipt-edit-fee <receiptId> <lineNo> <label|amount> <value>
+  txdb receipt-delete-fee <receiptId> <lineNo>
+  txdb receipt-add-tax <receiptId> <slabRate> <cgst|sgst|igst|cess> <amount>
+  txdb receipt-recalc <receiptId> [verify]  (verify also clears warnings) subtotal = sum of items, total = subtotal - discount + round off
+  txdb receipt-remove <receiptId>        remove the bill altogether (row, photo files, database copy); never re-imported
+  txdb receipt-image-export <receiptId> <file>   write the photo kept in the database to a file
   txdb bill-paid <account> <0|1>
   txdb bill-notified <account> <YYYY-MM-DD>
   txdb last-run <BANK>                   latest fetch run of a bank, as JSON
@@ -28,7 +46,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from . import ingest, migrate, portfolio, queries
+from . import ingest, migrate, portfolio, queries, receipts
 from .db import DB_PATH, connect, now, write
 
 
@@ -92,6 +110,46 @@ def main(argv: list[str]) -> int:
         name = " ".join(args[1:]).strip() or None
         with write(conn):
             conn.execute("UPDATE accounts SET display_name = ? WHERE id = ?", (name, aid))
+    elif cmd == "receipt-link":
+        receipts.set_link(conn, args[0], transaction_id=args[1], state="linked",
+                          matched_by="manual")
+    elif cmd == "receipt-unlink":
+        receipts.clear_link(conn, args[0])
+    elif cmd in ("receipt-cash", "receipt-ignore"):
+        receipts.set_link(conn, args[0], transaction_id=None,
+                          state="cash" if cmd == "receipt-cash" else "ignored",
+                          matched_by="manual")
+    elif cmd == "receipt-review":
+        receipts.set_review(conn, args[0], args[1] == "1")
+    elif cmd == "receipt-forget":
+        receipts.forget(conn, args[0])
+    elif cmd == "receipt-edit":
+        receipts.edit_field(conn, args[0], args[1], " ".join(args[2:]))
+    elif cmd == "receipt-edit-item":
+        receipts.edit_item_field(conn, args[0], args[1], args[2], " ".join(args[3:]))
+    elif cmd == "receipt-add-item":
+        receipts.add_item(conn, args[0], args[1], *(args[2:7] + [None] * (5 - len(args[2:7]))))
+    elif cmd == "receipt-delete-item":
+        receipts.delete_item(conn, args[0], args[1])
+    elif cmd == "receipt-edit-tax":
+        receipts.edit_tax_field(conn, args[0], args[1], args[2], " ".join(args[3:]))
+    elif cmd == "receipt-add-fee":
+        receipts.add_fee(conn, args[0], args[1], args[2])
+    elif cmd == "receipt-edit-fee":
+        receipts.edit_fee(conn, args[0], args[1], args[2], " ".join(args[3:]))
+    elif cmd == "receipt-delete-fee":
+        receipts.delete_fee(conn, args[0], args[1])
+    elif cmd == "receipt-add-tax":
+        receipts.add_tax(conn, args[0], args[1], args[2], args[3])
+    elif cmd == "receipt-recalc":
+        receipts.recalc_totals(conn, args[0], clear_flags=len(args) > 1 and args[1] == "verify")
+    elif cmd == "receipt-remove":
+        for rel in receipts.remove_receipt(conn, args[0]):
+            (DB_PATH.parent / rel).unlink(missing_ok=True)
+    elif cmd == "receipt-image-export":
+        ok = receipts.export_image(conn, args[0], args[1])
+        print("written" if ok else "no saved copy of that photo")
+        return 0 if ok else 1
     elif cmd in ("bill-paid", "bill-notified"):
         aid = _account(conn, args[0])
         column, value = ("marked_paid", 1 if args[1] == "1" else 0) if cmd == "bill-paid" else ("notified_date", args[1])

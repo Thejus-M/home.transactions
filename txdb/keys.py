@@ -6,13 +6,15 @@ each row.
 Each bank writes the same transfer differently — SBI and Axis put their
 own account/reference numbers before the counterparty, HDFC writes
 "UPI-<name>-<vpa>-<ifsc>-<refnum>-<remark>" — so each has its own pattern
-here, and all three yield the same key for the same person: "UPI|<NAME>".
-That is deliberate. A key carrying the bank, or the VPA, split one
-counterparty into four groups (the same person reached via HDFC and via
-Axis, and HDFC masking the VPA on some rows but not others), so renaming
-them meant renaming each variant by hand. Rows nothing can parse — bank
-charges, interest, card vendor names — stay keyed by bank and description,
-where the text is the only identity they have."""
+here. The key is "UPI|<BANK>|<NAME>": the same person (or the same
+transfer) seen on two of your banks is two groups, one per bank, so a rename
+on an HDFC row never changes the matching SBI or Axis row - a transfer
+between your own accounts appears once on each, and each side gets its own
+name. Within one bank the VPA is deliberately NOT part of the key (HDFC masks
+it on some rows and not others, which once split a single person into four
+groups). Rows nothing can parse - bank charges, interest, card vendor names -
+stay keyed by bank and description, where the text is the only identity they
+have."""
 from __future__ import annotations
 
 import re
@@ -36,9 +38,9 @@ def _bank_code(s: str | None) -> str:
     return re.sub(r" BANK$", "", _clean(s).upper())
 
 
-def _upi_key(name: str) -> str:
-    """One counterparty, one key, whichever bank the row came from."""
-    return f"UPI|{_clean(name).upper()}"
+def _upi_key(bank: str, name: str) -> str:
+    """One counterparty, one key per bank the row came from."""
+    return f"UPI|{bank}|{_clean(name).upper()}"
 
 
 def parsed_counterparty(bank: str, merchant: str) -> dict | None:
@@ -48,22 +50,22 @@ def parsed_counterparty(bank: str, merchant: str) -> dict | None:
         m = _SBI_UPI.match(merchant)
         if m:
             name = _clean(m.group(1))
-            return {"key": _upi_key(name), "name": name, "remark": _clean(m.group(3))}
+            return {"key": _upi_key(bank, name), "name": name, "remark": _clean(m.group(3))}
         m = _SBI_NEFT.match(merchant)
         if m:
             name = _clean(m.group(1))
-            return {"key": f"NEFT|{name.upper()}", "name": name, "remark": ""}
+            return {"key": f"NEFT|{bank}|{name.upper()}", "name": name, "remark": ""}
     if bank == "AXIS":
         m = _AXIS_UPI.match(merchant)
         if m:
             name = _clean(m.group(1))
-            return {"key": _upi_key(name), "name": name, "remark": _clean(m.group(3))}
+            return {"key": _upi_key(bank, name), "name": name, "remark": _clean(m.group(3))}
     if bank == "HDFC":
         m = _HDFC_UPI.match(merchant)
         if m:
             name = _clean(m.group(1))
             if name:
-                return {"key": _upi_key(name), "name": name, "remark": _clean(m.group(5))}
+                return {"key": _upi_key(bank, name), "name": name, "remark": _clean(m.group(5))}
     return None
 
 

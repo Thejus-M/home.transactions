@@ -44,6 +44,32 @@ def _rekey_counterparties(conn: sqlite3.Connection) -> None:
                      (moved.get(r["group_key"], r["group_key"]), r["name"], r["updated_at"]))
 
 
+def _split_names_by_bank(conn: sqlite3.Connection) -> None:
+    """v17: the rename key now carries the bank ("UPI|HDFC|<NAME>"), so a
+    transfer seen on two of your banks is two groups and a rename on one never
+    touches the other. Every row's key is recomputed, and a name saved under
+    the old shared key is copied to each bank's new key, so nothing already
+    renamed loses its name - it can then be changed per bank."""
+    from . import keys
+
+    rows = conn.execute(
+        "SELECT t.id, t.merchant, t.group_key, a.bank FROM transactions t "
+        "JOIN accounts a ON a.id = t.account_id").fetchall()
+    moved: dict[str, set[str]] = {}
+    for r in rows:
+        group_key, counterparty, note = keys.describe(r["bank"], r["merchant"])
+        moved.setdefault(r["group_key"], set()).add(group_key)
+        conn.execute("UPDATE transactions SET group_key = ?, counterparty = ?, note = ? WHERE id = ?",
+                     (group_key, counterparty, note, r["id"]))
+    saved = conn.execute("SELECT group_key, name, updated_at FROM merchant_names ORDER BY updated_at").fetchall()
+    conn.execute("DELETE FROM merchant_names")
+    for r in saved:
+        for key in sorted(moved.get(r["group_key"], {r["group_key"]})):
+            conn.execute("INSERT INTO merchant_names (group_key, name, updated_at) VALUES (?,?,?) "
+                         "ON CONFLICT(group_key) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
+                         (key, r["name"], r["updated_at"]))
+
+
 # Each entry upgrades the schema by one version (PRAGMA user_version). An
 # entry is either a SQL script or a function that rewrites stored data.
 MIGRATIONS = [
@@ -428,6 +454,180 @@ MIGRATIONS = [
         FROM holdings h JOIN instruments i ON i.id = h.instrument_id
         ORDER BY h.value_paise DESC;
     """,
+    # v10: SBI's credit card. SBI Card is a separate company with its own
+    # site, so it is a second login in the same fetcher rather than another
+    # page of the savings one, but what it reads is the same card shape the
+    # HDFC and ICICI cards already use: a card_cycles row for the bill and
+    # transactions on an 'SBI|credit|<last4>' account. Only the raw table is
+    # new, and sbi_view is rebuilt to cover both SBI accounts the way
+    # hdfc_view covers HDFC's.
+    """
+    CREATE TABLE sbi_card_transactions (
+        id           TEXT PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
+        account_id   TEXT NOT NULL,
+        date_text    TEXT,
+        description  TEXT,
+        amount_text  TEXT,
+        dr_cr_text   TEXT,
+        status       TEXT,
+        card_name    TEXT,
+        fetched_at   TEXT NOT NULL
+    );
+    DROP VIEW sbi_view;
+    CREATE VIEW sbi_view AS
+        SELECT t.*, COALESCE(s.date_text, c.date_text) AS date_text,
+               COALESCE(s.amount_text, c.amount_text) AS amount_text,
+               s.balance_text, s.direction_icon, s.sign_source, s.upi_ref,
+               c.dr_cr_text, c.card_name,
+               (k.transaction_id IS NOT NULL) AS tracked, n.name AS renamed_to
+        FROM transactions t JOIN accounts a ON a.id = t.account_id AND a.bank = 'SBI'
+        LEFT JOIN sbi_transactions s ON s.id = t.id
+        LEFT JOIN sbi_card_transactions c ON c.id = t.id
+        LEFT JOIN tracked k ON k.transaction_id = t.id LEFT JOIN merchant_names n ON n.group_key = t.group_key;
+    """,
+    # v11: photographed shop bills. A receipt is parsed data about an image,
+    # and the image's bytes are its identity, so re-reading the same photo
+    # updates one row instead of making a second and a renamed copy collapses
+    # onto the original.
+    #
+    # Which transaction a bill belongs to lives in its own table, for the
+    # same reason `tracked` does: the parser rewrites its half whenever it
+    # improves, and must never disturb a decision the user made. And like
+    # `tracked`, the link carries no foreign key on transaction_id -- a
+    # re-fetch that rewrites a transaction's id would otherwise cascade the
+    # user's filing away.
+    """
+    CREATE TABLE receipts (
+        id               TEXT PRIMARY KEY,          -- 'rcpt-' || substr(image_sha256,1,16)
+        image_sha256     TEXT NOT NULL UNIQUE,
+        stored_path      TEXT NOT NULL,             -- relative to data/
+        thumb_path       TEXT,
+        source_path      TEXT,                      -- where it was imported from
+        source_mtime     TEXT,
+        source_size      INTEGER,
+        rotation         INTEGER NOT NULL DEFAULT 0,
+        merchant         TEXT,
+        gstin            TEXT,
+        date             TEXT,                      -- YYYY-MM-DD, NULL when illegible
+        time             TEXT,
+        invoice_no       TEXT,
+        total_paise      INTEGER,
+        subtotal_paise   INTEGER,
+        tax_paise        INTEGER,
+        discount_paise   INTEGER,
+        round_off_paise  INTEGER,
+        payment_hint     TEXT,                      -- UPI / CARD / CASH, as printed
+        currency         TEXT NOT NULL DEFAULT 'INR',
+        before_payment   INTEGER NOT NULL DEFAULT 0,-- captured at the checkout screen
+        method           TEXT,                      -- which reading won
+        confidence       INTEGER NOT NULL DEFAULT 0,
+        needs_review     INTEGER NOT NULL DEFAULT 1,
+        warnings         TEXT,                      -- JSON array
+        raw_text         TEXT NOT NULL DEFAULT '',  -- so a re-parse needs no re-OCR
+        parser_version   TEXT NOT NULL DEFAULT '1',
+        parsed_at        TEXT NOT NULL,
+        imported_at      TEXT NOT NULL
+    );
+    CREATE INDEX receipts_by_date ON receipts (date DESC);
+
+    CREATE TABLE receipt_items (
+        receipt_id    TEXT NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
+        line_no       INTEGER NOT NULL,
+        description   TEXT NOT NULL,
+        hsn           TEXT,
+        qty_e4        INTEGER,                      -- 1.448 kg = 14480
+        unit          TEXT,
+        rate_paise    INTEGER,
+        amount_paise  INTEGER,
+        gst_rate_e2   INTEGER,                      -- 5.00% = 500
+        PRIMARY KEY (receipt_id, line_no)
+    );
+
+    CREATE TABLE receipt_taxes (
+        receipt_id     TEXT NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
+        rate_e2        INTEGER NOT NULL,
+        taxable_paise  INTEGER,
+        cgst_paise     INTEGER,
+        sgst_paise     INTEGER,
+        igst_paise     INTEGER,
+        cess_paise     INTEGER,
+        PRIMARY KEY (receipt_id, rate_e2)
+    );
+
+    CREATE TABLE receipt_links (
+        receipt_id      TEXT PRIMARY KEY REFERENCES receipts(id) ON DELETE CASCADE,
+        transaction_id  TEXT,
+        state           TEXT NOT NULL CHECK (state IN ('linked', 'cash', 'ignored')),
+        matched_by      TEXT,                       -- 'auto' | 'manual'
+        score           INTEGER,
+        linked_at       TEXT NOT NULL,
+        CHECK ((state = 'linked') = (transaction_id IS NOT NULL))
+    );
+    CREATE UNIQUE INDEX receipt_links_by_transaction
+        ON receipt_links (transaction_id) WHERE transaction_id IS NOT NULL;
+
+    CREATE VIEW receipts_view AS
+        SELECT r.*, COALESCE(l.state, 'unmatched') AS state, l.transaction_id,
+               l.matched_by, l.score, l.linked_at,
+               t.date AS txn_date, t.merchant AS txn_merchant,
+               t.amount_paise AS txn_amount_paise, t.account_id AS txn_account_id,
+               (k.transaction_id IS NOT NULL) AS txn_tracked
+        FROM receipts r
+        LEFT JOIN receipt_links l ON l.receipt_id = r.id
+        LEFT JOIN transactions t ON t.id = l.transaction_id
+        LEFT JOIN tracked k ON k.transaction_id = l.transaction_id;
+    """,
+    # v12: once a receipt has sat linked for a while, its photo has done its
+    # job (the figures are already in receipt_items/receipt_taxes) and stays
+    # around only as a privacy/disk cost - a shop bill can carry a phone
+    # number, a card's last four, a loyalty id. `receipts_view` already
+    # selects `r.*`, so this column needs no view change to show up there.
+    """
+    ALTER TABLE receipts ADD COLUMN image_deleted INTEGER NOT NULL DEFAULT 0;
+    """,
+    # v13: what the photo file itself knew - when it was taken, by what, how
+    # big (JSON, written by receipt-ledger-stitcher at import/re-read). Kept
+    # in the row so it survives the photo's own deletion hours after linking.
+    """
+    ALTER TABLE receipts ADD COLUMN image_meta TEXT;
+    """,
+    # v14: the bill's photo, compressed, kept inside the database itself (so
+    # a backup of the one file has the pictures too, and nothing is ever
+    # deleted). Written by receipt-ledger-stitcher once a bill is linked.
+    """
+    CREATE TABLE receipt_images (
+        receipt_id   TEXT PRIMARY KEY REFERENCES receipts(id) ON DELETE CASCADE,
+        mime         TEXT NOT NULL,
+        width        INTEGER,
+        height       INTEGER,
+        bytes        INTEGER NOT NULL,
+        original_bytes INTEGER,                     -- what it was before compressing
+        data         BLOB NOT NULL,
+        saved_at     TEXT NOT NULL
+    );
+    """,
+    # v15: a bill the user removed. The photo's fingerprint is remembered so
+    # a later import of the same folder does not bring the bill back.
+    """
+    CREATE TABLE removed_receipts (
+        image_sha256  TEXT PRIMARY KEY,
+        removed_at    TEXT NOT NULL
+    );
+    """,
+    # v16: extra charges on a bill that are neither items, tax nor discount -
+    # platform fee, delivery fee, service charge ... One row per charge.
+    # total = subtotal - discount +/- round off + fees + tax.
+    """
+    CREATE TABLE receipt_fees (
+        receipt_id    TEXT NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
+        line_no       INTEGER NOT NULL,
+        label         TEXT NOT NULL,
+        amount_paise  INTEGER NOT NULL,
+        PRIMARY KEY (receipt_id, line_no)
+    );
+    """,
+    # v17: one rename key per bank (see _split_names_by_bank).
+    _split_names_by_bank,
 ]
 
 

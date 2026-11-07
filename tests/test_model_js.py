@@ -33,6 +33,15 @@ CARDS = {
                "unbilled_amount": "₹0.00", "payment_status": "FULLY PAID",
                "last_statement_amount": "₹4,374.00", "unbilled_credits": "- ₹5,000.00",
                "unbilled_purchases": "₹0.00", "unsettled_amount": "₹0.00"},
+    # SBI's card. SBI prints only the two totals ("Current Outstanding"
+    # and "Total Amount Due"); the fetcher works out the spend between them
+    # so pay-now can come out at what SBI actually asks for.
+    "sbi": {"bank": "SBI", "last4": "5896", "accountId": "SBI|credit|5896", "name": "Rupay Credit Card",
+            "total_outstanding": "₹ 4081.82", "upcoming_payment_due": "₹ 589.00",
+            "unbilled_amount": "₹ 3,492.82", "payment_status": "AMOUNT DUE",
+            "last_statement_amount": "₹ 589.00", "unbilled_credits": "",
+            "unbilled_purchases": "₹ 3,492.82", "unsettled_amount": "",
+            "credit_limit_total": "", "available_limit": ""},
     # A row saved before the Outstanding Summary block was scraped.
     "legacy": {"total_outstanding": "₹595.38", "upcoming_payment_due": "₹595.00",
                "unbilled_amount": "₹0.00", "payment_status": "PARTIALLY PAID"},
@@ -72,6 +81,15 @@ class BillPartsTests(unittest.TestCase):
         # ₹595.00 it asks for.
         self.assertEqual(card["payNow"], 595)
         self.assertEqual(card["nextBill"], 0.38)
+        self.assertFalse(card["inCredit"])
+        self.assertFalse(card["paid"])
+
+    def test_the_sbi_card_asks_for_what_sbi_asks_for(self):
+        card = self.parts["sbi"]
+        self.assertEqual(card["billThisMonth"], 589)     # the statement raised on 1 Nov
+        self.assertEqual(card["nextBill"], 3492.82)      # spend since, not billed yet
+        self.assertEqual(card["payNow"], 589)            # exactly SBI's "Total Amount Due"
+        self.assertEqual(card["paidIn"], 0)
         self.assertFalse(card["inCredit"])
         self.assertFalse(card["paid"])
 
@@ -261,3 +279,40 @@ class CardLabelTests(unittest.TestCase):
         self.assertEqual(self.run_js('accountBank("axis|checking|2934")'), "AXIS")
         self.assertEqual(self.run_js('accountBank("")'), "")
         self.assertEqual(self.run_js('accountBank(null)'), "")
+
+
+ACCOUNT_OPTIONS_SCRIPT = """
+const fs = require("fs"), vm = require("vm");
+const ctx = {}; vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), ctx);
+ctx.input = JSON.parse(process.argv[2]);
+console.log(JSON.stringify(vm.runInContext(
+  "accountOptions(input.transactions, input.overviews, {})", ctx)));
+"""
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class AccountOptionTests(unittest.TestCase):
+    """The filter chips, one per account. A card with no settled rows yet
+    only exists in the billing overview, and its chip has to carry that
+    card's own bank."""
+
+    def options(self, transactions, overviews):
+        result = subprocess.run(
+            [NODE, "-e", ACCOUNT_OPTIONS_SCRIPT, str(ROOT / "Model.js"),
+             json.dumps({"transactions": transactions, "overviews": overviews})],
+            capture_output=True, text=True, check=True)
+        return json.loads(result.stdout)
+
+    def test_a_card_with_no_transactions_keeps_its_own_bank(self):
+        options = self.options([], {"4821": {"bank": "SBI", "last4": "4821", "name": "SimplyCLICK SBI Card"}})
+        self.assertEqual([(o["bank"], o["key"]) for o in options], [("SBI", "SBI|credit|4821")])
+
+    def test_hdfc_is_still_the_fallback_for_an_overview_without_a_bank(self):
+        options = self.options([], {"0220": {"last4": "0220", "name": "RUPAY BIZ UPI"}})
+        self.assertEqual(options[0]["key"], "HDFC|credit|0220")
+
+    def test_a_card_that_has_transactions_is_listed_once(self):
+        transactions = [{"bank": "SBI", "accountType": "credit", "last4": "4821"}]
+        overviews = {"4821": {"bank": "SBI", "last4": "4821", "name": "SimplyCLICK SBI Card"}}
+        self.assertEqual(len(self.options(transactions, overviews)), 1)

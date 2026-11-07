@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Shapes
 import Quickshell
+import Quickshell.Wayland
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
@@ -41,6 +42,10 @@ Panel {
   readonly property bool axisOtpNeeded: axisFetchProc.running && axisFetchStatus.stage === "otp-needed"
   // Third source: the SBI fetcher, same shapes and its own status file. It
   // solves the login CAPTCHA itself and asks for the OTP like Axis does.
+  // One run reads two accounts behind two logins: the savings account on
+  // YONO and the credit card on sbicard.com, which is a separate site. So
+  // it asks for an OTP twice, through the same box, and its done message
+  // names both halves.
   // Fourth source: the ICICI fetcher. A credit card only — that profile
   // has no linked bank account — so it writes a card_cycles row and no
   // transactions, and its chip shows the card rather than a balance.
@@ -48,6 +53,12 @@ Panel {
   readonly property string iciciOutputDir: iciciDir + "/output"
   property var iciciFetchStatus: ({})
 
+  // Sixth source, and the first that is not a bank statement: photographed
+  // shop bills. The reader is a separate project (its own venv needs OCR
+  // and, optionally, a local LLM — dependencies the stdlib-only txdb must
+  // never take on), reached the same way the fetchers are.
+  readonly property string receiptStitcherDir: "/home/pc/Work/receipt-ledger-stitcher"
+  readonly property string receiptsDir: "/run/media/pc/MY Drive/KDE Share"
   readonly property string sbiDir: "/home/pc/Work/sbi-statement-fetcher"
   readonly property string sbiOutputDir: sbiDir + "/output"
   property var sbiFetchStatus: ({})
@@ -107,6 +118,56 @@ Panel {
   readonly property var transactions: store.transactions
   readonly property int untrackedCount: transactions.filter(function (t) { return !t.tracked }).length
   readonly property int pendingTrackedCount: transactions.filter(function (t) { return t.tracked }).length
+
+  // Photographed bills, unmatched ones first. receiptsToLink drives the
+  // section header's count, the same way untrackedCount drives RECENT's.
+  readonly property var receiptList: Model.receiptsSorted(store.receipts)
+  // The RECEIPTS list folded away (its header and count stay).
+  property bool receiptsCollapsed: false
+  readonly property int receiptsToLink: receiptList.filter(function (r) { return r.state === "unmatched" }).length
+  readonly property var linkedTransactionIds: {
+    var ids = {}
+    for (var i = 0; i < store.receipts.length; i++) {
+      var r = store.receipts[i]
+      if (r.state === "linked" && r.transactionId) ids[r.transactionId] = true
+    }
+    return ids
+  }
+  // All unmatched, plus a handful of the most recent filed/parked ones, so
+  // a year of already-filed receipts never buries RECENT below them.
+  // Bills still needing a decision always show; the ones already filed
+  // (linked / cash / not a bill) stay out of the way until asked for - and
+  // when nothing is waiting there is no RECEIPTS section at all (they are
+  // still one click away from the note button in the RECENT header, and from
+  // each transaction's own note icon).
+  property bool showFiled: false
+  readonly property int receiptsFiledCount: receiptList.filter(function (r) { return r.state !== "unmatched" }).length
+  readonly property bool receiptsSectionShown: receiptList.length > 0 && (receiptsToLink > 0 || showFiled)
+  readonly property var visibleReceipts: {
+    var pending = receiptList.filter(function (r) { return r.state === "unmatched" })
+    var filed = showFiled ? receiptList.filter(function (r) { return r.state !== "unmatched" }) : []
+    return pending.concat(filed)
+  }
+  // The receipt the review window is open on, or null when it's closed.
+  // One shared window rather than one Popup per row: 16+ receipts would
+  // otherwise mean 16+ live Popup instances for a dialog only one of which
+  // is ever open at a time.
+  // Holds the id, not the receipt object itself: an object captured at
+  // open time goes stale the moment refreshData() rebuilds receiptList
+  // (e.g. after a reparse finishes), which is exactly how the full-screen
+  // window used to keep showing the pre-reparse figures even once the new
+  // ones had landed in the database. The id is looked up fresh in
+  // receiptFullScreen's "r" below, every time receiptList changes.
+  property var receiptDetailTarget: null
+  function openReceiptDetail(r) { root.receiptDetailTarget = r.id }
+  function closeReceiptDetail() { root.receiptDetailTarget = null }
+  // The actual photo, full resolution, in the system's own viewer — never
+  // inside this plugin's card, which is far too narrow to read a bill's
+  // fine print at any size QML can draw it.
+  function openReceiptPhoto(r) {
+    if (!r || !r.storedPath) return
+    Quickshell.execDetached(["xdg-open", root.widgetDir + "/data/" + r.storedPath])
+  }
   // Rows picked with their checkboxes (map: transaction id -> true). Separate
   // from "tracked": Track / Untrack act on the selection.
   property var selectedIds: ({})
@@ -360,6 +421,39 @@ Panel {
     onFileChanged: root.refreshData()
   }
 
+  // Photos are never deleted. Once a bill is linked its photo is compressed
+  // and kept inside the database (and replaces the big file in place) by
+  // receipt-ledger-stitcher. This catches up on start and every half hour,
+  // and a link kicks it off a few seconds later (after the link has been
+  // written) - the bar widget keeps running whether or not the popup is open.
+  Timer {
+    interval: 30 * 60 * 1000
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.queueCompress()
+  }
+
+  Timer {
+    id: compressDelay
+    interval: 4000
+    onTriggered: if (!receiptCompressProc.running) receiptCompressProc.running = true
+  }
+  function queueCompress() { compressDelay.restart() }
+
+  Process {
+    id: receiptCompressProc
+    command: ["bash", "-c", "cd '" + root.receiptStitcherDir + "' && .venv/bin/python -m src.main compress-linked 2>&1"]
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function (line) { if (line.length > 0) console.log("receipt photo: " + line) }
+    }
+    onExited: function (exitCode) {
+      if (exitCode !== 0) console.warn("Receipt photo compress exited " + exitCode)
+      root.refreshData()
+    }
+  }
+
   Component.onCompleted: refreshData()
 
   QtObject {
@@ -380,6 +474,12 @@ Panel {
     property var allocation: []      // [{bucket, value, pct}]
     property var portfolioActivity: []   // buys/sells worked out from snapshots
     property var portfolioHistory: []    // [{asOf, value, invested}], oldest first
+    // Photographed bills (txdb/receipts.py). Additive, same reasoning as the
+    // portfolio keys above: a snapshot from before receipts existed just
+    // leaves this empty and the RECEIPTS section stays hidden.
+    property var rawReceipts: []
+    property var receiptOverrides: ({})   // optimistic: id -> {state, transactionId, ...}
+    property var receipts: []
 
     // Loads one `txdb snapshot`. A snapshot that doesn't parse is ignored,
     // so the widget keeps showing the last good data. Everything is set
@@ -406,8 +506,290 @@ Panel {
       portfolioHistory = snap.portfolioHistory || []
       trackedOverrides = {}
       rawTransactions = snap.transactions || []
+      rawReceipts = snap.receipts || []
+      receiptOverrides = {}
       recompute()
+      recomputeReceipts()
       checkBillReminders()
+    }
+
+    function recomputeReceipts() {
+      receipts = Model.receiptsWithOverrides(rawReceipts, receiptOverrides)
+    }
+
+    function linkReceipt(id, txnId) {
+      // The full-screen window's "-> <date> · <amount> · <merchant>" line
+      // (and the RECENT-style summary) reads straight off these txn*
+      // fields - without them here, clicking a candidate looked like it
+      // did nothing until the next full snapshot replaced this override.
+      var txn = store.transactions.find(function (t) { return t.id === txnId })
+      var o = Object.assign({}, receiptOverrides)
+      o[id] = {
+        state: "linked", transactionId: txnId, linkMissing: false,
+        txnDate: txn ? txn.date : null, txnMerchant: txn ? txn.merchant : null,
+        txnAmount: txn ? txn.amount : null, txnTracked: txn ? !!txn.tracked : false,
+      }
+      receiptOverrides = o
+      recomputeReceipts()
+      root.txdb(["receipt-link", id, txnId])
+      root.queueCompress()
+    }
+
+    function unlinkReceipt(id) {
+      var o = Object.assign({}, receiptOverrides)
+      o[id] = { state: "unmatched", transactionId: null, linkMissing: false,
+                txnDate: null, txnMerchant: null, txnAmount: null, txnTracked: false }
+      receiptOverrides = o
+      recomputeReceipts()
+      root.txdb(["receipt-unlink", id])
+    }
+
+    function parkReceipt(id, state) {
+      var o = Object.assign({}, receiptOverrides)
+      o[id] = { state: state, transactionId: null }
+      receiptOverrides = o
+      recomputeReceipts()
+      root.txdb(["receipt-" + (state === "cash" ? "cash" : "ignore"), id])
+    }
+
+    // Remove a bill altogether (row, photo, kept copy). Gone from the list at
+    // once; the importer remembers the photo and never brings it back.
+    function removeReceipt(id) {
+      // The window moves on to the next bill (same order as the Prev/Next
+      // arrows, wrapping at the end) instead of closing; it only closes when
+      // that was the last bill.
+      var list = root.visibleReceipts
+      var at = list.findIndex(function (r) { return r.id === id })
+      var next = null
+      if (at >= 0 && list.length > 1) next = list[(at + 1) % list.length].id
+      else if (at < 0 && list.length > 0) next = list[0].id
+      rawReceipts = rawReceipts.filter(function (r) { return r.id !== id })
+      recomputeReceipts()
+      if (next !== null) root.receiptDetailTarget = next
+      else root.closeReceiptDetail()
+      root.txdb(["receipt-remove", id])
+    }
+
+    function setReceiptReviewed(id) {
+      var o = Object.assign({}, receiptOverrides)
+      o[id] = Object.assign({}, o[id], { needsReview: false })
+      receiptOverrides = o
+      recomputeReceipts()
+      root.txdb(["receipt-review", id, "0"])
+    }
+
+    // A hand correction to one field, kept apart from the parsed figures
+    // the same way linking is: fixing the total doesn't mean the GST
+    // breakdown is suddenly trustworthy too, so needsReview/confidence are
+    // left exactly as the parser set them - "Looks right" is the
+    // person's separate, explicit sign-off on the whole reading.
+    readonly property var _receiptFieldToJs: ({
+      merchant: "merchant", date: "date", time: "time", invoice_no: "invoiceNo",
+      gstin: "gstin", payment_hint: "paymentHint", total: "total", subtotal: "subtotal",
+      discount: "discount", round_off: "roundOff",
+    })
+    readonly property var _receiptMoneyFields: ({ total: true, subtotal: true, discount: true, roundOff: true })
+    function editReceiptField(id, field, value) {
+      var jsKey = _receiptFieldToJs[field]
+      var before = receipts.find(function (r) { return r.id === id })
+      var mode = before ? Model.receiptTaxMode(before) : "inside"
+      var patch = {}
+      var trimmed = String(value || "").trim()
+      patch[jsKey] = trimmed === "" ? null : (_receiptMoneyFields[jsKey] ? Number(trimmed) : trimmed)
+      _patchReceipt(id, patch)
+      root.txdb(["receipt-edit", id, field, trimmed])
+      // The total follows the figures that make it up, on the spot:
+      // subtotal - discount + round off.
+      if (field === "subtotal" || field === "discount" || field === "round_off") _followTotal(id, mode)
+    }
+
+    // total = subtotal - |discount| + round off, from whatever subtotal the
+    // receipt holds now (the sum of its items when it has none printed).
+    function _followTotal(id, mode) {
+      var cur = receipts.find(function (r) { return r.id === id })
+      if (!cur) return
+      var sub = cur.subtotal != null ? cur.subtotal : ((cur.items || []).length ? Model.receiptItemsSum(cur) : null)
+      if (sub == null) return
+      var total = Model.receiptExpectedTotal(cur, sub, mode !== "inside")
+      _patchReceipt(id, { total: total })
+      root.txdb(["receipt-edit", id, "total", total.toFixed(2)])
+    }
+
+    // One item's description/amount, by hand. Rebuilds this receipt's
+    // items array with just that line changed and puts the whole array
+    // in the override - receiptWarnings/receiptItemsSum already compute
+    // the "items add up to X, the bill says Y" check live from r.items
+    // and r.total/subtotal, so correcting an item here re-runs that check
+    // immediately, the same instant the override takes effect, with no
+    // separate recomputation step needed.
+    function editReceiptItemField(id, lineNo, field, value) {
+      var current = receipts.find(function (r) { return r.id === id })
+      var items = ((current && current.items) || []).map(function (it) { return Object.assign({}, it) })
+      var idx = items.findIndex(function (it) { return it.line === lineNo })
+      if (idx < 0) return
+      var mode = Model.receiptTaxMode(current)
+      var trimmed = String(value || "").trim()
+      var numeric = field === "amount" || field === "rate" || field === "qty" || field === "gst_rate"
+      items[idx][field === "gst_rate" ? "gstRate" : field] = trimmed === "" ? null : (numeric ? Number(trimmed) : trimmed)
+      // 3 x 50 is 150 without typing it: qty or rate changing re-works the
+      // line's amount.
+      var worked = null
+      if ((field === "qty" || field === "rate") && items[idx].qty != null && items[idx].rate != null) {
+        // keeps the line's GST factor (a rate before GST), see Model.receiptLineFactor
+        worked = Model.receiptLineAmount(current.items[idx], items[idx].qty, items[idx].rate)
+        items[idx].amount = worked
+      }
+      _patchReceipt(id, { items: items })
+      root.txdb(["receipt-edit-item", id, String(lineNo), field, trimmed])
+      if (worked !== null) root.txdb(["receipt-edit-item", id, String(lineNo), "amount", worked.toFixed(2)])
+      // And the bill's subtotal and total follow the items.
+      // (a line's own GST % does not change the bill's figures)
+      if (numeric && field !== "gst_rate") recalcReceipt(id, mode)
+    }
+
+    function _patchReceipt(id, patch) {
+      var o = Object.assign({}, receiptOverrides)
+      o[id] = Object.assign({}, o[id], patch)
+      receiptOverrides = o
+      recomputeReceipts()
+    }
+
+    // A product added by hand. A blank amount is qty x rate, same rule as
+    // receipts.add_item, so the optimistic line matches what the database
+    // will hold once the write lands.
+    function addReceiptItem(id, description, qty, unit, rate, amount, gst) {
+      // "2 pc" typed into the quantity box: the number is the quantity, the
+      // letters the unit (unless a unit was typed in its own box).
+      var qm = /^\s*(\d*\.?\d+)\s*([^\d\s].*)?$/.exec(String(qty || ""))
+      if (qm) { qty = qm[1]; if (!String(unit || "").trim() && qm[2]) unit = qm[2].trim() }
+      var current = receipts.find(function (r) { return r.id === id })
+      var items = ((current && current.items) || []).slice()
+      var q = String(qty || "").trim() === "" ? null : Number(qty)
+      var rt = String(rate || "").trim() === "" ? null : Number(rate)
+      var amt = String(amount || "").trim() === "" ? (q !== null && rt !== null ? Math.round(q * rt * 100) / 100 : null) : Number(amount)
+      if (amt === null || isNaN(amt) || (q !== null && isNaN(q)) || (rt !== null && isNaN(rt))) return false
+      var g = String(gst || "").trim() === "" ? null : Number(gst)
+      if (g !== null && isNaN(g)) return false
+      var mode = current ? Model.receiptTaxMode(current) : "inside"
+      var line = items.reduce(function (m, it) { return Math.max(m, it.line) }, 0) + 1
+      items.push({ line: line, description: String(description || "").trim() || "(unnamed)", hsn: null,
+                   qty: q, unit: String(unit || "").trim() || null, rate: rt, amount: amt, gstRate: g })
+      _patchReceipt(id, { items: items })
+      root.txdb(["receipt-add-item", id, String(description || ""), String(qty || ""),
+                 String(unit || ""), String(rate || ""), String(amount || ""), String(gst || "")])
+      recalcReceipt(id, mode)
+      return true
+    }
+
+    function deleteReceiptItem(id, lineNo) {
+      var current = receipts.find(function (r) { return r.id === id })
+      var items = ((current && current.items) || []).filter(function (it) { return it.line !== lineNo })
+      var mode = current ? Model.receiptTaxMode(current) : "inside"
+      _patchReceipt(id, { items: items })
+      root.txdb(["receipt-delete-item", id, String(lineNo)])
+      recalcReceipt(id, mode)
+    }
+
+    function editReceiptTaxField(id, rate, field, value) {
+      var current = receipts.find(function (r) { return r.id === id })
+      var taxes = ((current && current.taxes) || []).map(function (t) { return Object.assign({}, t) })
+      var trimmed = String(value || "").trim()
+      taxes.forEach(function (t) { if (t.rate === rate) t[field] = trimmed === "" ? null : Number(trimmed) })
+      _patchReceipt(id, { taxes: taxes })
+      root.txdb(["receipt-edit-tax", id, String(rate), field, trimmed])
+    }
+
+    // Platform / delivery / service fees: extra charges on top of the
+    // subtotal. The total follows them on the spot.
+    function addReceiptFee(id, label, amount) {
+      var current = receipts.find(function (r) { return r.id === id })
+      var amt = Math.abs(Number(amount))
+      if (!current || !(amt > 0)) return false
+      var mode = Model.receiptTaxMode(current)
+      var fees = (current.fees || []).slice()
+      var line = fees.reduce(function (m, f) { return Math.max(m, f.line) }, 0) + 1
+      var name = String(label || "").trim() || "Fee"
+      fees.push({ line: line, label: name, amount: amt })
+      _patchReceipt(id, { fees: fees })
+      root.txdb(["receipt-add-fee", id, name, String(amt)])
+      _followTotal(id, mode)
+      return true
+    }
+
+    function editReceiptFee(id, line, field, value) {
+      var current = receipts.find(function (r) { return r.id === id })
+      if (!current) return
+      var mode = Model.receiptTaxMode(current)
+      var fees = (current.fees || []).map(function (f) { return Object.assign({}, f) })
+      var f = fees.find(function (x) { return x.line === line })
+      if (!f) return
+      var trimmed = String(value || "").trim()
+      if (field === "amount") {
+        var n = Math.abs(Number(trimmed))
+        if (!(n > 0)) return
+        f.amount = n
+      } else {
+        f.label = trimmed || "Fee"
+      }
+      _patchReceipt(id, { fees: fees })
+      root.txdb(["receipt-edit-fee", id, String(line), field, field === "amount" ? String(f.amount) : f.label])
+      if (field === "amount") _followTotal(id, mode)
+    }
+
+    function deleteReceiptFee(id, line) {
+      var current = receipts.find(function (r) { return r.id === id })
+      if (!current) return
+      var mode = Model.receiptTaxMode(current)
+      _patchReceipt(id, { fees: (current.fees || []).filter(function (f) { return f.line !== line }) })
+      root.txdb(["receipt-delete-fee", id, String(line)])
+      _followTotal(id, mode)
+    }
+
+    // A tax figure the bill has but the parser missed (or got none of):
+    // creates the slab when needed. `slab` is the slab rate (CGST 2.5% +
+    // SGST 2.5% is the 5 slab).
+    function addReceiptTax(id, slab, field, amount) {
+      var current = receipts.find(function (r) { return r.id === id })
+      var taxes = ((current && current.taxes) || []).map(function (t) { return Object.assign({}, t) })
+      var at = taxes.findIndex(function (t) { return t.rate === slab })
+      if (at < 0) {
+        taxes.push({ rate: slab, taxable: null, cgst: null, sgst: null, igst: null, cess: null })
+        at = taxes.length - 1
+      }
+      taxes[at][field] = amount
+      _patchReceipt(id, { taxes: taxes })
+      root.txdb(["receipt-add-tax", id, String(slab), field, String(amount)])
+    }
+
+    // Subtotal (before GST) and total follow the items, under the bill's own
+    // tax mode (receipts.recalc_totals does the same on disk).
+    function recalcReceipt(id, mode) {
+      var current = receipts.find(function (r) { return r.id === id })
+      if (!current || !(current.items || []).length) return
+      var rc = Model.receiptRecompute(current, mode)
+      _patchReceipt(id, { subtotal: rc.subtotal, total: rc.total })
+      root.txdb(["receipt-recalc", id])
+    }
+
+    // The Recalculate button: rework the whole bill from its items, then
+    // verify. A line with a qty and a rate but no amount gets qty x rate (a
+    // line that has an amount is left alone - a weighed item's printed amount
+    // is the bill's own rounding), the subtotal and total follow, and since
+    // the figures have just been reconciled the parser's stale warnings and
+    // "check this parse" flag are cleared. Whatever still does not add up
+    // (the live checks) stays on screen.
+    function verifyReceipt(id) {
+      var current = receipts.find(function (r) { return r.id === id })
+      if (!current || !(current.items || []).length) return
+      var mode = Model.receiptTaxMode(current)
+      var items = current.items.map(function (it) {
+        var o = Object.assign({}, it)
+        if (o.amount == null && o.qty != null && o.rate != null) o.amount = Math.round(o.qty * o.rate * 100) / 100
+        return o
+      })
+      var rc = Model.receiptRecompute(Object.assign({}, current, { items: items }), mode)
+      _patchReceipt(id, { items: items, subtotal: rc.subtotal, total: rc.total, warnings: [], needsReview: false })
+      root.txdb(["receipt-recalc", id, "verify"])
     }
 
     // `transactions` = the snapshot rows with optimistic tracked changes on top.
@@ -807,6 +1189,99 @@ Panel {
     }
     onLoadFailed: root.sbiFetchStatus = ({})
     onFileChanged: reload()
+  }
+
+  // Imports new bill photos and parses them. Deliberately its own Process,
+  // never routed through root.txdb(...): OCR over a handful of photos is
+  // minutes of work, and that queue runs one write at a time, so a scan
+  // would stall every other widget write (a tracked toggle, a rename)
+  // behind it for the whole run. Its own re-fetch of the snapshot on exit
+  // is what picks up whatever it filed.
+  Process {
+    id: receiptImportProc
+    // No file redirection: stdout feeds receiptImportOutput below so the
+    // scan's own progress (which photo it's on, the model's reply as it
+    // streams) shows up live instead of behind a silent "…" icon for
+    // however many minutes several photos take. The leading printf (not
+    // echo) ends with the same \0 boundary main.py's own _emit() uses, so
+    // this first line arrives as its own SplitParser "read" exactly like
+    // every line after it, instead of sitting unflushed until python's
+    // first \0 happens to come along.
+    command: ["bash", "-c",
+      "printf 'Scanning " + root.receiptsDir + " ...\\n\\0' && cd '" + root.receiptStitcherDir
+      + "' && .venv/bin/python -m src.main scan --method H-vision-llm-gemma --folder '"
+      + root.receiptsDir + "' 2>&1"]
+    // SplitParser, not StdioCollector: StdioCollector's `text` is
+    // read-only, so a second scan had no way to clear the first one's
+    // output - the box just kept whatever the previous run left in it,
+    // caught live when a stale truncated reply from a past run was still
+    // sitting there after a brand new click. `text` here is a plain
+    // property this file owns outright, reset in the click handler below
+    // before the Process even starts.
+    stdout: SplitParser {
+      id: receiptImportOutput
+      property string text: ""
+      splitMarker: "\x00"
+      onRead: function (data) { text += data }
+    }
+    onExited: function (exitCode) {
+      if (exitCode !== 0) {
+        console.warn("Receipt import exited " + exitCode + ": " + receiptImportOutput.text)
+      } else {
+        // A clean run clears its log the moment it is done; a failed one
+        // stays until closed, since that is the one worth reading.
+        receiptImportOutput.text = ""
+      }
+      root.refreshData()
+    }
+  }
+
+  // Re-reads one already-imported receipt with the LLM, for the "Reparse
+  // with AI" action. Its own Process for the same reason as the import one
+  // above: one bill's LLM call is tens of seconds, and the txdb write queue
+  // must never stall behind it.
+  Process {
+    id: receiptReparseProc
+    property string receiptId: ""
+    // No file redirection here: stdout is piped straight to
+    // receiptReparseOutput below so the UI can show the model's reply as
+    // it streams in, not just a static "Reparsing…" label for however
+    // long the call takes. stderr is folded in with it so a crash shows
+    // up in the same place rather than vanishing silently.
+    command: ["bash", "-c",
+      "printf 'Launching reparse ...\\n\\0' && cd '" + root.receiptStitcherDir
+      + "' && .venv/bin/python -m src.main reparse-one '" + receiptId
+      + "' --method H-vision-llm-gemma 2>&1"]
+    // See receiptImportOutput above for why this is SplitParser and not
+    // StdioCollector: a resettable `text` is the whole point.
+    stdout: SplitParser {
+      id: receiptReparseOutput
+      property string text: ""
+      splitMarker: "\x00"
+      onRead: function (data) { text += data }
+    }
+    onExited: function (exitCode) {
+      if (exitCode !== 0) {
+        console.warn("Receipt reparse exited " + exitCode + ": " + receiptReparseOutput.text)
+      }
+      root.refreshData()
+      root.announceReparse(receiptId, exitCode === 0)
+    }
+  }
+
+  // A sound and a desktop notification when a re-read ends - it takes tens
+  // of seconds, long enough that nobody is watching the window.
+  function announceReparse(receiptId, ok) {
+    var r = store.receipts.find(function (x) { return x.id === receiptId })
+    var name = (r && r.merchant) ? r.merchant : "the bill"
+    var sound = "/usr/share/sounds/freedesktop/stereo/" + (ok ? "complete.oga" : "dialog-error.oga")
+    Quickshell.execDetached(["bash", "-c", "pw-play '" + sound + "' >/dev/null 2>&1 || true"])
+    Quickshell.execDetached([
+      Quickshell.env("OMARCHY_PATH") + "/bin/omarchy-notification-send",
+      "--app-name", "home.transactions",
+      ok ? "Receipt re-read" : "Receipt re-read failed",
+      ok ? ("Finished reading " + name + " - check the figures.") : ("Could not re-read " + name + ".")
+    ])
   }
 
   property bool indmoneyFetchCancelled: false
@@ -1584,6 +2059,126 @@ Panel {
 
         PanelSeparator { visible: root.tab === "bank" && root.cardOverviewList.length > 0; foreground: root.foreground }
 
+        // RECEIPTS: photographed bills, stitched to the transaction that
+        // paid for them. Unmatched ones are the action queue (BILLS is what
+        // I owe, RECEIPTS is what I bought and haven't filed), so it sits
+        // between BILLS and RECENT's raw ledger. Shares its row with the
+        // import button, the way BILLS shares with its totals.
+        Item {
+          visible: root.tab === "bank" && root.receiptsSectionShown
+          width: parent.width
+          height: Math.max(receiptsHeader.implicitHeight, receiptsTools.implicitHeight)
+
+          // Fold / unfold the whole list: the chevron, or the header text.
+          PanelActionButton {
+            id: receiptsFold
+            size: Style.space(22)
+            anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.rowPaddingX
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.receiptsCollapsed ? "▸" : "▾"
+            tooltipText: root.receiptsCollapsed ? "Show the receipts" : "Fold the receipts away"
+            foreground: root.foreground
+            focusable: true
+            bordered: true
+            Keys.onDownPressed: root.focusNext(receiptsFold, true)
+            Keys.onUpPressed: root.focusNext(receiptsFold, false)
+            onClicked: root.receiptsCollapsed = !root.receiptsCollapsed
+          }
+
+          PanelSectionHeader {
+            id: receiptsHeader
+            anchors.left: receiptsFold.right
+            anchors.leftMargin: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.receiptsToLink > 0
+              ? ("RECEIPTS  ·  " + root.receiptsToLink + " TO LINK" + (root.showFiled ? "  ·  " + root.receiptsFiledCount + " LINKED" : ""))
+              : ("LINKED RECEIPTS  ·  " + root.receiptsFiledCount)
+            foreground: root.foreground
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.receiptsCollapsed = !root.receiptsCollapsed
+            }
+          }
+
+          Row {
+            id: receiptsTools
+            anchors.right: parent.right
+            anchors.rightMargin: Style.spacing.rowPaddingX
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(6)
+
+            PanelActionButton {
+              id: filedToggleBtn
+              size: Style.space(22)
+              visible: root.receiptsFiledCount > 0
+              iconText: "󰎞"
+              tooltipText: root.showFiled ? "Hide the linked bills" : "Show the linked bills (" + root.receiptsFiledCount + ")"
+              foreground: root.showFiled ? Color.accent : root.foreground
+              focusable: true
+              bordered: true
+              Keys.onDownPressed: root.focusNext(filedToggleBtn, true)
+              Keys.onUpPressed: root.focusNext(filedToggleBtn, false)
+              onClicked: root.showFiled = !root.showFiled
+            }
+
+            PanelActionButton {
+              id: importReceiptsBtn
+              size: Style.space(22)
+              iconText: receiptImportProc.running ? "…" : "+"
+              tooltipText: "Import new photos from " + root.receiptsDir
+              foreground: root.foreground
+              focusable: true
+              bordered: true
+              enabled: !receiptImportProc.running
+              Keys.onDownPressed: root.focusNext(importReceiptsBtn, true)
+              Keys.onUpPressed: root.focusNext(importReceiptsBtn, false)
+              onClicked: { receiptImportOutput.text = ""; receiptImportProc.running = true }
+            }
+          }
+        }
+
+        // The scan's own progress, live: which photo it's on and the
+        // model's reply as it streams - selectable/copyable, same
+        // reasoning as the per-receipt reparse output below.
+        StreamBox {
+          visible: root.tab === "bank" && (receiptImportProc.running || receiptImportOutput.text.length > 0)
+          width: parent.width - 2 * Style.spacing.rowPaddingX
+          x: Style.spacing.rowPaddingX
+          boxHeight: Style.space(150)
+          text: receiptImportOutput.text
+          closable: !receiptImportProc.running
+          onClosed: receiptImportOutput.text = ""
+        }
+
+        Column {
+          id: receiptsList
+          visible: root.tab === "bank" && root.receiptsSectionShown && (!root.receiptsCollapsed || height > 0)
+          width: parent.width
+          spacing: Style.spacing.xxs
+          clip: true
+          height: root.receiptsCollapsed ? 0 : implicitHeight
+          opacity: root.receiptsCollapsed ? 0 : 1
+          Behavior on height { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+          Behavior on opacity { NumberAnimation { duration: 150 } }
+
+          Repeater {
+            model: root.visibleReceipts
+            delegate: ReceiptRow {
+              id: receiptRowDelegate
+              required property var modelData
+              width: parent.width
+              receipt: receiptRowDelegate.modelData
+              Keys.onUpPressed: root.focusNext(receiptRowDelegate, false)
+              Keys.onDownPressed: root.focusNext(receiptRowDelegate, true)
+            }
+          }
+        }
+
+        PanelSeparator { visible: root.tab === "bank" && root.receiptsSectionShown; foreground: root.foreground }
+
         // RECENT's own header shares its row with the Filter popover +
         // search-toggle button (right-aligned) instead of sitting on a
         // separate row above it — saves a full row of vertical space,
@@ -1607,6 +2202,25 @@ Panel {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(8)
+
+            // The linked bills live out of sight; this brings them up (the
+            // RECEIPTS section appears with just those, or alongside the
+            // ones still to link).
+            PanelActionButton {
+              id: filedToggleRecentBtn
+              size: Style.space(28)
+              fontSize: Style.font.bodySmall
+              visible: root.receiptsFiledCount > 0
+              iconText: "󰎞"
+              tooltipText: root.showFiled ? "Hide the linked bills" : "Linked bills (" + root.receiptsFiledCount + ")"
+              foreground: root.showFiled ? Color.accent : root.foreground
+              hoverColor: Color.accent
+              bordered: true
+              focusable: true
+              Keys.onDownPressed: root.focusNext(filedToggleRecentBtn, true)
+              Keys.onUpPressed: root.focusNext(filedToggleRecentBtn, false)
+              onClicked: root.showFiled = !root.showFiled
+            }
 
             FilterMenuButton { id: filterMenuButton }
 
@@ -1814,6 +2428,1469 @@ Panel {
         }
       }
     }
+
+    ScrollWheelArea { anchors.fill: flick; target: flick }
+
+    // The receipt review window: a true full-screen overlay — its own
+    // layer-shell surface, not this popup's small ~340px card — with the
+    // photo large on the left and everything the parser found plus the
+    // verify actions on the right. The card this widget normally draws is
+    // nowhere near wide enough to show a bill's fine print at any size QML
+    // can fit into it; this is the same widget's own styling, just given
+    // the whole screen to work with instead of a corner of it.
+  }
+  PanelWindow {
+    id: receiptFullScreen
+    visible: root.receiptDetailTarget !== null
+    anchors { top: true; bottom: true; left: true; right: true }
+    color: "transparent"
+    exclusionMode: ExclusionMode.Ignore
+    WlrLayershell.namespace: "omarchy-transactions-receipt"
+    WlrLayershell.layer: WlrLayer.Overlay
+    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+
+    property bool pickingLink: false
+    // One switch for every editable field at once, not a pencil per
+    // field: turning it on highlights every place a value can be typed,
+    // off reverts them all to plain text.
+    // Only the add/remove-products controls hang off this; every value on the
+    // bill edits on its own when clicked.
+    property bool editingFields: false
+    // What the "add tax" row adds: "split" (CGST + SGST) or "igst".
+    property string taxKind: "split"
+    // The photo's info panel (taken, camera, size, where it came from).
+    property bool showInfo: false
+    // The bill card folded down to its title and total.
+    property bool billCollapsed: false
+    // The whole right side (toolbar + bill) folded to a thin strip, so the
+    // photo or the transaction list can use the full width.
+    property bool detailsCollapsed: false
+    // The remove-bill button asks twice: the first click arms it for a few
+    // seconds, the second one removes.
+    property bool confirmRemove: false
+    Timer { id: confirmRemoveTimer; interval: 3500; onTriggered: receiptFullScreen.confirmRemove = false }
+    // Set the moment a transaction is picked, so the bill flashes once it is linked.
+    property bool justLinked: false
+    // The GST % column shows when any line prints one, and while editing
+    // products (so one can be added to a line that has none).
+    readonly property bool showGst: receiptFullScreen.editingFields
+      || (receiptFullScreen.r.items || []).some(function (it) { return it.gstRate != null })
+    // Zoom and an extra rotation on top of whatever the parser already
+    // detected — both purely for viewing, reset whenever a different
+    // receipt opens, below. Zoom is a scale factor: at 1.0 the photo just
+    // fits the pane, same as before this existed.
+    property real photoZoom: 1.0
+    property int extraRotation: 0
+    // Looked up by id from the live receiptList every time either
+    // changes, rather than a snapshot captured at open time — so a
+    // reparse (or any other write) that lands while this window is open
+    // shows up here as soon as refreshData() rebuilds receiptList,
+    // instead of the figures from whenever the window was opened.
+    readonly property var r: {
+      var id = root.receiptDetailTarget
+      if (id === null) return ({})
+      var list = root.receiptList
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id === id) return list[i]
+      }
+      return ({})
+    }
+    onVisibleChanged: if (!receiptFullScreen.visible) {
+      receiptFullScreen.pickingLink = false
+      receiptFullScreen.editingFields = false
+      receiptFullScreen.showInfo = false
+      receiptFullScreen.billCollapsed = false
+      receiptFullScreen.detailsCollapsed = false
+      receiptFullScreen.confirmRemove = false
+    }
+    // A different receipt opened (including via Prev/Next below) — its
+    // photo starts fresh, not zoomed or rotated the way the last one
+    // ended up.
+    readonly property var linkedTxn: {
+      var id = receiptFullScreen.r.transactionId
+      if (!id) return null
+      var list = store.transactions
+      for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i]
+      return null
+    }
+    // The zoom and the extra turn are reset only when a DIFFERENT bill is
+    // shown. `r` itself is rebuilt on every refresh of the data (an edit, a
+    // link, a re-read finishing), which used to throw the zoom away mid-read.
+    // Is the open bill one the list is showing (not a linked one hidden from it)?
+    readonly property bool inVisibleList: root.visibleReceipts.some(function (x) { return x.id === receiptFullScreen.r.id })
+    readonly property string billId: receiptFullScreen.r.id || ""
+    onBillIdChanged: { receiptFullScreen.photoZoom = 1.0; receiptFullScreen.extraRotation = 0 }
+
+    // Steps to the previous/next receipt in the same order the RECEIPTS
+    // section lists them, so you can work through every bill needing a
+    // look without closing this window in between. Wraps around at
+    // either end rather than stopping, since "next" from the last one
+    // round-tripping to the first is more useful than a dead click.
+    //
+    // Only through the bills the list is showing: the ones still to link,
+    // and the linked ones only while "show linked" is on. A bill that was
+    // just linked (and so is hidden) is left behind by the first step, which
+    // lands on the first (or last) of the visible ones.
+    function stepReceipt(delta) {
+      var list = root.visibleReceipts
+      if (!list || list.length === 0) return
+      var id = receiptFullScreen.r.id
+      var at = -1
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id === id) { at = i; break }
+      }
+      if (at < 0) root.receiptDetailTarget = (delta >= 0 ? list[0] : list[list.length - 1]).id
+      else root.receiptDetailTarget = list[(at + delta + list.length) % list.length].id
+    }
+
+    // Scrim: click it to close, same convention as every other
+    // full-screen overlay in this shell (SpeedTestOverlay's own).
+    Rectangle {
+      anchors.fill: parent
+      color: Qt.rgba(0, 0, 0, 0.78)
+      MouseArea { anchors.fill: parent; onClicked: root.closeReceiptDetail() }
+    }
+
+    Item {
+      id: fsCard
+      anchors.centerIn: parent
+      width: Math.min(parent.width - Style.space(80), Style.space(960))
+      height: Math.min(parent.height - Style.space(80), Style.space(680))
+      focus: true
+      Keys.onEscapePressed: function (event) { root.closeReceiptDetail(); event.accepted = true }
+      Keys.onLeftPressed: receiptFullScreen.stepReceipt(-1)
+      Keys.onRightPressed: receiptFullScreen.stepReceipt(1)
+
+      // Swallows clicks on the card itself so they don't fall through to
+      // the scrim's close-on-click behind it.
+      MouseArea { anchors.fill: parent; onClicked: {} }
+
+      BorderSurface {
+        anchors.fill: parent
+        color: Color.popups.background
+        borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+        radius: Style.cornerRadius
+      }
+
+      // Prev / position / Next, left of Close — paging through every
+      // receipt in the list without leaving this window.
+      Row {
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.margins: Style.space(10)
+        spacing: Style.space(6)
+
+        PanelActionButton {
+          size: Style.space(28)
+          iconText: "<"
+          tooltipText: "Previous bill (Left arrow)"
+          foreground: root.foreground
+          focusable: true
+          enabled: root.visibleReceipts.length > 1 || (root.visibleReceipts.length === 1 && !receiptFullScreen.inVisibleList)
+          onClicked: receiptFullScreen.stepReceipt(-1)
+        }
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: {
+            var list = root.visibleReceipts
+            var at = -1
+            for (var i = 0; i < list.length; i++) { if (list[i].id === receiptFullScreen.r.id) { at = i; break } }
+            return at < 0 ? "" : (at + 1) + " / " + list.length
+          }
+          color: Qt.darker(root.foreground, 1.4)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        PanelActionButton {
+          size: Style.space(28)
+          iconText: ">"
+          tooltipText: "Next bill (Right arrow)"
+          foreground: root.foreground
+          focusable: true
+          enabled: root.visibleReceipts.length > 1 || (root.visibleReceipts.length === 1 && !receiptFullScreen.inVisibleList)
+          onClicked: receiptFullScreen.stepReceipt(1)
+        }
+      }
+
+      PanelActionButton {
+        id: fsCloseBtn
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.margins: Style.space(10)
+        size: Style.space(28)
+        iconText: "x"
+        tooltipText: "Close (Esc)"
+        foreground: root.foreground
+        focusable: true
+        onClicked: root.closeReceiptDetail()
+      }
+
+      Row {
+        anchors.fill: parent
+        anchors.margins: Style.space(20)
+        anchors.topMargin: Style.space(48)
+        spacing: Style.space(20)
+
+        // LEFT: the photo, as large as the window allows — zoomable
+        // (wheel, or the +/- buttons) and rotatable on top of whatever
+        // the parser already detected, for the shots its own guess got
+        // wrong or that are just easier to read turned a little further.
+        Rectangle {
+          id: fsPhotoPane
+          width: receiptFullScreen.detailsCollapsed ? parent.width - Style.space(44) - parent.spacing : parent.width * 0.56
+          height: parent.height
+          radius: Style.cornerRadius
+          color: Qt.darker(root.foreground, 2.4)
+          clip: true
+          visible: !receiptFullScreen.pickingLink
+            && !!(receiptFullScreen.r.storedPath || receiptFullScreen.r.thumbPath)
+
+          Flickable {
+            id: photoFlick
+            anchors.fill: parent
+            anchors.margins: Style.space(6)
+            anchors.bottomMargin: Style.space(40)
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            contentWidth: photoImg.width
+            contentHeight: photoImg.height
+
+            Image {
+              id: photoImg
+              // Grows the Flickable's real content size with zoom (rather
+              // than a visual-only `scale`, which panning math would then
+              // have to second-guess) — PreserveAspectFit still fits the
+              // photo's own aspect ratio within whatever box this is.
+              width: photoFlick.width * receiptFullScreen.photoZoom
+              height: photoFlick.height * receiptFullScreen.photoZoom
+              source: receiptFullScreen.r.storedPath
+                ? ("file://" + root.widgetDir + "/data/" + receiptFullScreen.r.storedPath)
+                : (receiptFullScreen.r.thumbPath
+                    ? ("file://" + root.widgetDir + "/data/" + receiptFullScreen.r.thumbPath) : "")
+              rotation: ((receiptFullScreen.r.rotation || 0) + receiptFullScreen.extraRotation + 360) % 360
+              fillMode: Image.PreserveAspectFit
+              asynchronous: true
+              cache: false
+              sourceSize.height: Style.spaceReal(1400)
+            }
+          }
+
+          // A transparent MouseArea stacked on top of the Flickable (it is
+          // declared after it, so it is the topmost item here and is hit
+          // first) just to claim the wheel: a WheelHandler placed either
+          // inside or as an ancestor of the Flickable never actually saw
+          // the event, since Flickable's own built-in wheel-scroll claims
+          // it first either way — this is the one placement that wins.
+          // acceptedButtons: NoButton means it never intercepts the press
+          // itself, so dragging to pan once zoomed in still reaches the
+          // Flickable underneath untouched.
+          MouseArea {
+            anchors.fill: photoFlick
+            acceptedButtons: Qt.NoButton
+            onWheel: function (event) {
+              // A touchpad reports smooth scrolling via pixelDelta, often
+              // with angleDelta left at zero — reading angleDelta alone is
+              // why this did nothing at all on a trackpad.
+              var delta = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y
+              if (delta !== 0) {
+                var factor = delta > 0 ? 1.2 : (1 / 1.2)
+                receiptFullScreen.photoZoom = Math.max(1.0, Math.min(5.0, receiptFullScreen.photoZoom * factor))
+              }
+              event.accepted = true
+            }
+          }
+
+          // Zoom / rotate strip, bottom of the photo pane.
+          Row {
+            anchors.bottom: parent.bottom
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottomMargin: Style.space(4)
+            spacing: Style.space(4)
+
+            PanelActionButton {
+              size: Style.space(24)
+              iconText: "−"
+              tooltipText: "Zoom out"
+              foreground: "#ffffff"
+              focusable: false
+              enabled: receiptFullScreen.photoZoom > 1.0
+              onClicked: receiptFullScreen.photoZoom = Math.max(1.0, receiptFullScreen.photoZoom / 1.3)
+            }
+            Rectangle {
+              width: zoomLabel.implicitWidth + Style.space(10)
+              height: Style.space(24)
+              radius: Style.cornerRadius
+              color: Qt.rgba(0, 0, 0, 0.4)
+              Text {
+                id: zoomLabel
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: Math.round(receiptFullScreen.photoZoom * 100) + "%"
+                color: "#ffffff"
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+            PanelActionButton {
+              size: Style.space(24)
+              iconText: "+"
+              tooltipText: "Zoom in"
+              foreground: "#ffffff"
+              focusable: false
+              enabled: receiptFullScreen.photoZoom < 5.0
+              onClicked: receiptFullScreen.photoZoom = Math.min(5.0, receiptFullScreen.photoZoom * 1.3)
+            }
+            PanelActionButton {
+              size: Style.space(24)
+              iconText: "⟳"
+              tooltipText: "Rotate 90°"
+              foreground: "#ffffff"
+              focusable: false
+              onClicked: receiptFullScreen.extraRotation = (receiptFullScreen.extraRotation + 90) % 360
+            }
+            PanelActionButton {
+              visible: receiptFullScreen.photoZoom > 1.0
+              size: Style.space(24)
+              iconText: "⊙"
+              tooltipText: "Reset zoom"
+              foreground: "#ffffff"
+              focusable: false
+              onClicked: receiptFullScreen.photoZoom = 1.0
+            }
+          }
+        }
+
+        // LEFT, while linking: the transactions to choose from replace the
+        // photo - every one on the bill's date first, then the nearby days,
+        // each drawn like a card in the main list. Click one to file the
+        // bill against it.
+        Rectangle {
+          id: fsLinkPane
+          width: receiptFullScreen.detailsCollapsed ? parent.width - Style.space(44) - parent.spacing : parent.width * 0.56
+          height: parent.height
+          radius: Style.cornerRadius
+          color: Util.alpha(root.foreground, 0.06)
+          clip: true
+          visible: receiptFullScreen.pickingLink
+
+          // Every transaction on the bill's date, none left out: one already
+          // filed against another bill is shown too (dimmed, not clickable)
+          // rather than silently missing. The neighbouring days only appear
+          // when asked for.
+          property bool showNearby: false
+          onVisibleChanged: if (!visible) showNearby = false
+          readonly property var cands: Model.receiptCandidates(receiptFullScreen.r, store.transactions,
+            { untrackedOnly: false, limit: 12, nearDays: fsLinkPane.showNearby ? 3 : 0 })
+          readonly property var sameDay: cands.filter(function (c) { return c.sameDay })
+          readonly property var nearby: cands.filter(function (c) { return !c.sameDay })
+
+          Flickable {
+            id: linkFlick
+            anchors.fill: parent
+            anchors.margins: Style.space(10)
+            clip: true
+            contentWidth: width
+            contentHeight: linkCol.implicitHeight
+            boundsBehavior: Flickable.StopAtBounds
+
+            Column {
+              id: linkCol
+              width: parent.width
+              spacing: Style.space(2)
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: "Pick the transaction this bill paid for"
+                color: root.foreground
+                font.family: Style.font.family
+                font.bold: true
+                font.pixelSize: Style.font.subtitle
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                topPadding: Style.space(8)
+                width: parent.width
+                textFormat: Text.PlainText
+                text: receiptFullScreen.r.date
+                  ? "ON " + Model.formatReceiptDate(receiptFullScreen.r.date) : "BILL HAS NO DATE"
+                color: Qt.darker(root.foreground, 1.4)
+                font.family: Style.font.family
+                font.bold: true
+                font.pixelSize: Style.font.caption
+              }
+
+              Repeater {
+                model: fsLinkPane.sameDay
+                delegate: TxnPickRow {
+                  required property var modelData
+                  width: linkCol.width
+                  txn: modelData.txn
+                  readonly property bool taken: !!root.linkedTransactionIds[modelData.txn.id]
+                  highlight: modelData.match && !taken
+                  clickable: !taken
+                  dimmed: taken
+                  reasons: taken ? "already linked to another bill"
+                    : (modelData.match ? "✓ same amount & date"
+                      : (modelData.score > 0 ? modelData.score + "% match" : ""))
+                  onPicked: {
+                    receiptFullScreen.justLinked = true
+                    store.linkReceipt(receiptFullScreen.r.id, modelData.txn.id)
+                    receiptFullScreen.pickingLink = false
+                  }
+                }
+              }
+
+              Text {
+                visible: fsLinkPane.sameDay.length === 0
+                width: parent.width
+                textFormat: Text.PlainText
+                text: "No transactions on this date."
+                color: Qt.darker(root.foreground, 1.5)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+
+              Text {
+                visible: fsLinkPane.nearby.length > 0
+                topPadding: Style.space(10)
+                width: parent.width
+                textFormat: Text.PlainText
+                text: "NEARBY DAYS"
+                color: Qt.darker(root.foreground, 1.4)
+                font.family: Style.font.family
+                font.bold: true
+                font.pixelSize: Style.font.caption
+              }
+
+              Repeater {
+                model: fsLinkPane.nearby
+                delegate: TxnPickRow {
+                  required property var modelData
+                  width: linkCol.width
+                  txn: modelData.txn
+                  readonly property bool taken: !!root.linkedTransactionIds[modelData.txn.id]
+                  clickable: !taken
+                  dimmed: taken
+                  reasons: taken ? "already linked to another bill"
+                    : ((modelData.exact ? "same amount · " : "")
+                      + modelData.reasons.filter(function (x) { return /apart/.test(x) }).join(""))
+                  onPicked: {
+                    receiptFullScreen.justLinked = true
+                    store.linkReceipt(receiptFullScreen.r.id, modelData.txn.id)
+                    receiptFullScreen.pickingLink = false
+                  }
+                }
+              }
+
+              Item {
+                width: parent.width
+                height: Style.space(40)
+                TextAction {
+                  anchors.verticalCenter: parent.verticalCenter
+                  label: fsLinkPane.showNearby ? "Hide nearby days" : "Show nearby days (±3)"
+                  onTriggered: fsLinkPane.showNearby = !fsLinkPane.showNearby
+                }
+              }
+            }
+          }
+
+          ScrollWheelArea { anchors.fill: linkFlick; target: linkFlick; speed: 2.5 }
+        }
+
+        // RIGHT: everything the parser found, and the verify actions —
+        // scrollable, since a long item list can outgrow even this.
+        // A plain Item wrapper, not anchors directly on the Flickable:
+        // Row forbids anchored children outright, the same reason
+        // fsPhotoPane above is a plain-sized Rectangle rather than
+        // something anchored - the ScrollWheelArea sibling below needs
+        // this same common parent to anchor.fill against.
+        Item {
+          width: (fsPhotoPane.visible || fsLinkPane.visible) ? parent.width - fsPhotoPane.width - parent.spacing : parent.width
+          readonly property bool folded: receiptFullScreen.detailsCollapsed && (fsPhotoPane.visible || fsLinkPane.visible)
+          height: parent.height
+
+          // Fixed-position icon toolbar - only what is worth a button, each
+          // always in the same slot, the name on hover. (Editing a value
+          // needs no button: click it. Clearing the check flag is part of
+          // Recalculate.)
+          // The fold handle: pushes the whole bill side away to the right
+          // (">") and brings it back ("<").
+          PanelActionButton {
+            id: fsFoldHandle
+            anchors.top: parent.top
+            anchors.left: parent.left
+            visible: fsPhotoPane.visible || fsLinkPane.visible
+            iconText: receiptFullScreen.detailsCollapsed ? "‹" : "›"
+            tooltipText: receiptFullScreen.detailsCollapsed ? "Show the bill" : "Hide the bill — more room"
+            foreground: receiptFullScreen.detailsCollapsed ? Color.accent : root.foreground
+            bordered: true
+            focusable: true
+            onClicked: receiptFullScreen.detailsCollapsed = !receiptFullScreen.detailsCollapsed
+          }
+
+          Row {
+            id: fsToolbar
+            visible: !parent.folded
+            anchors.top: parent.top
+            anchors.left: fsFoldHandle.visible ? fsFoldHandle.right : parent.left
+            anchors.leftMargin: fsFoldHandle.visible ? Style.space(6) : 0
+            spacing: Style.space(6)
+
+            PanelActionButton {
+              iconText: receiptFullScreen.editingFields ? "󰄬" : "󰏫"
+              tooltipText: receiptFullScreen.editingFields ? "Done adding / removing products" : "Add or remove products"
+              foreground: receiptFullScreen.editingFields ? Color.accent : root.foreground
+              bordered: true
+              focusable: true
+              onClicked: receiptFullScreen.editingFields = !receiptFullScreen.editingFields
+            }
+            PanelActionButton {
+              iconText: "󰃬"
+              tooltipText: "Recalculate and verify"
+              foreground: root.foreground
+              bordered: true
+              focusable: true
+              enabled: Model.receiptItemCount(receiptFullScreen.r) > 0
+              onClicked: store.verifyReceipt(receiptFullScreen.r.id)
+            }
+            // One slot for both directions: link when nothing is filed,
+            // unlink when it is (or parked).
+            PanelActionButton {
+              readonly property bool filed: receiptFullScreen.r.state === "linked"
+                || receiptFullScreen.r.state === "cash" || receiptFullScreen.r.state === "ignored"
+              iconText: filed ? "󰌸" : "󰌷"
+              tooltipText: filed ? "Unlink" : (receiptFullScreen.pickingLink ? "Cancel linking" : "Link to a transaction")
+              foreground: receiptFullScreen.pickingLink ? Color.accent : root.foreground
+              bordered: true
+              focusable: true
+              onClicked: {
+                if (filed) store.unlinkReceipt(receiptFullScreen.r.id)
+                else receiptFullScreen.pickingLink = !receiptFullScreen.pickingLink
+              }
+            }
+            PanelActionButton {
+              iconText: "󰄔"
+              tooltipText: "Paid in cash"
+              foreground: root.foreground
+              bordered: true
+              focusable: true
+              enabled: receiptFullScreen.r.state === "unmatched"
+              onClicked: { store.parkReceipt(receiptFullScreen.r.id, "cash"); receiptFullScreen.pickingLink = false }
+            }
+            PanelActionButton {
+              iconText: "󰜺"
+              tooltipText: "Not a bill"
+              foreground: root.foreground
+              bordered: true
+              focusable: true
+              enabled: receiptFullScreen.r.state === "unmatched"
+              onClicked: { store.parkReceipt(receiptFullScreen.r.id, "ignored"); receiptFullScreen.pickingLink = false }
+            }
+            PanelActionButton {
+              iconText: "󰙴"
+              tooltipText: (receiptReparseProc.running && receiptReparseProc.receiptId === receiptFullScreen.r.id)
+                ? "Re-reading…" : "Re-read with AI (replaces all items)"
+              foreground: root.foreground
+              bordered: true
+              focusable: true
+              enabled: !receiptReparseProc.running
+              onClicked: {
+                receiptReparseOutput.text = ""
+                receiptReparseProc.receiptId = receiptFullScreen.r.id
+                receiptReparseProc.running = true
+              }
+            }
+            PanelActionButton {
+              iconText: "󰋽"
+              tooltipText: receiptFullScreen.showInfo ? "Hide photo info" : "Photo info — taken, camera, size"
+              foreground: receiptFullScreen.showInfo ? Color.accent : root.foreground
+              bordered: true
+              focusable: true
+              onClicked: receiptFullScreen.showInfo = !receiptFullScreen.showInfo
+            }
+            // Removes the whole bill - values, photo, filing. Asks twice.
+            PanelActionButton {
+              iconText: "󰆴"
+              tooltipText: receiptFullScreen.confirmRemove
+                ? "Click again to remove this bill for good"
+                : "Remove this bill (values and photo)"
+              foreground: receiptFullScreen.confirmRemove ? root.debitColor : root.foreground
+              hoverColor: root.debitColor
+              bordered: true
+              focusable: true
+              onClicked: {
+                if (!receiptFullScreen.confirmRemove) {
+                  receiptFullScreen.confirmRemove = true
+                  confirmRemoveTimer.restart()
+                } else {
+                  confirmRemoveTimer.stop()
+                  receiptFullScreen.confirmRemove = false
+                  store.removeReceipt(receiptFullScreen.r.id)
+                }
+              }
+            }
+          }
+
+          Flickable {
+            id: fsDetailsFlick
+            visible: !parent.folded
+            anchors.top: fsToolbar.bottom
+            anchors.topMargin: Style.space(8)
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: fsOutputBox.visible ? fsOutputBox.top : parent.bottom
+            anchors.bottomMargin: fsOutputBox.visible ? Style.space(8) : 0
+            clip: true
+            contentWidth: width
+            contentHeight: fsColumn.implicitHeight
+            boundsBehavior: Flickable.StopAtBounds
+
+          Column {
+            id: fsColumn
+            width: parent.width
+            spacing: Style.space(8)
+
+            // Linked: the transaction this bill paid for sits on top (drawn like
+            // its card in the main list), and a line runs down from it to the
+            // bill below, drawn in when the bill is linked, with a LINKED badge
+            // on it.
+            Item {
+              id: linkBridge
+              readonly property bool linked: receiptFullScreen.r.state === "linked"
+                && !receiptFullScreen.pickingLink && !!receiptFullScreen.linkedTxn
+              property real prog: 0
+              visible: linked
+              width: parent.width
+              height: linked ? bridgeCol.implicitHeight : 0
+              onLinkedChanged: if (linked) { prog = 0; bridgeAnim.restart() }
+              Component.onCompleted: if (linked) prog = 1
+
+              NumberAnimation { id: bridgeAnim; target: linkBridge; property: "prog"; from: 0; to: 1
+                duration: 700; easing.type: Easing.OutCubic }
+
+              Column {
+                id: bridgeCol
+                width: parent.width
+
+                Repeater {
+                  model: linkBridge.linked ? [receiptFullScreen.linkedTxn] : []
+                  delegate: TxnPickRow {
+                    required property var modelData
+                    width: bridgeCol.width
+                    txn: modelData
+                    highlight: true
+                    clickable: false
+                    reasons: "linked to this bill"
+                    opacity: Math.max(0, linkBridge.prog / 0.6)
+                    transform: Translate { y: (Math.min(1, linkBridge.prog) - 1) * Style.space(14) }
+                  }
+                }
+
+                // What became of the photo: compressed and kept, never deleted.
+                Text {
+                  width: parent.width
+                  topPadding: Style.space(4)
+                  textFormat: Text.PlainText
+                  horizontalAlignment: Text.AlignHCenter
+                  text: Model.receiptPhotoNote(receiptFullScreen.r)
+                  visible: text !== ""
+                  color: Qt.darker(root.foreground, 1.4)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+
+                Item {
+                  width: parent.width
+                  height: Style.space(40)
+
+                  Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: 3
+                    radius: 1
+                    color: root.creditColor
+                    height: parent.height * Math.min(1, Math.max(0, (linkBridge.prog - 0.3) * 1.5))
+                  }
+                  Rectangle {
+                    anchors.centerIn: parent
+                    width: bridgeBadge.implicitWidth + Style.space(18)
+                    height: Style.space(24)
+                    radius: height / 2
+                    color: Qt.darker(root.creditColor, 3.2)
+                    border.width: 1
+                    border.color: root.creditColor
+                    scale: linkBridge.prog > 0.55 ? 1.0 : 0.0
+                    Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack } }
+                    Text {
+                      id: bridgeBadge
+                      anchors.centerIn: parent
+                      textFormat: Text.PlainText
+                      text: "󰌷  LINKED"
+                      color: root.creditColor
+                      font.family: Style.font.family
+                      font.bold: true
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+                }
+              }
+            }
+
+            // The bill, laid out as the bill itself reads: wrapped merchant,
+            // ==== / ---- rules, Date/Time, an ITEM QTY RATE AMOUNT table,
+            // signed Bill Discount / Round Off, the tax split, item count,
+            // GRAND TOTAL last. Monospace throughout so the money columns
+            // line up, the one thing a printed bill always gets right.
+            // Click any value to correct just that one.
+            Rectangle {
+              id: paper
+              width: parent.width
+              implicitHeight: paperCol.implicitHeight + Style.space(24)
+              height: implicitHeight
+              radius: Style.cornerRadius
+              color: Util.alpha(root.foreground, 0.05)
+              border.width: 1
+              border.color: Util.alpha(root.foreground, 0.12)
+
+              // A one-off green flash round the bill when it is linked.
+              readonly property bool filed: receiptFullScreen.r.state === "linked"
+              onFiledChanged: if (filed && receiptFullScreen.justLinked) {
+                receiptFullScreen.justLinked = false
+                flashAnim.restart()
+              }
+              Rectangle {
+                id: foldButton
+                z: 3
+                x: parent.width - width - Style.space(8)
+                y: Style.space(8)
+                width: Style.space(24)
+                height: width
+                radius: width / 2
+                color: foldMouse.containsMouse ? Util.alpha(root.foreground, 0.16) : Util.alpha(root.foreground, 0.08)
+                Text {
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: "▾"
+                  color: root.foreground
+                  font.pixelSize: Style.font.body
+                  rotation: receiptFullScreen.billCollapsed ? -90 : 0
+                  Behavior on rotation { NumberAnimation { duration: 200 } }
+                }
+                MouseArea {
+                  id: foldMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: receiptFullScreen.billCollapsed = !receiptFullScreen.billCollapsed
+                }
+                ToolTip.visible: foldMouse.containsMouse
+                ToolTip.text: receiptFullScreen.billCollapsed ? "Show the whole bill" : "Fold the bill"
+                ToolTip.delay: 400
+              }
+
+              Rectangle {
+                id: linkFlash
+                anchors.fill: parent
+                radius: parent.radius
+                color: "transparent"
+                border.width: 3
+                border.color: root.creditColor
+                opacity: 0
+                z: 2
+              }
+              NumberAnimation { id: flashAnim; target: linkFlash; property: "opacity"
+                from: 1; to: 0; duration: 1200; easing.type: Easing.OutQuad }
+
+              Column {
+                id: paperCol
+                x: Style.space(12)
+                y: Style.space(12)
+                width: parent.width - Style.space(24)
+                spacing: Style.space(3)
+
+                // Click the name, date or time to correct just that one - it
+                // becomes a box right where it stands (these are fixed
+                // fields, not rows that a refresh of the bill can rebuild
+                // under your cursor).
+                InlineEdit {
+                  width: parent.width
+                  fieldName: "merchant"
+                  display: Model.receiptTitle(receiptFullScreen.r).toUpperCase()
+                  initial: receiptFullScreen.r.merchant || ""
+                  hAlign: Text.AlignHCenter
+                  bold: true
+                  pixelSize: Style.font.body
+                  textColor: root.foreground
+                  placeholder: "Shop name"
+                }
+
+                // Folded: one line - date, item count, total - instead of the
+                // whole bill. Click it, or the chevron, to open again.
+                Text {
+                  visible: receiptFullScreen.billCollapsed
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  horizontalAlignment: Text.AlignHCenter
+                  text: [
+                    receiptFullScreen.r.date ? Model.formatReceiptDate(receiptFullScreen.r.date) : "",
+                    Model.receiptItemCount(receiptFullScreen.r) + (Model.receiptItemCount(receiptFullScreen.r) === 1 ? " item" : " items"),
+                    receiptFullScreen.r.total != null
+                      ? Model.currencySymbol(receiptFullScreen.r.currency) + receiptFullScreen.r.total.toFixed(2) : "amount unknown",
+                  ].filter(function (x) { return x !== "" }).join("   ·   ")
+                  color: Model.receiptIsBalanced(receiptFullScreen.r) ? root.creditColor : root.debitColor
+                  font.family: "monospace"
+                  font.bold: true
+                  font.pixelSize: Style.font.caption
+                  MouseArea {
+                    anchors.fill: parent
+                    anchors.margins: -Style.space(4)
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: receiptFullScreen.billCollapsed = false
+                  }
+                }
+
+                Item {
+                  id: paperBody
+                  width: parent.width
+                  height: receiptFullScreen.billCollapsed ? 0 : paperRest.implicitHeight
+                  clip: true
+                  opacity: receiptFullScreen.billCollapsed ? 0 : 1
+                  Behavior on height { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+                  Behavior on opacity { NumberAnimation { duration: 160 } }
+
+                  Column {
+                    id: paperRest
+                    width: parent.width
+                    spacing: Style.space(3)
+
+                FsRule { doubled: true }
+
+                Item {
+                  width: parent.width
+                  height: dateTimeRow.implicitHeight
+                  Row {
+                    id: dateTimeRow
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    spacing: Style.space(24)
+                    Row {
+                      spacing: Style.space(4)
+                      Text {
+                        textFormat: Text.PlainText
+                        text: "Date:"
+                        color: Qt.darker(root.foreground, 1.4)
+                        font.family: "monospace"
+                        font.pixelSize: Style.font.caption
+                      }
+                      InlineEdit {
+                        fieldName: "date"
+                        display: receiptFullScreen.r.date ? Model.formatReceiptDate(receiptFullScreen.r.date) : "—"
+                        initial: Model.formatReceiptDate(receiptFullScreen.r.date)
+                        textColor: Qt.darker(root.foreground, 1.1)
+                        placeholder: "DD-MM-YYYY"
+                      }
+                    }
+                    Row {
+                      spacing: Style.space(4)
+                      Text {
+                        textFormat: Text.PlainText
+                        text: "Time:"
+                        color: Qt.darker(root.foreground, 1.4)
+                        font.family: "monospace"
+                        font.pixelSize: Style.font.caption
+                      }
+                      InlineEdit {
+                        fieldName: "time"
+                        display: receiptFullScreen.r.time || "—"
+                        initial: receiptFullScreen.r.time || ""
+                        textColor: Qt.darker(root.foreground, 1.1)
+                        placeholder: "HH:MM"
+                      }
+                    }
+                  }
+                }
+
+                FsRule {}
+
+                Item {
+                  width: parent.width
+                  height: fiHeadItem.implicitHeight
+
+                  Text {
+                    id: fiHeadItem
+                    anchors.left: parent.left
+                    anchors.right: fiHeadNums.left
+                    anchors.rightMargin: Style.space(8)
+                    textFormat: Text.PlainText
+                    text: "ITEM"
+                    color: Qt.darker(root.foreground, 1.3)
+                    font.family: "monospace"
+                    font.bold: true
+                    font.pixelSize: Style.font.caption
+                  }
+                  Row {
+                    id: fiHeadNums
+                    anchors.right: parent.right
+                    spacing: Style.space(8)
+                    Text {
+                      width: Style.space(60); horizontalAlignment: Text.AlignRight
+                      textFormat: Text.PlainText; text: "QTY"
+                      color: Qt.darker(root.foreground, 1.3)
+                      font.family: "monospace"; font.bold: true; font.pixelSize: Style.font.caption
+                    }
+                    Text {
+                      width: Style.space(56); horizontalAlignment: Text.AlignRight
+                      textFormat: Text.PlainText; text: "RATE"
+                      color: Qt.darker(root.foreground, 1.3)
+                      font.family: "monospace"; font.bold: true; font.pixelSize: Style.font.caption
+                    }
+                    Text {
+                      visible: receiptFullScreen.showGst
+                      width: Style.space(44); horizontalAlignment: Text.AlignRight
+                      textFormat: Text.PlainText; text: "GST%"
+                      color: Qt.darker(root.foreground, 1.3)
+                      font.family: "monospace"; font.bold: true; font.pixelSize: Style.font.caption
+                    }
+                    Text {
+                      width: Style.space(64); horizontalAlignment: Text.AlignRight
+                      textFormat: Text.PlainText; text: "AMOUNT"
+                      color: Qt.darker(root.foreground, 1.3)
+                      font.family: "monospace"; font.bold: true; font.pixelSize: Style.font.caption
+                    }
+                    Item { width: Style.space(22); height: 1; visible: receiptFullScreen.editingFields }
+                  }
+                }
+
+                FsRule {}
+
+                // Each description and figure is plain text until clicked;
+                // then only that one becomes a box. Changing qty or rate
+                // re-works the line's amount (3 x 50 = 150), and the
+                // subtotal and total follow the items.
+                Repeater {
+                  model: receiptFullScreen.r.items || []
+                  delegate: Item {
+                    id: fiRow
+                    required property var modelData
+                    property bool editingDesc: false
+                    width: parent.width
+                    height: Math.max(fiRow.editingDesc ? fiDescInput.implicitHeight : fiDesc.implicitHeight,
+                                     fiNums.implicitHeight) + Style.space(4)
+
+                    Text {
+                      id: fiDesc
+                      visible: !fiRow.editingDesc
+                      anchors.top: parent.top
+                      anchors.left: parent.left
+                      anchors.right: fiNums.left
+                      anchors.rightMargin: Style.space(8)
+                      textFormat: Text.PlainText
+                      text: fiRow.modelData.description || ""
+                      color: Qt.darker(root.foreground, 1.1)
+                      font.family: "monospace"
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WordWrap
+                      MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.IBeamCursor
+                        onClicked: { fiRow.editingDesc = true; fiDescInput.forceActiveFocus(); fiDescInput.selectAll() }
+                      }
+                    }
+
+                    TextField {
+                      id: fiDescInput
+                      visible: fiRow.editingDesc
+                      anchors.top: parent.top
+                      anchors.left: parent.left
+                      anchors.right: fiNums.left
+                      anchors.rightMargin: Style.space(8)
+                      text: fiRow.modelData.description || ""
+                      color: root.foreground
+                      font.family: "monospace"
+                      font.pixelSize: Style.font.caption
+                      background: Rectangle {
+                        radius: Style.cornerRadius
+                        color: Util.alpha(Color.accent, 0.12)
+                        border.width: 1
+                        border.color: Util.alpha(Color.accent, 0.6)
+                      }
+                      Keys.onEscapePressed: { fiDescInput.text = fiRow.modelData.description || ""; fiRow.editingDesc = false }
+                      onEditingFinished: {
+                        if (!fiRow.editingDesc) return
+                        if (text !== (fiRow.modelData.description || ""))
+                          store.editReceiptItemField(receiptFullScreen.r.id, fiRow.modelData.line, "description", text)
+                        fiRow.editingDesc = false
+                      }
+                    }
+
+                    Row {
+                      id: fiNums
+                      anchors.top: parent.top
+                      anchors.right: parent.right
+                      spacing: Style.space(8)
+
+                      ItemCell {
+                        width: Style.space(60); line: fiRow.modelData.line; fieldName: "qty"
+                        display: Model.formatQty(fiRow.modelData)
+                        initial: Model.formatQty(fiRow.modelData)
+                        textColor: Qt.darker(root.foreground, 1.2)
+                      }
+                      ItemCell {
+                        width: Style.space(56); line: fiRow.modelData.line; fieldName: "rate"
+                        display: fiRow.modelData.rate != null ? Number(fiRow.modelData.rate).toFixed(2) : ""
+                        initial: fiRow.modelData.rate != null ? Number(fiRow.modelData.rate).toFixed(2) : ""
+                        textColor: Qt.darker(root.foreground, 1.2)
+                      }
+                      ItemCell {
+                        visible: receiptFullScreen.showGst
+                        width: Style.space(44); line: fiRow.modelData.line; fieldName: "gst_rate"
+                        display: fiRow.modelData.gstRate != null ? String(fiRow.modelData.gstRate)
+                          : (receiptFullScreen.editingFields ? "—" : "")
+                        initial: fiRow.modelData.gstRate != null ? String(fiRow.modelData.gstRate) : ""
+                        textColor: Qt.darker(root.foreground, 1.2)
+                      }
+                      ItemCell {
+                        width: Style.space(64); line: fiRow.modelData.line; fieldName: "amount"
+                        display: fiRow.modelData.amount != null ? Number(fiRow.modelData.amount).toFixed(2) : ""
+                        initial: fiRow.modelData.amount != null ? Number(fiRow.modelData.amount).toFixed(2) : ""
+                        textColor: Model.receiptIsBalanced(receiptFullScreen.r) ? root.creditColor : root.foreground
+                      }
+                      Text {
+                        visible: receiptFullScreen.editingFields
+                        width: Style.space(22)
+                        horizontalAlignment: Text.AlignHCenter
+                        textFormat: Text.PlainText
+                        text: "✕"
+                        color: root.debitColor
+                        font.pixelSize: Style.font.body
+                        MouseArea {
+                          anchors.fill: parent
+                          cursorShape: Qt.PointingHandCursor
+                          preventStealing: true
+                          onClicked: store.deleteReceiptItem(receiptFullScreen.r.id, fiRow.modelData.line)
+                        }
+                      }
+                    }
+                  }
+                }
+
+                // A product the parser missed: shown after "Add / remove
+                // products". Enter in Amount or "+ Add"; a blank amount is
+                // qty x rate.
+                Flow {
+                  visible: receiptFullScreen.editingFields
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  NewItemBox { id: addDesc; width: Style.space(150); placeholderText: "New product" }
+                  NewItemBox { id: addQty; width: Style.space(52); placeholderText: "qty" }
+                  NewItemBox { id: addUnit; width: Style.space(40); placeholderText: "unit" }
+                  NewItemBox { id: addRate; width: Style.space(56); placeholderText: "rate" }
+                  NewItemBox { id: addGst; width: Style.space(48); placeholderText: "GST%" }
+                  NewItemBox {
+                    id: addAmt; width: Style.space(64); placeholderText: "amount"
+                    onAccepted: addProduct.triggered()
+                  }
+                  TextAction {
+                    id: addProduct
+                    label: "+ Add"
+                    onTriggered: {
+                      if (store.addReceiptItem(receiptFullScreen.r.id, addDesc.text, addQty.text,
+                                               addUnit.text, addRate.text, addAmt.text, addGst.text)) {
+                        addDesc.text = ""; addQty.text = ""; addUnit.text = ""
+                        addRate.text = ""; addAmt.text = ""; addGst.text = ""
+                        addDesc.forceActiveFocus()
+                      }
+                    }
+                  }
+                }
+
+                FsRule {}
+
+                // Subtotal / Bill Discount / Round Off. The discount is kept
+                // as a positive amount but printed with its minus sign, as
+                // on the bill.
+                Repeater {
+                  model: [
+                    { label: "Subtotal", field: "subtotal",
+                      value: receiptFullScreen.r.subtotal != null ? receiptFullScreen.r.subtotal.toFixed(2) : "" },
+                    { label: "Bill Discount", field: "discount",
+                      value: receiptFullScreen.r.discount != null
+                        ? (receiptFullScreen.r.discount ? "-" : "") + Math.abs(receiptFullScreen.r.discount).toFixed(2) : "" },
+                    { label: "Round Off", field: "round_off",
+                      value: receiptFullScreen.r.roundOff != null ? receiptFullScreen.r.roundOff.toFixed(2) : "" },
+                  ]
+                  delegate: ReceiptEditField {
+                    required property var modelData
+                    ledger: true
+                    numeric: true
+                    label: modelData.label
+                    fieldName: modelData.field
+                    value: modelData.value
+                  }
+                }
+
+                // Platform / delivery / service fees, as printed - extra charges
+                // on top of the subtotal. Click an amount to change it; the
+                // total follows. (Edit mode: remove one, or add one.)
+                Repeater {
+                  model: receiptFullScreen.r.fees || []
+                  delegate: Item {
+                    id: feeRow
+                    required property var modelData
+                    width: parent.width
+                    height: feeField.height
+                    ReceiptEditField {
+                      id: feeField
+                      width: parent.width - (receiptFullScreen.editingFields ? Style.space(24) : 0)
+                      ledger: true
+                      numeric: true
+                      label: feeRow.modelData.label
+                      fieldName: "amount"
+                      feeLine: feeRow.modelData.line
+                      value: Number(feeRow.modelData.amount).toFixed(2)
+                    }
+                    Text {
+                      visible: receiptFullScreen.editingFields
+                      anchors.right: parent.right
+                      anchors.verticalCenter: parent.verticalCenter
+                      textFormat: Text.PlainText
+                      text: "✕"
+                      color: root.debitColor
+                      font.pixelSize: Style.font.body
+                      MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -Style.space(4)
+                        cursorShape: Qt.PointingHandCursor
+                        preventStealing: true
+                        onClicked: store.deleteReceiptFee(receiptFullScreen.r.id, feeRow.modelData.line)
+                      }
+                    }
+                  }
+                }
+
+                Flow {
+                  visible: receiptFullScreen.editingFields
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  NewItemBox { id: addFeeLabel; width: Style.space(150); placeholderText: "Fee (Platform Fee, Delivery…)" }
+                  NewItemBox {
+                    id: addFeeAmt; width: Style.space(80); placeholderText: "amount"
+                    onAccepted: addFeeBtn.triggered()
+                  }
+                  TextAction {
+                    id: addFeeBtn
+                    label: "+ Add fee"
+                    onTriggered: {
+                      if (store.addReceiptFee(receiptFullScreen.r.id, addFeeLabel.text, addFeeAmt.text)) {
+                        addFeeLabel.text = ""; addFeeAmt.text = ""
+                        addFeeLabel.forceActiveFocus()
+                      }
+                    }
+                  }
+                }
+
+                FsRule { visible: Model.receiptTaxRows(receiptFullScreen.r).length > 0 || receiptFullScreen.editingFields }
+
+                Repeater {
+                  model: Model.receiptTaxRows(receiptFullScreen.r)
+                  delegate: ReceiptEditField {
+                    required property var modelData
+                    ledger: true
+                    numeric: true
+                    label: modelData.label
+                    fieldName: modelData.field
+                    taxRate: modelData.rate
+                    value: modelData.value.toFixed(2)
+                  }
+                }
+
+                // Add a tax the bill has but the parser missed: pick the kind,
+                // type the rate (CGST/SGST as printed, e.g. 2.5) and, if it
+                // differs from rate x (subtotal - discount), the amount.
+                Flow {
+                  visible: receiptFullScreen.editingFields
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  TextAction {
+                    label: receiptFullScreen.taxKind === "split" ? "CGST + SGST" : "IGST"
+                    onTriggered: receiptFullScreen.taxKind = receiptFullScreen.taxKind === "split" ? "igst" : "split"
+                  }
+                  NewItemBox { id: addTaxRate; width: Style.space(70); placeholderText: "rate %" }
+                  NewItemBox { id: addTaxAmt; width: Style.space(110); placeholderText: "amount (each)" }
+                  TextAction {
+                    label: "+ Add tax"
+                    onTriggered: {
+                      var pct = Number(addTaxRate.text)
+                      var r = receiptFullScreen.r
+                      var base = (r.subtotal != null ? r.subtotal : Model.receiptItemsSum(r)) - Math.abs(r.discount || 0)
+                      var amt = addTaxAmt.text.trim() === "" ? Math.round(base * pct) / 100 : Number(addTaxAmt.text)
+                      if (!(pct > 0) || isNaN(amt) || !(amt > 0)) return
+                      if (receiptFullScreen.taxKind === "split") {
+                        store.addReceiptTax(r.id, pct * 2, "cgst", amt)
+                        store.addReceiptTax(r.id, pct * 2, "sgst", amt)
+                      } else {
+                        store.addReceiptTax(r.id, pct, "igst", amt)
+                      }
+                      addTaxRate.text = ""; addTaxAmt.text = ""
+                    }
+                  }
+                }
+
+                FsRule { visible: Model.receiptTaxRows(receiptFullScreen.r).length > 0 || receiptFullScreen.editingFields }
+
+                Item {
+                  width: parent.width
+                  height: itemCountLabel.implicitHeight
+                  Text {
+                    id: itemCountLabel
+                    anchors.left: parent.left
+                    textFormat: Text.PlainText
+                    text: "Number of Items"
+                    color: Qt.darker(root.foreground, 1.4)
+                    font.family: "monospace"
+                    font.pixelSize: Style.font.caption
+                  }
+                  Text {
+                    anchors.right: parent.right
+                    textFormat: Text.PlainText
+                    text: String(Model.receiptItemCount(receiptFullScreen.r))
+                    color: Qt.darker(root.foreground, 1.2)
+                    font.family: "monospace"
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
+                FsRule { doubled: true }
+
+                ReceiptEditField {
+                  ledger: true
+                  big: true
+                  numeric: true
+                  label: "GRAND TOTAL"
+                  fieldName: "total"
+                  prefix: Model.currencySymbol(receiptFullScreen.r.currency)
+                  value: receiptFullScreen.r.total != null ? receiptFullScreen.r.total.toFixed(2) : ""
+                  valueColor: Model.receiptIsBalanced(receiptFullScreen.r) ? root.creditColor : root.debitColor
+                }
+
+                FsRule { doubled: true }
+                  }
+                }
+              }
+            }
+
+            // The verdict on the bill above: a clear positive pill when its
+            // own figures hold together, the itemised reasons when they
+            // don't - never silence either way.
+            Rectangle {
+              visible: Model.receiptIsBalanced(receiptFullScreen.r)
+              implicitWidth: balancedPillText.implicitWidth + Style.space(12)
+              implicitHeight: balancedPillText.implicitHeight + Style.space(4)
+              width: implicitWidth
+              height: implicitHeight
+              radius: Style.space(4)
+              color: Util.alpha(root.creditColor, 0.18)
+
+              Text {
+                id: balancedPillText
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: "✓ BALANCED — figures add up"
+                color: root.creditColor
+                font.family: Style.font.family
+                font.bold: true
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            Repeater {
+              model: Model.receiptWarnings(receiptFullScreen.r)
+              delegate: Text {
+                required property var modelData
+                width: parent.width
+                textFormat: Text.PlainText
+                text: "!  " + modelData
+                color: root.debitColor
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            // What the photo file knew, and where the bill came from - shown
+            // from the info button in the toolbar.
+            Rectangle {
+              visible: receiptFullScreen.showInfo
+              width: parent.width
+              implicitHeight: infoCol.implicitHeight + Style.space(20)
+              height: implicitHeight
+              radius: Style.cornerRadius
+              color: Util.alpha(root.foreground, 0.05)
+              border.width: 1
+              border.color: Util.alpha(root.foreground, 0.12)
+
+              Column {
+                id: infoCol
+                x: Style.space(10)
+                y: Style.space(10)
+                width: parent.width - Style.space(20)
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "PHOTO INFO"
+                  color: Qt.darker(root.foreground, 1.4)
+                  font.family: Style.font.family
+                  font.bold: true
+                  font.pixelSize: Style.font.caption
+                }
+
+                Repeater {
+                  model: Model.receiptInfoRows(receiptFullScreen.r)
+                  delegate: Item {
+                    id: infoRow
+                    required property var modelData
+                    width: infoCol.width
+                    height: Math.max(infoLabel.implicitHeight, infoValue.implicitHeight)
+                    Text {
+                      id: infoLabel
+                      width: Style.space(110)
+                      textFormat: Text.PlainText
+                      text: infoRow.modelData.label
+                      color: Qt.darker(root.foreground, 1.4)
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                    }
+                    Text {
+                      id: infoValue
+                      anchors.left: infoLabel.right
+                      anchors.right: parent.right
+                      textFormat: Text.PlainText
+                      text: infoRow.modelData.value
+                      color: root.foreground
+                      font.family: "monospace"
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WrapAnywhere
+                    }
+                  }
+                }
+
+                Text {
+                  visible: Model.receiptInfoRows(receiptFullScreen.r).length === 0
+                  textFormat: Text.PlainText
+                  text: "No photo information was kept for this bill."
+                  color: Qt.darker(root.foreground, 1.5)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+
+            Text {
+              visible: receiptFullScreen.editingFields
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Reparse with AI replaces all items, hand-added ones included."
+              color: Qt.darker(root.foreground, 1.5)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+
+            Text {
+              visible: receiptFullScreen.r.state === "linked" && !receiptFullScreen.pickingLink
+                && !receiptFullScreen.linkedTxn
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Filed against a transaction that is no longer in the list."
+              color: Qt.darker(root.foreground, 1.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: receiptFullScreen.r.state === "cash" || receiptFullScreen.r.state === "ignored"
+              width: parent.width
+              textFormat: Text.PlainText
+              text: receiptFullScreen.r.state === "cash" ? "Marked as a cash purchase." : "Marked as not a bill."
+              color: Qt.darker(root.foreground, 1.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+          }
+          }
+
+          ScrollWheelArea { visible: !parent.folded; anchors.fill: fsDetailsFlick; target: fsDetailsFlick; speed: 2.5 }
+
+          // The model's own reply, live, while it is generating - only for
+          // the receipt that was sent for reparsing (the Process and its
+          // output are shared). Its own box under the scrolling details, not
+          // inside them, so the mouse wheel over it scrolls the reply and
+          // not the page. It follows the newest text, until you scroll up to
+          // read back - then it stays where you put it; scroll to the bottom
+          // to follow again.
+          Item {
+            id: fsOutputBox
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: Style.space(150)
+            visible: !parent.folded && receiptReparseProc.receiptId === receiptFullScreen.r.id
+              && (receiptReparseProc.running || receiptReparseOutput.text.length > 0)
+            clip: true
+
+            Rectangle { anchors.fill: parent; radius: Style.cornerRadius; color: Util.alpha(root.foreground, 0.05) }
+
+            Flickable {
+              id: fsOutputFlick
+              anchors.fill: parent
+              anchors.margins: Style.space(6)
+              clip: true
+              contentWidth: width
+              contentHeight: fsOutputText.implicitHeight
+              boundsBehavior: Flickable.StopAtBounds
+
+              property bool follow: true
+              property bool jumping: false
+              onContentYChanged: if (!jumping) follow = contentY + height >= contentHeight - 12
+              function toBottom() {
+                jumping = true
+                contentY = Math.max(0, contentHeight - height)
+                jumping = false
+                follow = true
+              }
+
+              TextEdit {
+                id: fsOutputText
+                width: parent.width
+                readOnly: true
+                selectByMouse: true
+                persistentSelection: true
+                textFormat: TextEdit.PlainText
+                text: receiptReparseOutput.text
+                wrapMode: TextEdit.WrapAnywhere
+                color: Qt.darker(root.foreground, 1.4)
+                font.family: "monospace"
+                font.pixelSize: Style.font.caption
+                // Qt.callLater: contentHeight only reflects the new text
+                // once layout has run.
+                onTextChanged: Qt.callLater(function () { if (fsOutputFlick.follow) fsOutputFlick.toBottom() })
+              }
+            }
+
+            ScrollWheelArea { anchors.fill: fsOutputFlick; target: fsOutputFlick; speed: 2.5 }
+          }
+
+        }
+      }
+    }
   }
 
   // One tab on the strip at the top of the popup. A BorderSurface, not a
@@ -1900,7 +3977,7 @@ Panel {
     // Label and network kept apart: a rename shows as typed, while the
     // network mark still follows the bank's own card name.
     readonly property var brand: Model.cardLabelParts(billRow.overview.name,
-      store.accountNameOverrides[billRow.overview.last4])
+      store.accountNameOverrides[billRow.overview.last4], billRow.overview.network)
     readonly property string bank: Model.accountBank(billRow.overview.accountId)
     // The limit pool this card belongs to — its bank's, shared or not.
     readonly property var pool: {
@@ -2112,7 +4189,7 @@ Panel {
             anchors.leftMargin: billBrandMark.visible ? Style.space(6) : 0
             anchors.right: parent.right
             textFormat: Text.PlainText
-            text: billRow.brand.label + " ••" + billRow.overview.last4
+            text: Model.accountLabel(billRow.brand.label, billRow.overview.last4)
             color: root.foreground
             font.family: Style.font.family
             font.bold: true
@@ -2319,6 +4396,558 @@ Panel {
             font.bold: true
           }
         }
+      }
+    }
+  }
+
+  // A bill laid out neatly in a small space: date and payment line, one row
+  // per item (name and amount, "qty x rate" dim underneath), the money lines
+  // and the total - or the raw OCR text for a bill with no items. Used in the
+  // RECEIPTS rows and under a transaction that has the bill filed against it.
+  component MiniBill: Column {
+    id: mb
+    required property var receipt
+    width: parent.width
+    spacing: Style.space(3)
+
+    Column {
+      visible: (mb.receipt.items || []).length > 0
+      width: parent.width
+      spacing: Style.space(3)
+
+        Text {
+          visible: text !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          text: [
+            mb.receipt.date ? Model.formatReceiptDate(mb.receipt.date) : "",
+            mb.receipt.time || "",
+            mb.receipt.paymentHint ? "Paid by " + mb.receipt.paymentHint : "",
+          ].filter(function (x) { return x !== "" }).join("   ·   ")
+          color: Qt.darker(root.foreground, 1.4)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        Repeater {
+          model: mb.receipt.items || []
+          delegate: Item {
+            id: miniItem
+            required property var modelData
+            width: parent.width
+            height: miniName.implicitHeight + (miniDetail.visible ? miniDetail.implicitHeight : 0) + Style.space(2)
+
+            Text {
+              id: miniName
+              anchors.left: parent.left
+              anchors.right: miniAmt.left
+              anchors.rightMargin: Style.space(8)
+              textFormat: Text.PlainText
+              text: miniItem.modelData.description || ""
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              id: miniAmt
+              anchors.right: parent.right
+              textFormat: Text.PlainText
+              text: miniItem.modelData.amount != null ? Number(miniItem.modelData.amount).toFixed(2) : ""
+              color: root.foreground
+              font.family: "monospace"
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              id: miniDetail
+              visible: (miniItem.modelData.qty != null && miniItem.modelData.rate != null)
+                || miniItem.modelData.gstRate != null
+              anchors.top: miniName.bottom
+              anchors.left: parent.left
+              textFormat: Text.PlainText
+              text: [
+                miniItem.modelData.qty != null && miniItem.modelData.rate != null
+                  ? Model.formatQty(miniItem.modelData) + " × " + Number(miniItem.modelData.rate).toFixed(2) : "",
+                miniItem.modelData.gstRate != null ? "GST " + miniItem.modelData.gstRate + "%" : "",
+              ].filter(function (x) { return x !== "" }).join("  ·  ")
+              color: Qt.darker(root.foreground, 1.6)
+              font.family: "monospace"
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
+        FsRule {}
+
+        Repeater {
+          model: Model.receiptSummaryLines(mb.receipt)
+          delegate: MiniRow {
+            required property var modelData
+            label: modelData.label
+            value: modelData.value
+          }
+        }
+
+        MiniRow {
+          label: "TOTAL"
+          bold: true
+          value: mb.receipt.total != null
+            ? Model.currencySymbol(mb.receipt.currency) + mb.receipt.total.toFixed(2) : "?"
+          valueColor: Model.receiptIsBalanced(mb.receipt) ? root.creditColor : root.debitColor
+        }
+
+    }
+
+    TextEdit {
+        width: parent.width
+        visible: (mb.receipt.items || []).length === 0 && !!mb.receipt.rawText
+        readOnly: true
+        selectByMouse: true
+        persistentSelection: true
+        textFormat: TextEdit.PlainText
+        text: mb.receipt.rawText || ""
+        wrapMode: TextEdit.Wrap
+        color: Qt.darker(root.foreground, 1.3)
+        font.family: "monospace"
+        font.pixelSize: Style.font.caption
+      }
+  }
+
+  // One label / right-aligned value line of the small bill view.
+  component MiniRow: Item {
+    id: mr
+    property string label: ""
+    property string value: ""
+    property bool bold: false
+    property var valueColor: null
+    width: parent.width
+    height: Math.max(mrLabel.implicitHeight, mrValue.implicitHeight)
+    Text {
+      id: mrLabel
+      anchors.left: parent.left
+      textFormat: Text.PlainText
+      text: mr.label
+      color: mr.bold ? root.foreground : Qt.darker(root.foreground, 1.4)
+      font.family: Style.font.family
+      font.bold: mr.bold
+      font.pixelSize: Style.font.caption
+    }
+    Text {
+      id: mrValue
+      anchors.right: parent.right
+      textFormat: Text.PlainText
+      text: mr.value
+      color: mr.valueColor ? mr.valueColor : (mr.bold ? root.foreground : Qt.darker(root.foreground, 1.2))
+      font.family: "monospace"
+      font.bold: mr.bold
+      font.pixelSize: Style.font.caption
+    }
+  }
+
+  // A transaction drawn exactly like a card in the main RECENT list: the
+  // round up/down arrow, bold merchant, bank mark + account pill and date,
+  // the amount on the right - and, for the link picker, why it was offered
+  // (the match reasons) under the amount. Click to choose it.
+  component TxnPickRow: BorderSurface {
+    id: pick
+    required property var txn
+    property string reasons: ""
+    property int score: 0
+    property bool clickable: true
+    // Same amount on the bill's own date: drawn green, with a tick.
+    property bool highlight: false
+    property bool dimmed: false
+    signal picked()
+    opacity: pick.dimmed ? 0.5 : 1.0
+
+    readonly property string displayMerchant: Model.transactionDisplayName(txn, store.transactionNameOverrides)
+    readonly property string accountName: Model.accountLabel(Model.cardLabelParts(
+      Model.cardFallbackName(txn.accountType, txn.last4, store.cardOverviews, txn.bank),
+      store.accountNameOverrides[txn.last4],
+      (store.cardOverviews[txn.last4] || {}).network).label, txn.last4)
+    readonly property bool isDebit: txn.amount < 0
+    readonly property color directionColor: root.directionColor(txn)
+    readonly property bool isSavings: txn.accountType === "checking" && (txn.bank === "AXIS" || txn.bank === "SBI")
+
+    implicitHeight: Style.space(52)
+    radius: Style.cornerRadius
+    color: pick.highlight ? Util.alpha(root.creditColor, pickHover.hovered ? 0.24 : 0.14)
+      : (pickHover.hovered && pick.clickable ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent")
+    borderSpec: pick.highlight ? Border.flat(root.creditColor, 1) : Border.none()
+    Behavior on color { ColorAnimation { duration: 100 } }
+
+    HoverHandler { id: pickHover }
+    MouseArea {
+      anchors.fill: parent
+      enabled: pick.clickable
+      cursorShape: Qt.PointingHandCursor
+      preventStealing: true
+      onClicked: pick.picked()
+    }
+
+    Rectangle {
+      id: pickAvatar
+      width: Style.space(36)
+      height: width
+      radius: width / 2
+      color: Util.alpha(pick.directionColor, 0.22)
+      anchors.left: parent.left
+      anchors.leftMargin: Style.spacing.rowPaddingX
+      anchors.verticalCenter: parent.verticalCenter
+      Text {
+        anchors.centerIn: parent
+        textFormat: Text.PlainText
+        text: pick.isDebit ? "↓" : "↑"
+        color: pick.directionColor
+        font.bold: true
+        font.pixelSize: Style.font.subtitle
+      }
+    }
+
+    Column {
+      anchors.left: pickAvatar.right
+      anchors.leftMargin: Style.space(10)
+      anchors.right: pickAmount.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(3)
+
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        text: pick.displayMerchant
+        color: root.foreground
+        font.family: Style.font.family
+        font.bold: true
+        font.pixelSize: Style.font.subtitle
+        elide: Text.ElideRight
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(6)
+
+        BrandMark {
+          network: Model.cardNetwork(pick.txn, store.cardOverviews)
+          markHeight: Style.spaceReal(9)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+        HdfcLogo {
+          variant: "icon"
+          visible: pick.txn.accountType === "checking" && pick.txn.bank === "HDFC"
+          markSize: Style.spaceReal(9)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+        AxisLogo {
+          visible: pick.txn.accountType === "checking" && pick.txn.bank === "AXIS"
+          markSize: Style.spaceReal(9)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+        SbiLogo {
+          visible: pick.txn.accountType === "checking" && pick.txn.bank === "SBI"
+          markSize: Style.spaceReal(9)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+        Rectangle {
+          radius: Style.space(4)
+          color: Util.alpha(root.foreground, 0.12)
+          implicitWidth: pickPill.implicitWidth + Style.space(10)
+          implicitHeight: pickPill.implicitHeight + Style.space(4)
+          Text {
+            id: pickPill
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: pick.isSavings ? "••" + pick.txn.last4 : pick.accountName
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: Model.formatFullDate(pick.txn.date)
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+
+    Column {
+      id: pickAmount
+      anchors.right: parent.right
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(2)
+
+      Text {
+        anchors.right: parent.right
+        textFormat: Text.PlainText
+        text: Model.formatAmount(pick.txn)
+        color: pick.directionColor
+        font.family: Style.font.family
+        font.bold: true
+        font.pixelSize: Style.font.subtitle
+      }
+      Text {
+        visible: pick.reasons !== ""
+        anchors.right: parent.right
+        textFormat: Text.PlainText
+        text: pick.reasons
+        color: pick.highlight ? root.creditColor : Qt.darker(root.foreground, 1.5)
+        font.family: Style.font.family
+        font.bold: pick.highlight
+        font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
+  // A photographed bill. Collapsed: a status disc (unmatched / needs
+  // review / filed / parked), the merchant, a one-line subtitle, the total.
+  // Expanded: the photo thumbnail, the item table, the GST breakdown, and
+  // either the linked transaction's one-liner or the candidate picker.
+  // Built on BillRow's skeleton — same collapsed/expanded split, same
+  // fixed-height pinned collapsed row, same detail-panel anchoring.
+  component ReceiptRow: BorderSurface {
+    id: receiptRow
+    required property var receipt
+    property bool expanded: false
+    readonly property var mark: Model.receiptStateMark(receiptRow.receipt)
+    readonly property color statusColor: receiptRow.mark.tone === "credit" ? root.creditColor
+      : (receiptRow.mark.tone === "debit" ? root.debitColor
+        : (receiptRow.mark.tone === "pending" ? root.pendingColor : Qt.darker(root.foreground, 1.4)))
+    readonly property bool _hot: rowHoverR.hovered || receiptRow.activeFocus
+    readonly property int collapsedHeight: Style.space(44)
+    readonly property int contentLeft: Style.spacing.rowPaddingX + root.billStatusWidth + Style.spacing.md
+
+    implicitHeight: receiptRow.collapsedHeight
+      + (receiptRow.expanded ? detailsPanelR.implicitHeight + Style.space(10) : 0)
+    radius: Style.cornerRadius
+    opacity: rowMouseR.pressed ? 0.75 : 1.0
+    color: receiptRow._hot ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent"
+    borderSpec: receiptRow.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+
+    Behavior on implicitHeight { NumberAnimation { duration: 120 } }
+    Behavior on color { ColorAnimation { duration: 100 } }
+    Behavior on opacity { NumberAnimation { duration: 80 } }
+
+    HoverHandler { id: rowHoverR }
+
+    activeFocusOnTab: true
+    Keys.onReturnPressed: receiptRow.expanded = !receiptRow.expanded
+    Keys.onEnterPressed: receiptRow.expanded = !receiptRow.expanded
+    Keys.onSpacePressed: receiptRow.expanded = !receiptRow.expanded
+    Keys.onUpPressed: root.focusNext(receiptRow, false)
+    Keys.onDownPressed: root.focusNext(receiptRow, true)
+    Keys.onLeftPressed: receiptRow.expanded = false
+    Keys.onRightPressed: receiptRow.expanded = true
+
+    Item {
+      id: collapsedRowR
+      anchors.top: parent.top
+      anchors.left: parent.left
+      anchors.right: parent.right
+      height: receiptRow.collapsedHeight
+
+      MouseArea {
+        id: rowMouseR
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: receiptRow.expanded = !receiptRow.expanded
+      }
+
+      Item {
+        id: statusGutterR
+        anchors.left: parent.left
+        anchors.leftMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+        width: root.billStatusWidth
+        height: avatarR.height + Style.space(4) + statePillR.height
+
+        Rectangle {
+          id: avatarR
+          width: Style.space(20)
+          height: width
+          radius: width / 2
+          color: Util.alpha(receiptRow.statusColor, 0.16)
+          anchors.top: parent.top
+          anchors.left: parent.left
+
+          Text {
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: receiptRow.mark.glyph
+            color: receiptRow.statusColor
+            font.bold: true
+            font.pixelSize: Style.font.caption
+          }
+
+          // The one place a quick decision lives without opening the whole
+          // row — same precedent as BillRow's "mark as paid" disc.
+          MouseArea {
+            anchors.fill: parent
+            anchors.margins: -Style.space(10)
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              // An unmatched bill's quick decision now lives in the
+              // full-screen window (the small panel no longer carries its
+              // own link picker), so this disc opens straight there;
+              // anything else just expands the quick-glance thumbnail+text.
+              if (receiptRow.receipt.state === "unmatched") {
+                root.openReceiptDetail(receiptRow.receipt)
+              } else {
+                receiptRow.expanded = true
+              }
+            }
+          }
+        }
+
+        Rectangle {
+          id: statePillR
+          anchors.top: avatarR.bottom
+          anchors.topMargin: Style.space(4)
+          anchors.left: parent.left
+          implicitWidth: Math.min(parent.width, pillTextR.implicitWidth + Style.space(8))
+          implicitHeight: pillTextR.implicitHeight + Style.space(2)
+          width: implicitWidth
+          height: implicitHeight
+          radius: Style.space(4)
+          color: Util.alpha(receiptRow.statusColor, 0.18)
+
+          Text {
+            id: pillTextR
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: receiptRow.mark.pill
+            color: receiptRow.statusColor
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.caption
+          }
+        }
+      }
+
+      Column {
+        anchors.left: statusGutterR.right
+        anchors.leftMargin: Style.spacing.md
+        anchors.right: amountStackR.left
+        anchors.rightMargin: Style.spacing.md
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(3)
+
+        Text {
+          width: parent.width
+          textFormat: Text.PlainText
+          text: Model.receiptTitle(receiptRow.receipt)
+          color: root.foreground
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
+        }
+
+        Text {
+          width: parent.width
+          textFormat: Text.PlainText
+          text: Model.receiptSubtitle(receiptRow.receipt)
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+      }
+
+      Column {
+        id: amountStackR
+        width: root.billFigureWidth
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(3)
+
+        Text {
+          anchors.right: parent.right
+          width: parent.width
+          horizontalAlignment: Text.AlignRight
+          textFormat: Text.PlainText
+          text: receiptRow.receipt.total != null
+            ? Model.currencySymbol(receiptRow.receipt.currency) + Model.formatGrouped(receiptRow.receipt.total)
+            : "?"
+          color: root.debitColor
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.subtitle
+        }
+
+        Text {
+          anchors.right: parent.right
+          width: parent.width
+          horizontalAlignment: Text.AlignRight
+          textFormat: Text.PlainText
+          text: receiptRow.receipt.state === "linked" ? ("••" + receiptRow.receipt.txnAmount) : ""
+          visible: receiptRow.receipt.state === "linked"
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+
+    Column {
+      id: detailsPanelR
+      visible: receiptRow.expanded
+      anchors.top: collapsedRowR.bottom
+      anchors.topMargin: Style.space(6)
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.leftMargin: receiptRow.contentLeft
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      spacing: Style.space(4)
+
+      Rectangle { width: parent.width; height: Style.spacing.hairline; color: Qt.darker(root.foreground, 1.8) }
+
+      // A small thumbnail, same footprint as every other row's inline
+      // content — clicking it opens the full review window below rather
+      // than growing the row itself, so the row stays a quick glance and
+      // the photo gets the space it actually needs only once asked for.
+      Rectangle {
+        visible: !!(receiptRow.receipt.thumbPath || receiptRow.receipt.storedPath)
+        width: Style.space(96)
+        height: Style.space(96)
+        radius: Style.cornerRadius
+        color: Qt.darker(root.foreground, 2.4)
+        clip: true
+
+        Image {
+          anchors.fill: parent
+          // storedPath/thumbPath from the snapshot are relative to the
+          // widget's data/ directory (txdb/receipts.py), not absolute —
+          // the path a bare "file://" + that string resolves to doesn't
+          // exist, which is how this first showed up as a silent blank box.
+          source: receiptRow.receipt.thumbPath
+            ? ("file://" + root.widgetDir + "/data/" + receiptRow.receipt.thumbPath)
+            : (receiptRow.receipt.storedPath
+                ? ("file://" + root.widgetDir + "/data/" + receiptRow.receipt.storedPath) : "")
+          rotation: receiptRow.receipt.rotation || 0
+          fillMode: Image.PreserveAspectFit
+          asynchronous: true
+          cache: false
+          sourceSize.height: Style.spaceReal(192)
+        }
+
+        MouseArea {
+          anchors.fill: parent
+          cursorShape: Qt.PointingHandCursor
+          preventStealing: true
+          onClicked: root.openReceiptDetail(receiptRow.receipt)
+        }
+      }
+
+      // The bill, neatly (see MiniBill); the full editor is in the review window.
+      MiniBill {
+        width: parent.width
+        receipt: receiptRow.receipt
       }
     }
   }
@@ -2666,6 +5295,454 @@ Panel {
     }
   }
 
+  // A transparent MouseArea stacked on top of a Flickable (declared after
+  // it, so it is topmost and hit first) to take over its wheel handling.
+  // Flickable's own built-in wheel-scroll claims the event before any
+  // WheelHandler placed inside or as an ancestor of it ever sees it - the
+  // same root cause already diagnosed for the photo pane's zoom, and the
+  // reason the default wheel feel everywhere else in this widget was slow
+  // and un-tunable. acceptedButtons: NoButton means it never intercepts
+  // the press itself, so drag-to-scroll still reaches the Flickable
+  // underneath untouched - only the wheel is rerouted here.
+  //
+  // The jump this applies is animated with a one-shot NumberAnimation,
+  // not a `Behavior on contentY` on the target: a Behavior there would
+  // also animate every contentY change Flickable's own drag handling
+  // makes internally, fighting it frame by frame and making drag-to-
+  // scroll feel laggy - the opposite of the point. Only a wheel-triggered
+  // jump gets the easing; native drag/touch scrolling is untouched.
+  component ScrollWheelArea: MouseArea {
+    id: scrollWheel
+    required property Flickable target
+    // How many content pixels one wheel "line" (a mouse notch, or an
+    // equivalent slice of trackpad pixelDelta) moves - tune this, not the
+    // animation, to make scrolling faster or slower.
+    property real speed: 2.5
+
+    acceptedButtons: Qt.NoButton
+
+    NumberAnimation {
+      id: scrollAnim
+      target: scrollWheel.target
+      property: "contentY"
+      duration: 90
+      easing.type: Easing.OutCubic
+    }
+
+    onWheel: function (event) {
+      // A touchpad reports smooth scrolling via pixelDelta (already real
+      // pixels); angleDelta.y (eighths of a degree, 120 per notch on a
+      // normal mouse wheel) is normalised against the same ~60px-per-
+      // notch baseline browsers use, so both input types land in the same
+      // speed scale.
+      var raw = event.pixelDelta.y !== 0 ? event.pixelDelta.y : (event.angleDelta.y / 120) * 60
+      if (raw !== 0) {
+        var t = scrollWheel.target
+        var maxY = Math.max(0, t.contentHeight - t.height)
+        var y = Math.max(0, Math.min(maxY, t.contentY - raw * scrollWheel.speed))
+        scrollAnim.to = y
+        scrollAnim.restart()
+      }
+      event.accepted = true
+    }
+  }
+
+  // A bill-style rule in the full-screen review window: one hairline, or a
+  // doubled pair for a section boundary - the same "----" vs "====" a
+  // printed till receipt uses to tell an item divider from the header/
+  // GRAND TOTAL border.
+  component FsRule: Item {
+    id: fsRule
+    property bool doubled: false
+    width: parent.width
+    height: fsRuleText.implicitHeight
+    clip: true
+    Text {
+      id: fsRuleText
+      width: parent.width
+      textFormat: Text.PlainText
+      wrapMode: Text.NoWrap
+      text: (fsRule.doubled ? "=" : "-").repeat(120)
+      color: Qt.darker(root.foreground, 1.8)
+      font.family: "monospace"
+      font.pixelSize: Style.font.caption
+    }
+  }
+
+  // A blank box of the "add a product" row.
+  component NewItemBox: TextField {
+    color: root.foreground
+    placeholderTextColor: Qt.darker(root.foreground, 2.0)
+    font.family: "monospace"
+    font.pixelSize: Style.font.caption
+    background: Rectangle {
+      radius: Style.cornerRadius
+      color: Util.alpha(Color.accent, 0.08)
+      border.width: 1
+      border.color: Util.alpha(Color.accent, 0.4)
+    }
+  }
+
+  // A text value of the bill (shop name, date, time, paid by) that edits where
+  // it stands: plain text until clicked, then a box; Enter or clicking away
+  // saves, Escape cancels. It is a fixed part of the card - not built per
+  // refresh - so a database refresh while you type cannot close it. A date
+  // must be a real one (DD-MM-YYYY and similar) or the box stays red and
+  // nothing is saved.
+  component InlineEdit: Item {
+    id: ie
+    property string fieldName: ""
+    property string display: ""
+    property string initial: ""
+    property string placeholder: ""
+    property color textColor: root.foreground
+    property int hAlign: Text.AlignLeft
+    property bool bold: false
+    property int pixelSize: Style.font.caption
+    property bool editing: false
+    readonly property string billId: receiptFullScreen.r.id || ""
+    readonly property bool invalid: ie.editing && ie.fieldName === "date"
+      && Model.parseReceiptDate(input.text) === null
+    onBillIdChanged: ie.editing = false
+
+    implicitWidth: ie.editing ? Math.max(label.implicitWidth, Style.space(110)) : label.implicitWidth
+    implicitHeight: ie.editing ? input.implicitHeight : label.implicitHeight
+
+    Text {
+      id: label
+      visible: !ie.editing
+      anchors.left: parent.left
+      anchors.right: parent.right
+      horizontalAlignment: ie.hAlign
+      textFormat: Text.PlainText
+      text: ie.display
+      color: ie.textColor
+      font.family: "monospace"
+      font.bold: ie.bold
+      font.pixelSize: ie.pixelSize
+      wrapMode: Text.WordWrap
+      MouseArea {
+        anchors.fill: parent
+        anchors.margins: -Style.space(6)
+        cursorShape: Qt.IBeamCursor
+        onClicked: { input.text = ie.initial; ie.editing = true; input.forceActiveFocus(); input.selectAll() }
+      }
+    }
+
+    TextField {
+      id: input
+      visible: ie.editing
+      anchors.fill: parent
+      horizontalAlignment: ie.hAlign
+      placeholderText: ie.placeholder
+      placeholderTextColor: Qt.darker(root.foreground, 2.0)
+      color: ie.invalid ? root.debitColor : root.foreground
+      font.family: "monospace"
+      font.bold: ie.bold
+      font.pixelSize: ie.pixelSize
+      background: Rectangle {
+        radius: Style.cornerRadius
+        color: Util.alpha(Color.accent, 0.12)
+        border.width: 1
+        border.color: ie.invalid ? root.debitColor : Util.alpha(Color.accent, 0.6)
+      }
+      Keys.onEscapePressed: ie.editing = false
+      onEditingFinished: {
+        if (!ie.editing || ie.invalid) return
+        var st = store
+        var rid = receiptFullScreen.r.id
+        var name = ie.fieldName
+        var typed = text.trim()
+        var changed = typed !== ie.initial.trim()
+        if (name === "date") typed = Model.parseReceiptDate(typed)
+        ie.editing = false
+        if (changed) st.editReceiptField(rid, name, typed)
+      }
+    }
+  }
+
+  // A live log in a fixed-height box that scrolls: it follows the newest text
+  // until you scroll up to read back (then it stays put; scroll to the bottom
+  // to follow again), is selectable, and has a close button once it is done.
+  component StreamBox: Item {
+    id: sb
+    property string text: ""
+    property int boxHeight: Style.space(150)
+    property bool closable: false
+    signal closed()
+    height: sb.boxHeight
+    clip: true
+
+    Rectangle { anchors.fill: parent; radius: Style.cornerRadius; color: Util.alpha(root.foreground, 0.05) }
+
+    Flickable {
+      id: sbFlick
+      anchors.fill: parent
+      anchors.margins: Style.space(6)
+      clip: true
+      contentWidth: width
+      contentHeight: sbText.implicitHeight
+      boundsBehavior: Flickable.StopAtBounds
+
+      property bool follow: true
+      property bool jumping: false
+      onContentYChanged: if (!jumping) follow = contentY + height >= contentHeight - 12
+      function toBottom() {
+        jumping = true
+        contentY = Math.max(0, contentHeight - height)
+        jumping = false
+        follow = true
+      }
+
+      TextEdit {
+        id: sbText
+        width: parent.width
+        readOnly: true
+        selectByMouse: true
+        persistentSelection: true
+        textFormat: TextEdit.PlainText
+        text: sb.text
+        wrapMode: TextEdit.WrapAnywhere
+        color: Qt.darker(root.foreground, 1.4)
+        font.family: "monospace"
+        font.pixelSize: Style.font.caption
+        onTextChanged: Qt.callLater(function () { if (sbFlick.follow) sbFlick.toBottom() })
+      }
+    }
+
+    ScrollWheelArea { anchors.fill: sbFlick; target: sbFlick; speed: 2.5 }
+
+    PanelActionButton {
+      visible: sb.closable
+      size: Style.space(20)
+      anchors.top: parent.top
+      anchors.right: parent.right
+      anchors.margins: Style.space(4)
+      iconText: "×"
+      tooltipText: "Close"
+      foreground: root.foreground
+      focusable: false
+      onClicked: sb.closed()
+    }
+  }
+
+  // One figure on an item row. Plain text until clicked; then only this
+  // one becomes a box. Enter or clicking away saves, Escape cancels. The
+  // qty cell takes "1.444kg" / "3 pc" and splits the unit off itself.
+  component ItemCell: Item {
+    id: ic
+    property var line
+    property string fieldName: ""
+    property string display: ""
+    property string initial: ""
+    property color textColor: root.foreground
+    property bool editing: false
+    readonly property bool invalid: {
+      var t = input.text.trim()
+      if (!ic.editing || t === "") return false
+      if (ic.fieldName === "qty") return !/^\d*\.?\d+\s*[^\d\s]*$/.test(t)
+      return isNaN(Number(t))
+    }
+    implicitHeight: ic.editing ? input.implicitHeight : label.implicitHeight
+
+    Text {
+      id: label
+      visible: !ic.editing
+      anchors.left: parent.left
+      anchors.right: parent.right
+      horizontalAlignment: Text.AlignRight
+      textFormat: Text.PlainText
+      text: ic.display
+      color: ic.textColor
+      font.family: "monospace"
+      font.pixelSize: Style.font.caption
+      MouseArea {
+        anchors.fill: parent
+        anchors.margins: -Style.space(3)
+        cursorShape: Qt.IBeamCursor
+        onClicked: { ic.editing = true; input.forceActiveFocus(); input.selectAll() }
+      }
+    }
+
+    TextField {
+      id: input
+      visible: ic.editing
+      anchors.fill: parent
+      text: ic.initial
+      horizontalAlignment: TextInput.AlignRight
+      color: ic.invalid ? root.debitColor : root.foreground
+      font.family: "monospace"
+      font.pixelSize: Style.font.caption
+      background: Rectangle {
+        radius: Style.cornerRadius
+        color: Util.alpha(Color.accent, 0.12)
+        border.width: 1
+        border.color: ic.invalid ? root.debitColor : Util.alpha(Color.accent, 0.6)
+      }
+      Keys.onEscapePressed: { input.text = ic.initial; ic.editing = false }
+      onEditingFinished: {
+        if (!ic.editing) return
+        // Everything is read first: the first store call re-renders the
+        // rows and destroys this cell, and nothing may touch it afterwards.
+        var st = store
+        var rid = receiptFullScreen.r.id
+        var line = ic.line
+        var field = ic.fieldName
+        var t = text.trim()
+        var changed = t !== ic.initial.trim()
+        var ok = !ic.invalid
+        ic.editing = false
+        if (!ok || !changed) return
+        if (field === "qty") {
+          // "3" changes the number only; "3 pc" or "1.5kg" also sets the unit.
+          // (Typing a bare number used to wipe the unit.)
+          var m = /^(\d*\.?\d+)\s*(.*)$/.exec(t)
+          if (m && m[2] !== "") st.editReceiptItemField(rid, line, "unit", m[2])
+          st.editReceiptItemField(rid, line, "qty", m ? m[1] : t)
+        } else {
+          st.editReceiptItemField(rid, line, field, t)
+        }
+      }
+    }
+  }
+
+  // One editable value in the full-screen review window: a label and a
+  // value that is plain text until you click it - then just that one value
+  // becomes a box (Enter or clicking away saves, Escape cancels). Nothing
+  // else on the bill opens up. A numeric value that does not parse shows an
+  // inline error and is not saved. `autoStart` opens it at once when it is
+  // shown, for the header values chosen by clicking the title/date/time.
+  //
+  // `ledger: true` is the bill's right-aligned money layout (Subtotal, Bill
+  // Discount, Round off, GRAND TOTAL); `big`/`valueColor` are for GRAND
+  // TOTAL alone.
+  component ReceiptEditField: Item {
+    id: ef
+    property bool ledger: false
+    property bool big: false
+    property var valueColor: null
+    property string prefix: ""        // shown before the value, never part of what is typed or saved
+    property var taxRate: null        // set on a GST row: save through the slab, not the header
+    property var feeLine: null        // set on a fee row: save through that fee
+    property bool autoStart: false
+    signal finished()
+    required property string label
+    required property string fieldName
+    required property string value
+    property bool numeric: false
+    property bool editing: ef.autoStart
+    readonly property bool badDate: ef.editing && ef.fieldName === "date"
+      && Model.parseReceiptDate(efInput.text) === null
+    readonly property bool invalid: ef.badDate || (ef.editing && ef.numeric
+      && efInput.text.trim() !== "" && isNaN(Number(efInput.text.trim())))
+    width: parent.width
+    height: efRow.implicitHeight + (ef.invalid ? Style.space(2) + efError.implicitHeight : 0)
+
+    function startEditing() {
+      ef.editing = true
+      efInput.text = ef.value
+      efInput.forceActiveFocus()
+      efInput.selectAll()
+    }
+    Component.onCompleted: if (ef.autoStart) Qt.callLater(ef.startEditing)
+
+    Column {
+      id: efRow
+      width: parent.width
+      spacing: Style.space(2)
+
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
+
+        Text {
+          id: efLabel
+          width: ef.ledger ? Style.space(120) : Style.space(76)
+          textFormat: Text.PlainText
+          text: ef.label
+          color: ef.big ? root.foreground : Qt.darker(root.foreground, 1.4)
+          font.family: ef.ledger ? "monospace" : Style.font.family
+          font.bold: ef.big
+          font.pixelSize: ef.big ? Style.font.body : Style.font.caption
+        }
+
+        Text {
+          visible: !ef.editing
+          width: parent.width - efLabel.width - parent.spacing
+          textFormat: Text.PlainText
+          horizontalAlignment: ef.ledger ? Text.AlignRight : Text.AlignLeft
+          text: ef.value ? ef.prefix + ef.value : "—"
+          elide: Text.ElideRight
+          color: ef.valueColor ? ef.valueColor
+            : (ef.value && ef.ledger && Model.receiptIsBalanced(receiptFullScreen.r) ? root.creditColor
+              : (ef.value ? Qt.darker(root.foreground, 1.2) : Qt.darker(root.foreground, 2.2)))
+          font.family: ef.ledger ? "monospace" : Style.font.family
+          font.bold: ef.big
+          font.pixelSize: ef.big ? Style.font.body : Style.font.caption
+          MouseArea {
+            anchors.fill: parent
+            anchors.margins: -Style.space(3)
+            cursorShape: Qt.IBeamCursor
+            onClicked: ef.startEditing()
+          }
+        }
+
+        TextField {
+          id: efInput
+          visible: ef.editing
+          width: parent.width - efLabel.width - parent.spacing
+          horizontalAlignment: ef.ledger ? TextInput.AlignRight : TextInput.AlignLeft
+          text: ef.value
+          color: ef.invalid ? root.debitColor : root.foreground
+          font.family: ef.ledger ? "monospace" : Style.font.family
+          font.bold: ef.big
+          font.pixelSize: ef.big ? Style.font.body : Style.font.caption
+          background: Rectangle {
+            radius: Style.cornerRadius
+            color: Util.alpha(Color.accent, 0.12)
+            border.width: 1
+            border.color: ef.invalid ? root.debitColor : Util.alpha(Color.accent, 0.6)
+          }
+          Keys.onEscapePressed: { ef.editing = false; ef.finished() }
+          onEditingFinished: {
+            if (!ef.editing) return
+            if (ef.invalid) return
+            // Read everything first: saving re-renders the bill and the
+            // field may be destroyed by the time the store call returns.
+            var st = store
+            var rid = receiptFullScreen.r.id
+            var name = ef.fieldName
+            var rate = ef.taxRate
+            var fee = ef.feeLine
+            var typed = text
+            var changed = text.trim() !== (ef.value || "").trim()
+            // Dates are shown DD-MM-YYYY but stored ISO; a discount is
+            // always a positive amount taken off, whatever sign the bill
+            // printed it with.
+            if (name === "date") typed = Model.parseReceiptDate(text)
+            if (name === "discount") typed = text.replace(/^\s*-/, "")
+            ef.editing = false
+            ef.finished()
+            if (!changed) return
+            if (fee !== null) st.editReceiptFee(rid, fee, "amount", typed)
+            else if (rate !== null) st.editReceiptTaxField(rid, rate, name, typed)
+            else st.editReceiptField(rid, name, typed)
+          }
+        }
+      }
+
+      Text {
+        id: efError
+        visible: ef.invalid
+        textFormat: Text.PlainText
+        text: ef.badDate ? "Date needs DD-MM-YYYY (e.g. 25-06-2026)" : ef.label + " needs a plain number"
+        color: root.debitColor
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
   // Text button for the RECENT selection controls, drawn with the same
   // surface and border as the other controls in this widget.
   component TextAction: BorderSurface {
@@ -2707,6 +5784,7 @@ Panel {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
+      preventStealing: true
       onClicked: action.triggered()
     }
   }
@@ -2743,10 +5821,13 @@ Panel {
     readonly property bool isSbiSavings: card.txn.accountType === "checking" && card.txn.bank === "SBI"
     // Same rule as a BILLS row: a rename shows as typed, and the network
     // word is only stripped from the bank's own card name.
-    readonly property string accountName: Model.cardLabelParts(
+    readonly property string accountName: Model.accountLabel(Model.cardLabelParts(
       Model.cardFallbackName(txn.accountType, txn.last4, store.cardOverviews, txn.bank),
-      store.accountNameOverrides[txn.last4]).label + " ••" + txn.last4
+      store.accountNameOverrides[txn.last4],
+      (store.cardOverviews[txn.last4] || {}).network).label, txn.last4)
     readonly property string note: Model.transactionNote(txn)
+    // The bill filed against this transaction, if any - its note icon opens it.
+    readonly property var linkedReceipt: Model.linkedReceiptForTransaction(txn, store.receipts)
     readonly property bool isDebit: txn.amount < 0
     readonly property color directionColor: root.directionColor(txn)
     readonly property bool _hot: rowHover.hovered || card.activeFocus
@@ -2933,6 +6014,36 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
           }
 
+          // A small note: this transaction has a bill. Click it to open the
+          // bill and its details.
+          Rectangle {
+            visible: !!card.linkedReceipt
+            anchors.verticalCenter: parent.verticalCenter
+            width: Style.space(20)
+            height: width
+            radius: Style.space(5)
+            color: noteMouse.containsMouse ? Util.alpha(root.creditColor, 0.32) : Util.alpha(root.creditColor, 0.16)
+            Text {
+              anchors.centerIn: parent
+              textFormat: Text.PlainText
+              text: "󰎞"
+              color: root.creditColor
+              font.pixelSize: Style.font.caption
+            }
+            MouseArea {
+              id: noteMouse
+              anchors.fill: parent
+              anchors.margins: -Style.space(3)
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              preventStealing: true
+              onClicked: root.openReceiptDetail(card.linkedReceipt)
+            }
+            ToolTip.visible: noteMouse.containsMouse
+            ToolTip.text: "Bill: " + Model.receiptTitle(card.linkedReceipt || {}) + " — open"
+            ToolTip.delay: 300
+          }
+
           Rectangle {
             radius: Style.space(4)
             color: Util.alpha(root.foreground, 0.12)
@@ -3098,6 +6209,32 @@ Panel {
         color: Qt.darker(root.foreground, 1.3)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
+      }
+
+      // The bill filed against this transaction, shown right here (read live
+      // off the receipt, never stored on the transaction - see
+      // Model.receiptNoteForTransaction). The note icon beside the account
+      // tag opens the full window to edit it.
+      Column {
+        visible: !!card.linkedReceipt
+        width: parent.width
+        spacing: Style.space(4)
+
+        Text {
+          width: parent.width
+          textFormat: Text.PlainText
+          text: "BILL  ·  " + Model.receiptTitle(card.linkedReceipt || ({}))
+          color: root.creditColor
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+
+        MiniBill {
+          width: parent.width
+          receipt: card.linkedReceipt || ({})
+        }
       }
 
       Text {

@@ -311,8 +311,8 @@ class PrecisionTests(Base):
                                  " fetched_at) VALUES ('MF|1','',1234567,'2026-10-20','x')")
                 conn.close()
 
-            conn = db.connect(path)  # reopening runs v9
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 9)
+            conn = db.connect(path)  # reopening runs v9 (and every later step)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], len(db.MIGRATIONS))
             # 123.4567 units before, the same 123.4567 units after.
             self.assertEqual(conn.execute("SELECT units_e8 FROM holdings").fetchone()[0], 12345670000)
             self.assertEqual(conn.execute("SELECT units FROM portfolio_view").fetchone()[0], 123.4567)

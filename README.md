@@ -30,7 +30,9 @@ Everything the widget shows or remembers lives in one SQLite file,
 
 - **Fetchers write it.** `hdfc-`, `axis-`, `sbi-` and `icici-statement-fetcher` import
   `txdb.ingest` through their `src/store.py` (`TXDB_HOME` points at this
-  repo) and save transactions, balances and HDFC card billing cycles.
+  repo) and save transactions, balances and credit-card billing cycles.
+  Three banks have a card here: HDFC's two, ICICI's one, and SBI's, which
+  the SBI fetcher reads from sbicard.com with a second login of its own.
   Each run is recorded in `fetch_runs`, and a successful run makes a backup
   in `data/backups/` (14 kept).
 - **The widget reads a snapshot.** `python3 bin/txdb snapshot` prints one
@@ -131,9 +133,12 @@ Tables: `accounts` (id `BANK|type|last4`, optional display name),
 `counterparty` / `note` computed by `txdb/keys.py`), `tracked`,
 `merchant_names`, `balances` + `balance_history`, `card_cycles`, `bills`,
 `fetch_runs`, and per-bank raw tables with every scraped field
-(`sbi_transactions`, `axis_transactions`, `hdfc_savings_transactions`,
-`hdfc_card_transactions`, `hdfc_card_cycles_raw`) plus `sbi_view`,
-`axis_view`, `hdfc_view` for ad-hoc `sqlite3` queries.
+(`sbi_transactions`, `sbi_card_transactions`, `axis_transactions`,
+`hdfc_savings_transactions`, `hdfc_card_transactions`, `card_cycles_raw`,
+with `hdfc_card_cycles_raw` kept as a view of HDFC's rows) plus `sbi_view`,
+`axis_view`, `hdfc_view` for ad-hoc `sqlite3` queries. `sbi_view` and
+`hdfc_view` each cover both of that bank's accounts, the savings one and
+the card.
 
 Rows scraped before the statement's balance was kept carry one **worked
 back** from the account's current balance instead (`txdb derive-balances`,
@@ -263,16 +268,20 @@ Tests: `python3 -m unittest discover -s tests`.
   underlying data — purely a display override. Persists to the
   `merchant_names` table, keyed by `group_key`.
 
-  **One counterparty, one name.** The key is the person, not the string:
-  every UPI row of every bank resolves to `UPI|<NAME>`, so renaming
-  "LAKSHMI MOHAN" once covers the HDFC rows (masked VPA and unmasked),
-  the Axis row and the SBI row alike. It used to carry the bank and the
-  counterparty's bank code, which split one person into four groups that
-  each needed renaming. HDFC's own UPI format
-  (`UPI-<name>-<vpa>-<ifsc>-<ref>-<remark>`) was not parsed at all, so
-  those rows showed the whole raw string; it is parsed now. Rows nothing
-  can parse — bank charges, interest, card vendor names — keep a
-  bank-prefixed key, since their text is the only identity they have.
+  **One name per counterparty per bank.** The key is the person *and* the
+  bank the row sits in: every UPI row of an HDFC account resolves to
+  `UPI|HDFC|<NAME>`, of an Axis account to `UPI|AXIS|<NAME>`, of SBI to
+  `UPI|SBI|<NAME>` (NEFT likewise). A transfer between your own accounts
+  shows once on each bank, and each side is its own group, so renaming the
+  HDFC row never changes the SBI or Axis row - name each side separately
+  ("HDFC -> Axis" on one, "Axis <- HDFC" on the other). Within one bank the
+  VPA is not part of the key (HDFC masks it on some rows and not others, which
+  once split one person into four groups), so a rename still covers every
+  past *and future* payment from that person on that bank. v17 split the old
+  shared keys and copied each saved name to every bank's new key, so nothing
+  lost its name. Rows nothing can parse - bank charges, interest, card vendor
+  names - keep a bank-prefixed key, since their text is the only identity they
+  have.
 - **Filter** — a single compact popover (`FilterMenuButton`) replacing the
   old always-expanded account-chip row and the standalone "Show archived"
   row: an account list ("All accounts" + one per distinct account, from

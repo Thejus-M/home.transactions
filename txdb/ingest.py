@@ -25,6 +25,8 @@ RAW_TABLES = {
                                                          "dr_cr_text", "closing_balance_text"]),
     ("HDFC", "credit"): ("hdfc_card_transactions", ["date_text", "description", "amount_text", "dr_cr_text",
                                                     "status", "card_name"]),
+    ("SBI", "credit"): ("sbi_card_transactions", ["date_text", "description", "amount_text", "dr_cr_text",
+                                                  "status", "card_name"]),
 }
 OVERVIEW_FIELDS = ["unbilled_amount", "total_outstanding", "upcoming_payment_due", "payment_status",
                    "last_payment_amount", "last_payment_date", "spent_this_cycle", "credited_this_cycle",
