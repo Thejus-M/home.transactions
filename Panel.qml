@@ -5063,14 +5063,16 @@ Panel {
 
     readonly property bool _hot: chipMouse.containsMouse || chip.activeFocus
 
-    implicitHeight: Style.space(24)
+    // Quiet by default: no border, a faint tonal fill. Active = accent tint.
+    // Only keyboard focus draws a ring.
+    implicitHeight: Style.space(26)
     implicitWidth: chipRow.implicitWidth + Style.space(14)
-    radius: Style.cornerRadius
+    radius: Style.space(13)
     opacity: chipMouse.pressed ? 0.7 : 1
     color: chip.active
-      ? Style.controlFill(true, false, root.foreground, Color.accent)
-      : Style.controlFill(chip.activeFocus, chip._hot, root.foreground, Color.accent)
-    borderSpec: Border.controlSpec(chip.activeFocus ? "focus" : (chip._hot ? "hover-cursor" : "normal"), root.foreground, Color.accent)
+      ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, chip._hot ? 0.28 : 0.20)
+      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, chip._hot ? 0.13 : 0.06)
+    borderSpec: chip.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
 
     activeFocusOnTab: chip.focusable && chip.visible
     Keys.onReturnPressed: chip.clicked()
@@ -5093,7 +5095,7 @@ Panel {
     Row {
       id: chipRow
       anchors.centerIn: parent
-      spacing: Style.space(4)
+      spacing: Style.space(5)
 
       HdfcLogo {
         variant: "icon"
@@ -5163,12 +5165,20 @@ Panel {
     id: field
     property string which: "min"
 
-    implicitWidth: Style.space(76)
+    implicitWidth: Style.space(84)
     implicitHeight: Style.space(28)
     font.family: Style.font.family
     font.pixelSize: Style.font.caption
     horizontalAlignment: TextInput.AlignRight
+    leftPadding: Style.space(10)
+    rightPadding: Style.space(10)
     selectByMouse: true
+    background: Rectangle {
+      radius: Style.space(8)
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, field.activeFocus ? 0.12 : 0.06)
+      border.width: field.activeFocus ? 1 : 0
+      border.color: Color.accent
+    }
 
     function syncFromFilter() {
       var v = root.filter[field.which]
@@ -5215,7 +5225,7 @@ Panel {
 
   component FilterBar: Column {
     id: bar
-    spacing: Style.space(4)
+    spacing: Style.space(8)
 
     // The summary strip lists every active part except the search text,
     // which is already visible in the search field.
@@ -5270,14 +5280,14 @@ Panel {
         id: toggle
         anchors.right: parent.right
         height: parent.height
-        width: toggleRow.implicitWidth + Style.space(16)
-        radius: Style.cornerRadius
+        width: toggleRow.implicitWidth + Style.space(22)
+        radius: Style.space(8)
         readonly property bool _hot: toggleMouse.containsMouse || toggle.activeFocus
         opacity: toggleMouse.pressed ? 0.7 : 1
-        color: root.filterOpen
-          ? Style.controlFill(true, false, root.foreground, Color.accent)
-          : Style.controlFill(toggle.activeFocus, toggle._hot, root.foreground, Color.accent)
-        borderSpec: Border.controlSpec(toggle.activeFocus ? "focus" : (toggle._hot ? "hover-cursor" : "normal"), root.foreground, Color.accent)
+        color: root.filterOpen || bar.activeCount > 0
+          ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, toggle._hot ? 0.28 : 0.20)
+          : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, toggle._hot ? 0.13 : 0.06)
+        borderSpec: toggle.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
 
         activeFocusOnTab: toggle.visible
         Keys.onReturnPressed: root.filterOpen = !root.filterOpen
@@ -5341,10 +5351,17 @@ Panel {
         anchors.right: toggle.left
         anchors.rightMargin: Style.space(6)
         height: parent.height
-        placeholderText: "Search merchant or note…  (/)"
+        placeholderText: "Search merchant or note"
         font.family: Style.font.family
         font.pixelSize: Style.font.body
         selectByMouse: true
+        leftPadding: Style.space(12)
+        background: Rectangle {
+          radius: Style.space(8)
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, searchInput.activeFocus ? 0.12 : 0.06)
+          border.width: searchInput.activeFocus ? 1 : 0
+          border.color: Color.accent
+        }
 
         // The text reaches root.filter after a short pause (and on Enter),
         // not on every key, and is never bound back: no binding loop.
@@ -5397,7 +5414,7 @@ Panel {
     // Row 2: one chip per active part, the count, Clear all.
     Flow {
       width: bar.width
-      spacing: Style.space(4)
+      spacing: Style.space(6)
       visible: bar.anyActive
 
       Repeater {
@@ -5415,7 +5432,8 @@ Panel {
       }
 
       Text {
-        height: Style.space(24)
+        height: Style.space(26)
+        leftPadding: Style.space(4)
         verticalAlignment: Text.AlignVCenter
         textFormat: Text.PlainText
         text: root.filteredTransactions.length + " of " + root.transactions.length
@@ -5430,113 +5448,159 @@ Panel {
       }
     }
 
-    // The expanded panel.
+    // The expanded panel: four labelled rows, a caption column on the left
+    // and chips on the right, with room between the rows.
     Column {
       id: panel
       width: bar.width
-      spacing: Style.space(4)
+      spacing: Style.space(12)
+      topPadding: Style.space(6)
+      bottomPadding: Style.space(4)
       visible: root.filterOpen
 
-      // Accounts, grouped by bank. Alt+1..6 toggle the first six.
-      Flow {
-        width: panel.width
-        spacing: Style.space(4)
+      readonly property real captionWidth: Style.space(46)
 
-        Repeater {
-          model: root.accountChipOptions
-          delegate: FilterChip {
-            required property var modelData
-            required property int index
-            label: modelData.label
-            bank: modelData.accountType === "checking" ? modelData.bank : ""
-            network: modelData.network || ""
-            active: root.filter.accounts.indexOf(modelData.key) !== -1
-            tip: index < 6 ? "Alt+" + (index + 1) + " · right-click clears" : ""
-            onClicked: { var key = modelData.key; root.toggleAccountFilter(key) }
-            onCleared: {
-              var key = modelData.key
-              if (root.filter.accounts.indexOf(key) !== -1) root.toggleAccountFilter(key)
+      // Accounts, sorted by bank. Short and the same length: the logo and the
+      // last four digits; the full name is in the tooltip. Alt+1..6 toggle the first six.
+      Row {
+        spacing: Style.space(8)
+        Text {
+          width: panel.captionWidth
+          height: Style.space(26)
+          verticalAlignment: Text.AlignVCenter
+          textFormat: Text.PlainText
+          text: "Account"
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Flow {
+          width: panel.width - panel.captionWidth - Style.space(8)
+          spacing: Style.space(6)
+
+          Repeater {
+            model: root.accountChipOptions
+            delegate: FilterChip {
+              required property var modelData
+              required property int index
+              label: ((modelData.label.match(/(\d{4})\s*$/) || ["", modelData.label])[1])
+              bank: modelData.accountType === "checking" ? modelData.bank : ""
+              network: modelData.network || ""
+              active: root.filter.accounts.indexOf(modelData.key) !== -1
+              tip: modelData.label + (index < 6 ? "  ·  Alt+" + (index + 1) : "")
+              onClicked: { var key = modelData.key; root.toggleAccountFilter(key) }
+              onCleared: {
+                var key = modelData.key
+                if (root.filter.accounts.indexOf(key) !== -1) root.toggleAccountFilter(key)
+              }
             }
           }
         }
       }
 
-      // Flow: direction and the three-state chips.
-      Flow {
-        width: panel.width
-        spacing: Style.space(4)
+      // Direction and the cycling chips.
+      Row {
+        spacing: Style.space(8)
+        Text {
+          width: panel.captionWidth
+          height: Style.space(26)
+          verticalAlignment: Text.AlignVCenter
+          textFormat: Text.PlainText
+          text: "Show"
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Flow {
+          width: panel.width - panel.captionWidth - Style.space(8)
+          spacing: Style.space(6)
 
-        FilterChip {
-          label: "In"
-          active: root.filter.dir === "in"
-          onClicked: root.setFilterPart("dir", root.filter.dir === "in" ? "any" : "in")
-          onCleared: root.setFilterPart("dir", "any")
-        }
-        FilterChip {
-          label: "Out"
-          active: root.filter.dir === "out"
-          onClicked: root.setFilterPart("dir", root.filter.dir === "out" ? "any" : "out")
-          onCleared: root.setFilterPart("dir", "any")
-        }
-        FilterChip {
-          label: root.filter.tracked === "untracked" ? "Not tracked" : "Tracked"
-          active: root.filter.tracked !== "any"
-          tip: "Click cycles any, tracked, not tracked"
-          onClicked: root.cycleFilterPart("tracked", ["any", "tracked", "untracked"])
-          onCleared: root.setFilterPart("tracked", "any")
-        }
-        FilterChip {
-          label: root.filter.transfers === "hide" ? "No transfers" : (root.filter.transfers === "only" ? "Transfers only" : "Transfers")
-          active: root.filter.transfers !== "any"
-          tip: "Click cycles any, only, hide"
-          onClicked: root.cycleFilterPart("transfers", ["any", "only", "hide"])
-          onCleared: root.setFilterPart("transfers", "any")
-        }
-        FilterChip {
-          visible: store.receipts.length > 0 || root.filter.bill !== "any"
-          label: root.filter.bill === "none" ? "No bill" : (root.filter.bill === "has" ? "Has bill" : "Bill")
-          active: root.filter.bill !== "any"
-          tip: "Click cycles any, has bill, no bill"
-          onClicked: root.cycleFilterPart("bill", ["any", "has", "none"])
-          onCleared: root.setFilterPart("bill", "any")
+          FilterChip {
+            label: "In"
+            active: root.filter.dir === "in"
+            onClicked: root.setFilterPart("dir", root.filter.dir === "in" ? "any" : "in")
+            onCleared: root.setFilterPart("dir", "any")
+          }
+          FilterChip {
+            label: "Out"
+            active: root.filter.dir === "out"
+            onClicked: root.setFilterPart("dir", root.filter.dir === "out" ? "any" : "out")
+            onCleared: root.setFilterPart("dir", "any")
+          }
+          FilterChip {
+            label: root.filter.tracked === "untracked" ? "Not tracked" : "Tracked"
+            active: root.filter.tracked !== "any"
+            tip: "Click cycles any, tracked, not tracked"
+            onClicked: root.cycleFilterPart("tracked", ["any", "tracked", "untracked"])
+            onCleared: root.setFilterPart("tracked", "any")
+          }
+          FilterChip {
+            label: root.filter.transfers === "hide" ? "No transfers" : (root.filter.transfers === "only" ? "Transfers only" : "Transfers")
+            active: root.filter.transfers !== "any"
+            tip: "Click cycles any, only, hide"
+            onClicked: root.cycleFilterPart("transfers", ["any", "only", "hide"])
+            onCleared: root.setFilterPart("transfers", "any")
+          }
+          FilterChip {
+            visible: store.receipts.length > 0 || root.filter.bill !== "any"
+            label: root.filter.bill === "none" ? "No bill" : (root.filter.bill === "has" ? "Has bill" : "Bill")
+            active: root.filter.bill !== "any"
+            tip: "Click cycles any, has bill, no bill"
+            onClicked: root.cycleFilterPart("bill", ["any", "has", "none"])
+            onCleared: root.setFilterPart("bill", "any")
+          }
         }
       }
 
-      // Flow: amount range and month.
-      Flow {
-        width: panel.width
-        spacing: Style.space(10)
-
+      // Amount range.
+      Row {
+        spacing: Style.space(8)
+        Text {
+          width: panel.captionWidth
+          height: Style.space(28)
+          verticalAlignment: Text.AlignVCenter
+          textFormat: Text.PlainText
+          text: "Amount"
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
         Row {
-          spacing: Style.space(4)
+          spacing: Style.space(8)
+          FilterAmountField { id: minField; which: "min"; placeholderText: "Min" }
           Text {
             height: Style.space(28)
             verticalAlignment: Text.AlignVCenter
             textFormat: Text.PlainText
-            text: "Amount"
-            color: Qt.darker(root.foreground, 1.4)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-          FilterAmountField { id: minField; which: "min"; placeholderText: "min" }
-          Text {
-            height: Style.space(28)
-            verticalAlignment: Text.AlignVCenter
-            textFormat: Text.PlainText
-            text: "–"
-            color: Qt.darker(root.foreground, 1.4)
+            text: "to"
+            color: Qt.darker(root.foreground, 1.5)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
           FilterAmountField {
             id: maxField
             which: "max"
-            placeholderText: root.filterBounds.max > 0 ? Model.formatGrouped(root.filterBounds.max) : "max"
+            placeholderText: root.filterBounds.max > 0 ? Model.formatGrouped(root.filterBounds.max) : "Max"
           }
         }
+      }
 
-        Row {
-          spacing: Style.space(4)
+      // Date: a month stepper and three shortcuts.
+      Row {
+        spacing: Style.space(8)
+        Text {
+          width: panel.captionWidth
+          height: Style.space(26)
+          verticalAlignment: Text.AlignVCenter
+          textFormat: Text.PlainText
+          text: "Date"
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Flow {
+          width: panel.width - panel.captionWidth - Style.space(8)
+          spacing: Style.space(6)
 
           Row {
             id: monthStepper
@@ -5548,13 +5612,13 @@ Panel {
               onCleared: root.setFilterPart("month", "")
             }
             Text {
-              height: Style.space(24)
-              width: Style.space(84)
+              height: Style.space(26)
+              width: Style.space(88)
               horizontalAlignment: Text.AlignHCenter
               verticalAlignment: Text.AlignVCenter
               textFormat: Text.PlainText
               text: root.filter.month === "" ? "All months" : (root.filter.month === "30d" ? "Last 30 days" : Model.monthLabel(root.filter.month))
-              color: root.filter.month === "" ? Qt.darker(root.foreground, 1.4) : Color.accent
+              color: root.filter.month === "" ? Qt.darker(root.foreground, 1.5) : Color.accent
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
               font.bold: root.filter.month !== ""
@@ -5578,22 +5642,32 @@ Panel {
             onClicked: root.setFilterPart("month", root.filter.month === bar.thisMonth ? "" : bar.thisMonth)
             onCleared: root.setFilterPart("month", "")
           }
-          FilterChip {
-            label: "All"
-            active: root.filter.month === ""
-            onClicked: root.setFilterPart("month", "")
-          }
         }
       }
 
-      Text {
+      // One quiet line: the count on the left, the way out on the right.
+      Item {
         width: panel.width
-        textFormat: Text.PlainText
-        text: root.filteredTransactions.length + " of " + root.transactions.length + " shown  ·  Esc closes  ·  Ctrl+Backspace clears all"
-        color: Qt.darker(root.foreground, 1.6)
-        font.family: Style.font.family
-        font.pixelSize: Style.font.caption
-        elide: Text.ElideRight
+        height: Style.space(18)
+
+        Text {
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: root.filteredTransactions.length + " of " + root.transactions.length + " shown"
+          color: Qt.darker(root.foreground, 1.6)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: "Esc to close"
+          color: Qt.darker(root.foreground, 1.6)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
       }
     }
   }
