@@ -285,6 +285,19 @@ def start_run(conn: sqlite3.Connection, bank: str) -> int:
 
 def finish_run(conn: sqlite3.Connection, run_id: int, outcome: str, message: str,
                added: int | None = None, total: int | None = None) -> None:
+    # Every bank's fetch ends here (success or not), so this is where EVERY
+    # transaction is checked again for a transfer partner: a half that was alone
+    # pairs the moment its other bank is fetched, in whichever order. A failure
+    # of the check never fails the fetch.
+    try:
+        from . import transfers
+        result = transfers.verify(conn, run_id)
+        if result["new"]:
+            n = result["new"]
+            message = f"{message}  ·  {n} transfer{'s' if n != 1 else ''} newly matched"
+    except Exception as exc:      # noqa: BLE001 - history is optional, the run must still be recorded
+        import sys
+        print(f"transfer check skipped: {exc}", file=sys.stderr)
     with write(conn):
         conn.execute("UPDATE fetch_runs SET finished_at = ?, outcome = ?, message = ?, added = ?, total = ? "
                      "WHERE id = ?", (now(), outcome, message, added, total, run_id))

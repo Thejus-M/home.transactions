@@ -32,29 +32,29 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     tx_rows = [{"id": t["id"], "date": t["date"], "merchant": t["merchant"], "amount_paise": round(t["amount"] * 100),
                 "account_id": t["accountId"], "account_type": t["accountType"], "bank": t["bank"]}
                for t in transactions]
-    detected = transfers.detect(tx_rows)
-    # Own-name rows whose other half is in another bank's data but carries no
-    # shared reference are joined here (and any half still alone is one-sided).
-    names = transfers.own_names(detected, tx_rows)
-    self_hits = transfers.detect_self(tx_rows, {tid for p in detected for tid in (p["outId"], p["inId"])}, names)
-    more, self_hits = transfers.pair_selfs(tx_rows, self_hits)
-    detected = detected + more
     by_id = {t["id"]: t for t in transactions}
+    # The same pipeline `transfers.verify` runs after every fetch; the history
+    # table only adds "when it was first matched" and the "new" mark.
+    detected, self_hits, _names = transfers.resolve(tx_rows)
+    history = transfers.ledger(conn)
     transfer_list = []
     for p in detected:
         is_split = p["outId"] in split or p["inId"] in split
+        h = history.get(p["id"], {})
         transfer_list.append({
             "id": p["id"], "outId": p["outId"], "inId": p["inId"], "amount": p["amountPaise"] / 100,
             "date": p["date"], "inDate": p["inDate"], "matchedBy": p["matchedBy"], "ref": p["ref"],
-            "split": is_split})
+            "certainty": transfers.CERTAINTY[p["matchedBy"]],
+            "outBank": by_id[p["outId"]]["bank"], "inBank": by_id[p["inId"]]["bank"],
+            "matchedAt": h.get("matchedAt"), "isNew": bool(h.get("isNew")), "split": is_split})
         for tid, role in ((p["outId"], "out"), (p["inId"], "in")):
             if is_split:
                 by_id[tid]["transferSplitId"] = p["id"]
             else:
                 by_id[tid]["transferId"] = p["id"]
                 by_id[tid]["transferRole"] = role
-                # the bank on the other side, for "TRANSFER FROM HDFC" on a card
-                # whose other half is filtered out of view
+                # the bank on the other side, for "FROM HDFC" on a card whose other
+                # half is filtered out of view
                 peer = by_id[p["inId"] if role == "out" else p["outId"]]
                 by_id[tid]["transferPeerBank"] = peer["bank"]
     # Own-name transfers whose other side is not in the data (txdb/transfers.py, rule 3).
@@ -64,6 +64,14 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         else:
             by_id[hit["id"]]["transferSelf"] = True
             by_id[hit["id"]]["transferOther"] = hit["other"]
+    # The UPI reference of an ordinary row, for the "i" panel.
+    for t in transactions:
+        ref = transfers.upi_ref(t["merchant"])
+        if ref:
+            t["reference"] = ref
+    # When each bank was last fetched successfully: "Axis was last fetched 20 Oct".
+    last_fetched = {r["bank"]: r["finished_at"] for r in conn.execute(
+        "SELECT bank, MAX(finished_at) AS finished_at FROM fetch_runs WHERE outcome = 'done' GROUP BY bank")}
     balances = [{
         "bank": r["bank"], "accountType": r["account_type"], "last4": r["last4"], "accountId": r["account_id"],
         "balance": from_paise(r["balance_paise"]), "currency": r["currency"], "asOf": r["as_of"],
@@ -91,6 +99,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     return {
         "transactions": transactions,
         "transfers": transfer_list,
+        "lastFetched": last_fetched,
         "balances": balances,
         "cardOverviews": card_overviews,
         "accounts": accounts,

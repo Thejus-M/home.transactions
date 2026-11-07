@@ -99,10 +99,12 @@ def detect(rows: list[dict]) -> list[dict]:
     debits = [r for r in rows if r["id"] not in used and r["amount_paise"] < 0 and r["account_type"] != "credit"]
     credits = [r for r in rows if r["id"] not in used and r["amount_paise"] > 0 and r["account_type"] == "credit"]
     wanted: dict[str, list[dict]] = {}
+    credits_by_amount: dict[int, list[dict]] = {}
+    for c in credits:
+        credits_by_amount.setdefault(c["amount_paise"], []).append(c)
     for d in debits:
-        wanted[d["id"]] = [c for c in credits
-                           if c["amount_paise"] == -d["amount_paise"]
-                           and _days(d["date"], c["date"]) <= CARD_WINDOW_DAYS
+        wanted[d["id"]] = [c for c in credits_by_amount.get(-d["amount_paise"], [])
+                           if _days(d["date"], c["date"]) <= CARD_WINDOW_DAYS
                            and (_CARD_PAYMENT.search(c["merchant"]) or _CARD_PAYMENT.search(d["merchant"]))]
     taken_by: dict[str, list[dict]] = {}
     for did, cs in wanted.items():
@@ -196,7 +198,12 @@ def pair_selfs(rows: list[dict], hits: list[dict]) -> tuple[list[dict], list[dic
         # other row is in
         return (o_hint in (None, i.get("bank"))) and (i_hint in (None, o.get("bank")))
 
-    wanted = {o["id"]: [i for i in ins if fits(o, i)] for o in outs}
+    # Only rows of the same amount can pair, so look inside amount buckets
+    # (the same result as comparing every out with every in, at a fraction of the cost).
+    ins_by_amount: dict[int, list[dict]] = {}
+    for i in ins:
+        ins_by_amount.setdefault(i["amount_paise"], []).append(i)
+    wanted = {o["id"]: [i for i in ins_by_amount.get(-o["amount_paise"], []) if fits(o, i)] for o in outs}
     count_in: dict[str, int] = {}
     for cs in wanted.values():
         for i in cs:
@@ -208,3 +215,87 @@ def pair_selfs(rows: list[dict], hits: list[dict]) -> tuple[list[dict], list[dic
             pairs.append(_pair(o, cs[0], "self", None))
             joined.update((o["id"], cs[0]["id"]))
     return pairs, [h for h in hits if h["id"] not in joined]
+
+
+# --------------------------------------------------- one pipeline, one history
+
+CERTAINTY = {"ref": 3, "card": 2, "self": 2}
+
+
+def resolve(rows: list[dict]) -> tuple[list[dict], list[dict], set[str]]:
+    """The whole pipeline, in priority order (reference, card, own name pair),
+    over `rows`. Returns (pairs, one-sided own-name hits, learned own names).
+    The snapshot and `verify` both call this, so they can never disagree."""
+    pairs = detect(rows)
+    names = own_names(pairs, rows)
+    paired = {tid for p in pairs for tid in (p["outId"], p["inId"])}
+    hits = detect_self(rows, paired, names)
+    more, hits = pair_selfs(rows, hits)
+    return pairs + more, hits, names
+
+
+def load_rows(conn) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT t.id, t.date, t.merchant, t.amount_paise, t.account_id, a.account_type, a.bank "
+        "FROM transactions t JOIN accounts a ON a.id = t.account_id")]
+
+
+def verify(conn, run_id: int | None = None) -> dict:
+    """Check EVERY transaction for a transfer partner and record the result in
+    `transfer_matches`. Run after every fetch of any bank: a half that was alone
+    yesterday pairs the day its other bank is fetched, whichever bank came first.
+
+    The live detection decides; this only keeps history - when a pair was first
+    found, by which rule, which fetch run caused it, and whether it dissolved
+    (a row was replaced by a later statement window). It writes only when
+    something changed, so a check with nothing new never touches the database
+    (and so never wakes the widget).
+
+    Returns {"new": n, "changed": n, "dissolved": n, "active": n}."""
+    from .db import now, write
+
+    split = {r[0] for r in conn.execute("SELECT txn_id FROM transfer_splits")}
+    pairs, _hits, _names = resolve(load_rows(conn))
+    live = {(p["outId"], p["inId"]): p for p in pairs
+            if p["outId"] not in split and p["inId"] not in split}
+    known = {(r["out_id"], r["in_id"]): r for r in conn.execute("SELECT * FROM transfer_matches")}
+
+    inserts = [p for k, p in live.items() if k not in known]
+    updates = [(k, p) for k, p in live.items() if k in known and
+               (known[k]["status"] != "active" or known[k]["rule"] != p["matchedBy"] or known[k]["ref"] != p["ref"])]
+    dissolves = [k for k, r in known.items() if r["status"] == "active" and k not in live]
+
+    if inserts or updates or dissolves:
+        stamp = now()
+        with write(conn):
+            for p in inserts:
+                conn.execute(
+                    "INSERT INTO transfer_matches (out_id, in_id, rule, ref, amount_paise, first_matched_at, "
+                    "first_run_id, last_changed_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (p["outId"], p["inId"], p["matchedBy"], p["ref"], p["amountPaise"], stamp, run_id, stamp))
+            for (out_id, in_id), p in updates:
+                # a returning pair keeps its first_matched_at; a new rule or reference is recorded
+                conn.execute(
+                    "UPDATE transfer_matches SET rule = ?, ref = ?, status = 'active', dissolved_at = NULL, "
+                    "last_changed_at = ? WHERE out_id = ? AND in_id = ?",
+                    (p["matchedBy"], p["ref"], stamp, out_id, in_id))
+            for out_id, in_id in dissolves:
+                conn.execute("UPDATE transfer_matches SET status = 'dissolved', dissolved_at = ?, "
+                             "last_changed_at = ? WHERE out_id = ? AND in_id = ?", (stamp, stamp, out_id, in_id))
+    return {"new": len(inserts), "changed": len(updates), "dissolved": len(dissolves), "active": len(live)}
+
+
+def ledger(conn) -> dict[str, dict]:
+    """transfer id ("out>in") -> its history row, for the snapshot (read only)."""
+    return {f"{r['out_id']}>{r['in_id']}": {"matchedAt": r["first_matched_at"], "firstRunId": r["first_run_id"],
+                                           "isNew": r["status"] == "active" and not r["seen"]}
+            for r in conn.execute("SELECT * FROM transfer_matches WHERE status = 'active'")}
+
+
+def mark_seen(conn) -> int:
+    """The user has looked at the widget: clear every "new" mark."""
+    from .db import write
+    if not conn.execute("SELECT 1 FROM transfer_matches WHERE seen = 0 LIMIT 1").fetchone():
+        return 0                                   # nothing to clear: do not touch the database
+    with write(conn):
+        return conn.execute("UPDATE transfer_matches SET seen = 1 WHERE seen = 0").rowcount

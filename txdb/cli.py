@@ -16,6 +16,8 @@
   txdb receipt-add-item <receiptId> <desc> [qty] [unit] [rate] [amount] [gstRate]
   txdb receipt-delete-item <receiptId> <lineNo>
   txdb receipt-edit-tax <receiptId> <rate> <cgst|sgst|igst|cess|taxable> [value]
+  txdb transfers-verify                  check every transaction for a transfer partner (runs after every fetch)
+  txdb transfers-mark-seen               clear the "new" mark on newly matched transfers
   txdb transfer-split <txnId>...         say a detected transfer pair is NOT a transfer
   txdb transfer-restore <txnId>...       undo that
   txdb receipt-add-fee <receiptId> <label> <amount>   platform / delivery / service fee
@@ -135,6 +137,13 @@ def main(argv: list[str]) -> int:
         receipts.delete_item(conn, args[0], args[1])
     elif cmd == "receipt-edit-tax":
         receipts.edit_tax_field(conn, args[0], args[1], args[2], " ".join(args[3:]))
+    elif cmd == "transfers-verify":
+        from . import transfers
+        json.dump(transfers.verify(conn), sys.stdout)
+        sys.stdout.write("\n")
+    elif cmd == "transfers-mark-seen":
+        from . import transfers
+        transfers.mark_seen(conn)
     elif cmd == "transfer-split":
         with write(conn):
             for tid in args:

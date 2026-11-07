@@ -636,6 +636,27 @@ MIGRATIONS = [
         split_at  TEXT NOT NULL
     );
     """,
+    # v19: the HISTORY of transfer matches (txdb/transfers.py `verify`). The
+    # live detection stays the only thing that decides what is paired; this
+    # table only remembers WHEN and WHY a pair was first found, which fetch
+    # run caused it, and whether the user has seen it yet. No foreign keys:
+    # the rows it names can be replaced by a later statement window.
+    """
+    CREATE TABLE transfer_matches (
+        out_id            TEXT NOT NULL,
+        in_id             TEXT NOT NULL,
+        rule              TEXT NOT NULL,             -- ref | card | self
+        ref               TEXT,
+        amount_paise      INTEGER NOT NULL,
+        first_matched_at  TEXT NOT NULL,
+        first_run_id      INTEGER,                   -- fetch_runs.id that caused it
+        last_changed_at   TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'dissolved')),
+        dissolved_at      TEXT,
+        seen              INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (out_id, in_id)
+    );
+    """,
 ]
 
 
