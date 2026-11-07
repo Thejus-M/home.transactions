@@ -2364,6 +2364,7 @@ Panel {
                 }
 
                 Text {
+                  visible: modelData.total !== 0
                   anchors.right: parent.right
                   textFormat: Text.PlainText
                   text: Model.formatAmount({ amount: modelData.total, currency: modelData.currency })
@@ -5846,6 +5847,9 @@ Panel {
   component AcctPill: Row {
     id: ap
     required property var txn
+    // The most this chip (logo + tag) may take; the tag's text is elided to fit
+    // rather than running under whatever sits beside it.
+    property real maxWidth: 100000
     spacing: Style.space(6)
     readonly property bool isSavings: ap.txn.accountType === "checking" && (ap.txn.bank === "AXIS" || ap.txn.bank === "SBI")
     readonly property string accountName: ap.txn.ghost ? "" : Model.accountLabel(Model.cardLabelParts(
@@ -5877,11 +5881,16 @@ Panel {
     Rectangle {
       radius: Style.space(4)
       color: Util.alpha(root.foreground, 0.12)
-      implicitWidth: apText.implicitWidth + Style.space(10)
+      implicitWidth: Math.min(apText.implicitWidth + Style.space(10), Math.max(Style.space(36), ap.maxWidth - Style.space(26)))
       implicitHeight: apText.implicitHeight + Style.space(4)
       Text {
         id: apText
-        anchors.centerIn: parent
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: Style.space(5)
+        anchors.rightMargin: Style.space(5)
+        elide: Text.ElideRight
         textFormat: Text.PlainText
         text: ap.txn.ghost ? (ap.txn.bank || "Other account") : (ap.isSavings ? ap.txn.bank + " ••" + ap.txn.last4 : ap.accountName)
         // A side that is not in your statements: the bank's name, dimmed and
@@ -6018,9 +6027,13 @@ Panel {
         }
 
         Row {
+          id: xFlow
+          width: parent.width
           spacing: Style.space(6)
-          AcctPill { txn: xc.outLeg; anchors.verticalCenter: parent.verticalCenter }
+          clip: true
+          AcctPill { txn: xc.outLeg; maxWidth: (xFlow.width - xArrow.width - 2 * xFlow.spacing) / 2; anchors.verticalCenter: parent.verticalCenter }
           Text {
+            id: xArrow
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
             text: "→"
@@ -6028,7 +6041,7 @@ Panel {
             font.bold: true
             font.pixelSize: Style.font.body
           }
-          AcctPill { txn: xc.inLeg; anchors.verticalCenter: parent.verticalCenter }
+          AcctPill { txn: xc.inLeg; maxWidth: (xFlow.width - xArrow.width - 2 * xFlow.spacing) / 2; anchors.verticalCenter: parent.verticalCenter }
         }
       }
 
@@ -6042,19 +6055,12 @@ Panel {
         Text {
           anchors.right: parent.right
           textFormat: Text.PlainText
-          text: Model.formatAmount({ amount: Math.abs(xc.amountLeg.amount), currency: xc.amountLeg.currency })
+          // Neutral: money that only moved between your own accounts has no +/-.
+          text: Model.currencySymbol(xc.amountLeg.currency) + Model.formatGrouped(Math.abs(xc.amountLeg.amount))
           color: root.foreground
           font.family: Style.font.family
           font.bold: true
           font.pixelSize: Style.font.subtitle
-        }
-        Text {
-          anchors.right: parent.right
-          textFormat: Text.PlainText
-          text: xc.how
-          color: Qt.darker(root.foreground, 1.5)
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
         }
       }
     }
