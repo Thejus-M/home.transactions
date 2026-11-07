@@ -2917,7 +2917,7 @@ Panel {
             }
           }
 
-          ScrollWheelArea { anchors.fill: linkFlick; target: linkFlick; speed: 2.5 }
+          ScrollWheelArea { anchors.fill: linkFlick; target: linkFlick }
         }
 
         // RIGHT: everything the parser found, and the verify actions —
@@ -3847,7 +3847,7 @@ Panel {
           }
           }
 
-          ScrollWheelArea { visible: !parent.folded; anchors.fill: fsDetailsFlick; target: fsDetailsFlick; speed: 2.5 }
+          ScrollWheelArea { visible: !parent.folded; anchors.fill: fsDetailsFlick; target: fsDetailsFlick }
 
           // The model's own reply, live, while it is generating - only for
           // the receipt that was sent for reparsing (the Process and its
@@ -3905,7 +3905,7 @@ Panel {
               }
             }
 
-            ScrollWheelArea { anchors.fill: fsOutputFlick; target: fsOutputFlick; speed: 2.5 }
+            ScrollWheelArea { anchors.fill: fsOutputFlick; target: fsOutputFlick }
           }
 
         }
@@ -5387,8 +5387,9 @@ Panel {
     required property Flickable target
     // How many content pixels one wheel "line" (a mouse notch, or an
     // equivalent slice of trackpad pixelDelta) moves - tune this, not the
-    // animation, to make scrolling faster or slower.
-    property real speed: 2.5
+    // animation, to make scrolling faster or slower. 5 = ~300 px a notch.
+    property real speed: 5.0
+    property double _lastWheel: 0
 
     acceptedButtons: Qt.NoButton
 
@@ -5396,8 +5397,8 @@ Panel {
       id: scrollAnim
       target: scrollWheel.target
       property: "contentY"
-      duration: 90
-      easing.type: Easing.OutCubic
+      duration: 240
+      easing.type: Easing.OutQuart
     }
 
     onWheel: function (event) {
@@ -5406,11 +5407,23 @@ Panel {
       // normal mouse wheel) is normalised against the same ~60px-per-
       // notch baseline browsers use, so both input types land in the same
       // speed scale.
-      var raw = event.pixelDelta.y !== 0 ? event.pixelDelta.y : (event.angleDelta.y / 120) * 60
+      var touchpad = event.pixelDelta.y !== 0
+      var raw = touchpad ? event.pixelDelta.y : (event.angleDelta.y / 120) * 60
       if (raw !== 0) {
+        var now = Date.now()
+        // A wheel spun quickly keeps speeding up (up to 2x), the way a long
+        // scroll should; a single notch stays precise.
+        var gain = (!touchpad && now - scrollWheel._lastWheel < 90) ? 2.0 : 1.0
+        scrollWheel._lastWheel = now
         var t = scrollWheel.target
         var maxY = Math.max(0, t.contentHeight - t.height)
-        var y = Math.max(0, Math.min(maxY, t.contentY - raw * scrollWheel.speed))
+        // Continue from where the running glide is headed, not from where it
+        // happens to be this frame: notches that arrive mid-glide add up
+        // instead of each restarting from a half-finished position (that
+        // lost most of a fast spin and made the page stutter).
+        var base = scrollAnim.running ? scrollAnim.to : t.contentY
+        var y = Math.max(0, Math.min(maxY, base - raw * scrollWheel.speed * gain))
+        scrollAnim.duration = touchpad ? 90 : 240
         scrollAnim.to = y
         scrollAnim.restart()
       }
@@ -5581,7 +5594,7 @@ Panel {
       }
     }
 
-    ScrollWheelArea { anchors.fill: sbFlick; target: sbFlick; speed: 2.5 }
+    ScrollWheelArea { anchors.fill: sbFlick; target: sbFlick }
 
     PanelActionButton {
       visible: sb.closable
