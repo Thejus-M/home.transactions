@@ -1070,7 +1070,9 @@ function receiptInfoRows(r) {
   var src = m.date_source
   add("Date used", src === "taken" ? "photo taken date" : src === "modified" ? "file modified date"
     : src === "printed" ? "printed on the bill (photo has no date)" : "")
+  add("Bill time", m.time)
   if (m.printed_date && m.printed_date !== r.date) add("Printed on the bill", m.printed_date)
+  if (m.printed_time && m.printed_time !== m.time) add("Printed time", m.printed_time)
   add("Camera", m.camera)
   var dims = m.width && m.height ? m.width + " × " + m.height + " px" : ""
   add("Image", [dims, m.format, formatBytes(m.size_bytes != null ? m.size_bytes : r.sourceSize)]

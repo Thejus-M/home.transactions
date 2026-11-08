@@ -207,6 +207,20 @@ class Formatting(Harness):
         self.assertEqual(rows["Date used"], "photo taken date")
         self.assertEqual(rows["Printed on the bill"], "2026-06-25")
 
+    def test_the_info_rows_show_the_bill_time_and_the_printed_time(self):
+        r = receipt(date="2026-06-26", time="08:01",
+                    imageMeta={"taken": "2026-06-26 08:01:09", "date_source": "taken",
+                               "time": "08:01", "printed_time": "13:15"})
+        rows = dict((x["label"], x["value"]) for x in self.js("receiptInfoRows(input.r)", r=r))
+        self.assertEqual(rows["Bill time"], "08:01")
+        self.assertEqual(rows["Printed time"], "13:15")
+        same = dict((x["label"], x["value"]) for x in self.js(
+            "receiptInfoRows(input.r)", r=receipt(imageMeta={"time": "08:01", "printed_time": "08:01"})))
+        self.assertNotIn("Printed time", same)
+        none = dict((x["label"], x["value"]) for x in self.js(
+            "receiptInfoRows(input.r)", r=receipt(imageMeta={"date_source": "modified"})))
+        self.assertNotIn("Bill time", none)
+
     def test_the_photo_note_says_it_is_compressed_and_kept_never_deleted(self):
         saved = receipt(state="linked", imageSaved={"bytes": 145000, "originalBytes": 3200000})
         note = self.js("receiptPhotoNote(input.r)", r=saved)
