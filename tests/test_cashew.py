@@ -265,6 +265,31 @@ class DraftTests(Base):
         res = cashew.build_links(list(ds.values()))
         self.assertEqual(res["transfers"][0]["title"], "HDFC <-> SBI")   # the transfer page carries the user's name
 
+    def test_category_from_the_name_the_user_gave(self):
+        f = cashew.category_from_name
+        self.assertEqual(f("Petrol-TIMBER FUELS"), ("Transport", "Petrol"))
+        self.assertEqual(f("petrol - Manakattil"), ("Transport", "Petrol"))
+        self.assertEqual(f("RD"), ("Investments", "RD"))
+        self.assertEqual(f("Groceries: Kunnil"), ("Groceries", ""))
+        self.assertEqual(f("Medicine-Apollo"), ("Health", "Medicine"))
+        for none in ("Dessi Cuppa", "UPI-MR BIJIN J-12", "Others-x", "Rent-flat", "HDFC <-> SBI", "", None):
+            self.assertIsNone(f(none), none)
+
+    def test_a_name_with_a_category_in_it_sets_the_category(self):
+        self.add(self.hdfc, row(1, "2026-10-02", -400.0, "UPI-ZEBRA TRADERS-X@OKAXIS-123456789012"))
+        gk = self.drafts()[0]["groupKey"]
+        self.assertNotEqual(self.drafts()[0]["subcategory"], "Petrol")
+        self.conn.execute("INSERT INTO merchant_names VALUES (?, ?, 'now')", (gk, "Petrol-MANAKATTIL FUELS"))
+        d = self.drafts()[0]
+        self.assertEqual((d["title"], d["category"], d["subcategory"]), ("Petrol-MANAKATTIL FUELS", "Transport", "Petrol"))
+        # the category you taught for the merchant still wins over the name
+        st = {"version": 1, "categories": {gk: {"category": "Shopping", "subcategory": "Others"}}, "accounts": {}}
+        self.assertEqual(cashew.drafts(self.conn, st)[0]["category"], "Shopping")
+        # a credit cannot take an expense category from a name: it falls through to the normal rules
+        self.add(self.hdfc, row(2, "2026-10-03", 400.0, "UPI-ZEBRA TRADERS-X@OKAXIS-123456789013"))
+        cr = {x["id"]: x for x in self.drafts()}["t-2"]
+        self.assertNotEqual(cr["subcategory"], "Petrol")
+
     def test_one_sided_own_name_leg(self):
         # the pair teaches the own name; a second row with that name and no partner is one-sided
         self.add(self.sbi, row(1, "2026-10-02", -500.0, SBI_OUT))

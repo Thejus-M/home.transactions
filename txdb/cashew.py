@@ -133,15 +133,41 @@ def _rule_hit(rule: dict, text: str) -> bool:
     return bool(m) and re.search(m, text, re.I) is not None
 
 
+_NAME_DENY = {"upi", "app", "items", "unknown", "others", "other", "item"}
+
+
+def category_from_name(name: str | None) -> tuple[str, str] | None:
+    """A name the user gave a payee can carry its category: "Petrol-TIMBER FUELS"
+    means Transport / Petrol, and a name that IS a subcategory ("RD") or a category
+    ("Groceries") means that one. The word before the first "-", ":" or "|" (or the
+    whole name) is matched case-insensitively against the category names and the
+    subcategory names. A subcategory name used by two categories ("Rent", "Others",
+    "Travel", "Settle") is ambiguous and is skipped, and so are a few generic words
+    ("UPI" is a Cashback subcategory but starts many raw bank texts)."""
+    text = " ".join((name or "").split())
+    if not text:
+        return None
+    head = re.split(r"\s*[-:|]\s*", text, maxsplit=1)[0].strip().lower()
+    if not head or head in _NAME_DENY:
+        return None
+    cats = load_categories()
+    for c in cats:
+        if c["name"].lower() == head:
+            return c["name"], ""
+    owners = [(c["name"], sub) for c in cats for sub in (c.get("subcategories") or []) if sub.lower() == head]
+    return owners[0] if len(owners) == 1 else None
+
+
 def choose_category(title: str, merchant: str, group_key: str, negative: bool, state: dict,
                     rules: list[dict] | None = None, types: dict[str, str] | None = None,
                     bill_user: tuple[str, str] | None = None, bill_llm: tuple[str, str] | None = None,
-                    friend_default: bool = False) -> tuple[str, str, str]:
+                    friend_default: bool = False, assigned_name: str | None = None) -> tuple[str, str, str]:
     """(category, subcategory, warning). First hit wins: (a) the category the
     user set on the linked bill, (b) the merchant mapping the user taught,
-    (c) the linked bill's model category, (d) keyword rules, (e) Friend
-    Settlement for an HDFC savings row with nothing else (`friend_default`),
-    (f) Uncategorized."""
+    (c) the category written in the name the user gave the payee
+    ("Petrol-TIMBER FUELS", `assigned_name`), (d) the linked bill's model
+    category, (e) keyword rules, (f) Friend Settlement for an HDFC savings row
+    with nothing else (`friend_default`), (g) Uncategorized."""
     types = types or _types()
     rules = load_rules() if rules is None else rules
     taught = (state.get("categories") or {}).get(group_key)
@@ -150,6 +176,8 @@ def choose_category(title: str, merchant: str, group_key: str, negative: bool, s
         pick, source = bill_user, "bill category"
     elif isinstance(taught, dict) and taught.get("category"):
         pick, source = (taught["category"], taught.get("subcategory") or ""), "taught category"
+    elif (named := category_from_name(assigned_name)) and named[0] in types and _fits(types[named[0]], negative):
+        pick, source = named, "name you gave it"
     else:
         # the model's pick counts only when it names a real category that fits
         if bill_llm and bill_llm[0] in types and _fits(types[bill_llm[0]], negative):
@@ -402,7 +430,8 @@ def drafts(conn, state: dict | None = None) -> list[dict]:
                 bill_user=(bc["category"], bc["subcategory"]) if bc and bc["source"] == "user" else None,
                 bill_llm=(bc["category"], bc["subcategory"]) if bc and bc["source"] == "llm" else None,
                 # HDFC savings (not a card, not another bank), no bill, nothing else to go on
-                friend_default=(r["bank"] == "HDFC" and r["account_type"] == "checking" and r["id"] not in linked))
+                friend_default=(r["bank"] == "HDFC" and r["account_type"] == "checking" and r["id"] not in linked),
+                assigned_name=overrides.get(r["group_key"]))
         aid = r["account_id"]
         account = acct_over[aid] if aid in acct_over else ACCOUNT_MAP.get(aid, "")
         out.append({
