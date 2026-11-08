@@ -1652,14 +1652,14 @@ function countActive(f) {
 
 var _MAX_AMOUNT = 1e12
 
-// "5k" -> 5000, "1.2L" -> 120000, "2cr" -> 20000000, "1,200" -> 1200.
+// "5k" -> 5000, "1.2L" -> 120000, "2cr" -> 20000000, "1.5m" -> 1500000, "1,200" -> 1200.
 // null for empty, negative or unreadable text.
 function parseAmountInput(s) {
   var text = String(s === null || s === undefined ? "" : s).replace(/[,\s₹]/g, "").toLowerCase()
   if (text === "") return null
-  var m = /^(\d+(?:\.\d*)?|\.\d+)(k|l|lac|lakh|cr|crore)?$/.exec(text)
+  var m = /^(\d+(?:\.\d*)?|\.\d+)(k|l|lac|lakh|cr|crore|m)?$/.exec(text)
   if (!m) return null
-  var mult = { k: 1e3, l: 1e5, lac: 1e5, lakh: 1e5, cr: 1e7, crore: 1e7 }[m[2] || ""] || 1
+  var mult = { k: 1e3, l: 1e5, lac: 1e5, lakh: 1e5, cr: 1e7, crore: 1e7, m: 1e6 }[m[2] || ""] || 1
   var value = Math.round(Number(m[1]) * mult * 100) / 100
   return value <= _MAX_AMOUNT ? value : null
 }

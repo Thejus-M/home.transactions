@@ -283,13 +283,18 @@ Panel {
   onFilterChanged: if (root.filterRestored) filterSaveTimer.restart()
   Timer {
     id: filterSaveTimer
-    interval: 400
-    onTriggered: {
-      var json = Model.serializeFilter(root.filter)
-      if (json === root.filterSavedJson) return
-      root.filterSavedJson = json
-      filterFile.setText(json + "\n")
-    }
+    interval: 120
+    onTriggered: root.flushFilterSave()
+  }
+  // Writes the filter now if it differs from what is on disk. Also called
+  // from Component.onDestruction so a late change survives a shell quit.
+  function flushFilterSave() {
+    filterSaveTimer.stop()
+    if (!root.filterRestored) return
+    var json = Model.serializeFilter(root.filter)
+    if (json === root.filterSavedJson) return
+    root.filterSavedJson = json
+    filterFile.setText(json + "\n")
   }
   FileView {
     id: filterFile
@@ -536,6 +541,7 @@ Panel {
   }
 
   Component.onCompleted: { root.syncAccountChipOptions(); refreshData() }
+  Component.onDestruction: root.flushFilterSave()
 
   QtObject {
     id: store
@@ -1460,7 +1466,15 @@ Panel {
         // Unhandled key events (Escape not claimed by any focused child —
         // the rename TextField claims its own) bubble up here, closing
         // the popup from anywhere inside it.
-        Keys.onEscapePressed: root.close()
+        // An open filter panel collapses first; a second Esc closes.
+        Keys.onEscapePressed: function (event) {
+          if (root.filterOpen) {
+            root.filterOpen = false
+            event.accepted = true
+          } else {
+            root.close()
+          }
+        }
 
         // Focus lands here when the popup opens (panel.focusTarget: column)
         // and whenever it's released back here (search close, Escape from a
@@ -4059,12 +4073,22 @@ Panel {
       font.bold: tabChip.selected
     }
 
+    TextMetrics {
+      id: badgeMetrics
+      text: tabChip.badge
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+
     Text {
       id: badgeDot
       anchors.left: tabLabel.right
       anchors.leftMargin: tabChip.badge === "" ? 0 : Style.spacing.xs
       anchors.verticalCenter: parent.verticalCenter
-      width: tabChip.badge === "" ? 0 : implicitWidth
+      // Width from a TextMetrics, not from this Text's own implicitWidth:
+      // that read was the "Binding loop detected for property width".
+      width: tabChip.badge === "" ? 0 : Math.ceil(badgeMetrics.advanceWidth)
       visible: tabChip.badge !== ""
       textFormat: Text.PlainText
       text: tabChip.badge
@@ -5200,6 +5224,9 @@ Panel {
     leftPadding: Style.space(10)
     rightPadding: Style.space(10)
     selectByMouse: true
+    // Only what Model.parseAmountInput reads: digits, comma, dot, space,
+    // the rupee sign and the letters of k l lac lakh cr crore m.
+    validator: RegularExpressionValidator { regularExpression: /^[0-9.,\s\u20b9klacrohem]*$/i }
     background: Rectangle {
       radius: Style.space(8)
       color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, field.activeFocus ? 0.12 : 0.06)
@@ -5222,11 +5249,32 @@ Panel {
     }
     property var _lastSynced: null
     function commit() {
+      softCommitTimer.stop()
       var parsed = Model.parseAmountInput(field.text)
       if (parsed === 0 && field.which === "min") parsed = null   // "0" = no lower bound
       root.setFilterPart(field.which, parsed)
       field.text = parsed === null ? "" : Model.formatGrouped(parsed)
     }
+    // Commit while typing (debounced) without touching the text, so the
+    // cursor stays. `shown` and `_lastSynced` are set first so that
+    // syncFromFilter sees its own value and leaves the text alone.
+    function softCommit() {
+      var parsed = Model.parseAmountInput(field.text)
+      if (parsed === null && field.text.trim() !== "") return
+      if (parsed === 0 && field.which === "min") parsed = null
+      var cur = root.filter[field.which]
+      if (cur === undefined) cur = null
+      if (parsed === cur) return
+      field.shown = parsed
+      field._lastSynced = parsed
+      root.setFilterPart(field.which, parsed)
+    }
+    Timer {
+      id: softCommitTimer
+      interval: 400
+      onTriggered: field.softCommit()
+    }
+    onTextEdited: softCommitTimer.restart()
     function step(up, big) {
       var cur = root.filter[field.which]
       if (cur === null || cur === undefined) cur = field.which === "max" ? root.filterBounds.max : 0
@@ -5502,7 +5550,7 @@ Panel {
         leftPadding: Style.space(4)
         verticalAlignment: Text.AlignVCenter
         textFormat: Text.PlainText
-        text: root.filteredTransactions.length + " of " + root.transactions.length
+        text: root.filteredTransactions.length + " of " + root.transactions.length + " rows"
         color: Qt.darker(root.foreground, 1.2)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -5720,7 +5768,7 @@ Panel {
           anchors.left: parent.left
           anchors.verticalCenter: parent.verticalCenter
           textFormat: Text.PlainText
-          text: root.filteredTransactions.length + " of " + root.transactions.length + " shown"
+          text: root.filteredTransactions.length + " of " + root.transactions.length + " rows shown"
           color: Qt.darker(root.foreground, 1.2)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption

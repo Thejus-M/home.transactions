@@ -7,6 +7,7 @@ rupee values and the bounds test checks 57,614 -> 58,000."""
 import json
 import shutil
 import subprocess
+import pathlib
 import unittest
 from pathlib import Path
 
@@ -205,7 +206,7 @@ class Chips(Harness):
 class Parsing(Harness):
     def test_amount_text(self):
         cases = {"5k": 5000, "1.2L": 120000, "1,200": 1200, "2cr": 20000000, "750": 750,
-                 "₹ 1,00,000": 100000, " 3K ": 3000, "0": 0}
+                 "₹ 1,00,000": 100000, " 3K ": 3000, "0": 0, "1.5m": 1500000, "2M": 2000000}
         for text, want in cases.items():
             self.assertEqual(self.js("parseAmountInput(input.s)", s=text), want, text)
 
@@ -352,6 +353,33 @@ class BugHunt(Harness):
                       " filterTransactions(input.r, f, {}); return before === JSON.stringify(input.r) })()",
                       r=[row("a"), row("b", amount=5)], k=SBI)
         self.assertTrue(out)
+
+
+class PanelSource(unittest.TestCase):
+    """Guards for Panel.qml rules that cannot run in node."""
+    src = (pathlib.Path(__file__).resolve().parent.parent / "Panel.qml").read_text()
+
+    def test_amount_validator_matches_parser_letters(self):
+        import re
+        m = re.search(r"RegularExpressionValidator \{ regularExpression: /\^\[(.*?)\]\*\$/i", self.src)
+        self.assertTrue(m)
+        cls = re.compile("[" + m.group(1).replace("\\u20b9", "\u20b9") + "]", re.I)
+        for ch in "0123456789.,  \u20b9klLKcrCRmM":
+            self.assertTrue(cls.match(ch), ch)
+        for ch in "/-x+*":
+            self.assertFalse(cls.match(ch), ch)
+        for word in ["lac", "lakh", "crore", "cr", "k", "l", "m"]:
+            self.assertTrue(all(cls.match(c) for c in word), word)
+
+    def test_one_opened_handler_and_save_flush(self):
+        self.assertEqual(self.src.count("onOpenedChanged"), 1)
+        self.assertIn("Component.onDestruction: root.flushFilterSave()", self.src)
+        self.assertIn("interval: 120", self.src)
+
+    def test_escape_collapses_panel_before_closing(self):
+        i = self.src.index("An open filter panel collapses first")
+        self.assertIn("root.filterOpen = false", self.src[i:i + 300])
+        self.assertIn("root.close()", self.src[i:i + 300])
 
 
 if __name__ == "__main__":
