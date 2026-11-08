@@ -1,0 +1,151 @@
+[
+ {
+  "match": "\\b(swiggy|zomato|eatsure|dominos|domino's|kfc|mcdonald|pizza hut|burger king)\\b",
+  "category": "Food Out",
+  "subcategory": "Delivery"
+ },
+ {
+  "match": "\\b(restaura|cafe|coffee|bakery|biryani|kitchen|barbecue|ice crea|eatery|tea (stall|wills)|juice|chai|cuppa|khana|mandi|cater|catring)",
+  "category": "Food Out",
+  "subcategory": "Others",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(blinkit|zepto|bigbasket|instamart|dmart|reliance (fresh|smart)|more retail|supermarket|hypermarket|provision|grocer)",
+  "category": "Groceries",
+  "subcategory": "Provisions",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(mini market|margin free|hyper ?m)",
+  "category": "Groceries",
+  "subcategory": "Provisions",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(lulu)\\b.*\\bparking|parking",
+  "category": "Transport",
+  "subcategory": "Parking",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(uber|ola|olacabs|rapido|namma yatri|metro|kmrl|ksrtc|redbus)\\b",
+  "category": "Transport",
+  "subcategory": "Transit",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(petrol|fuels?|hpcl|bpcl|iocl|indian oil|bharat petroleum|hp pay)\\b",
+  "category": "Transport",
+  "subcategory": "Petrol",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(irctc|indian railways|railway|makemytrip|goibibo|indigo|air india|cleartrip|ixigo)\\b",
+  "category": "Travel",
+  "subcategory": "Travel",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(pharm|pharmacy|pharmacies|apollo|medplus|netmeds|medical|medicals|1mg)\\b",
+  "category": "Health",
+  "subcategory": "Medicine",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(hospital|clinic|diagnostic)",
+  "category": "Health",
+  "subcategory": "Doctor",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(salon|saloon|barber|haircut|unisex)\\b",
+  "category": "Personal Care",
+  "subcategory": "Haircut",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(netflix|spotify|hotstar|prime video|youtube premium|apple\\.com/bill|google play|icloud)\\b",
+  "category": "Subscriptions",
+  "subcategory": "Apps",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(claude|anthropic)\\b",
+  "category": "Subscriptions",
+  "subcategory": "Claude Pro",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(openai|chatgpt)\\b",
+  "category": "Subscriptions",
+  "subcategory": "Apps",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(recharge|jio|airtel|vodafone|vi prepaid|bsnl)\\b",
+  "category": "Bills & Utilities",
+  "subcategory": "Mobile",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(kseb|kerala state electricity|electricity|bescom|tneb)\\b",
+  "category": "Bills & Utilities",
+  "subcategory": "Electricity",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(pvr|inox|bookmyshow|cinema|movie)\\b",
+  "category": "Entertainment",
+  "subcategory": "Movies",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(gym|cult\\.?fit|cultfit)\\b",
+  "category": "Fitness",
+  "subcategory": "Gym",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(iccl|groww|zerodha|upstox|indmoney|nse clearing)\\b",
+  "category": "Investments",
+  "subcategory": "Stocks",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(mutual fund|sip)\\b",
+  "category": "Investments",
+  "subcategory": "Mutual Funds",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(credit interest|int\\.?\\s?pd|interest paid|interest credit)\\b",
+  "category": "Returns & Interest",
+  "subcategory": "Interest",
+  "sign": "credit"
+ },
+ {
+  "match": "\\b(div|dividend)\\b",
+  "category": "Returns & Interest",
+  "subcategory": "Dividends",
+  "sign": "credit"
+ },
+ {
+  "match": "\\b(refund|reversal|cashback)\\b",
+  "category": "Cashback & Rewards",
+  "subcategory": "Refund",
+  "sign": "credit"
+ },
+ {
+  "match": "\\b(uniqlo)\\b",
+  "category": "Shopping",
+  "subcategory": "Clothing",
+  "sign": "debit"
+ },
+ {
+  "match": "surcharge waiver",
+  "category": "Cashback & Rewards",
+  "subcategory": "Refund",
+  "sign": "credit"
+ }
+]

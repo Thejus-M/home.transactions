@@ -1,0 +1,214 @@
+[
+ {
+  "name": "Balance Correction",
+  "type": "balance",
+  "subcategories": []
+ },
+ {
+  "name": "Salary",
+  "type": "income",
+  "subcategories": [
+   "Bonus",
+   "Monthly"
+  ]
+ },
+ {
+  "name": "Rent Received",
+  "type": "income",
+  "subcategories": [
+   "Other",
+   "Rent"
+  ]
+ },
+ {
+  "name": "Returns & Interest",
+  "type": "income",
+  "subcategories": [
+   "Dividends",
+   "Interest",
+   "Maturity"
+  ]
+ },
+ {
+  "name": "Cashback & Rewards",
+  "type": "income",
+  "subcategories": [
+   "App",
+   "ATM Card",
+   "Refund",
+   "UPI"
+  ]
+ },
+ {
+  "name": "Housing",
+  "type": "expense",
+  "subcategories": [
+   "Rent"
+  ]
+ },
+ {
+  "name": "Bills & Utilities",
+  "type": "expense",
+  "subcategories": [
+   "Electricity",
+   "Mobile"
+  ]
+ },
+ {
+  "name": "Subscriptions",
+  "type": "expense",
+  "subcategories": [
+   "Apps",
+   "Claude Pro",
+   "Dating App"
+  ]
+ },
+ {
+  "name": "Groceries",
+  "type": "expense",
+  "subcategories": [
+   "Provisions"
+  ]
+ },
+ {
+  "name": "Transport",
+  "type": "expense",
+  "subcategories": [
+   "Parking",
+   "Petrol",
+   "Transit"
+  ]
+ },
+ {
+  "name": "Vehicle",
+  "type": "expense",
+  "subcategories": [
+   "Fines",
+   "Insurance",
+   "Parts",
+   "Servicing"
+  ]
+ },
+ {
+  "name": "Health",
+  "type": "expense",
+  "subcategories": [
+   "Doctor",
+   "Medicine"
+  ]
+ },
+ {
+  "name": "Food Out",
+  "type": "expense",
+  "subcategories": [
+   "Breakfast",
+   "Brunch",
+   "Delivery",
+   "Dinner",
+   "Lunch",
+   "Others",
+   "Sweets"
+  ]
+ },
+ {
+  "name": "Personal Care",
+  "type": "expense",
+  "subcategories": [
+   "Grooming Products",
+   "Haircut",
+   "Self Care Product",
+   "Teeth"
+  ]
+ },
+ {
+  "name": "Fitness",
+  "type": "expense",
+  "subcategories": [
+   "Gym"
+  ]
+ },
+ {
+  "name": "Shopping",
+  "type": "expense",
+  "subcategories": [
+   "Clothing",
+   "Footwear",
+   "Luxury",
+   "Others"
+  ]
+ },
+ {
+  "name": "Entertainment",
+  "type": "expense",
+  "subcategories": [
+   "Items",
+   "Activities",
+   "Movies"
+  ]
+ },
+ {
+  "name": "Gifts & Giving",
+  "type": "expense",
+  "subcategories": [
+   "Family Support",
+   "Gifts"
+  ]
+ },
+ {
+  "name": "Travel",
+  "type": "expense",
+  "subcategories": [
+   "Travel",
+   "Place/event",
+   "Stay",
+   "Travel Food",
+   "Travel Shopping"
+  ]
+ },
+ {
+  "name": "Education",
+  "type": "expense",
+  "subcategories": [
+   "Courses",
+   "Finance"
+  ]
+ },
+ {
+  "name": "Investments",
+  "type": "expense",
+  "subcategories": [
+   "Stocks",
+   "US Stocks",
+   "RD",
+   "FD",
+   "Mutual Funds",
+   "Dividend"
+  ]
+ },
+ {
+  "name": "Friend Settlement",
+  "type": "expense",
+  "subcategories": [
+   "Lent",
+   "Received",
+   "Settle",
+   "Split Paid"
+  ]
+ },
+ {
+  "name": "Flatmates",
+  "type": "expense",
+  "subcategories": [
+   "Bills Share",
+   "Groceries Share",
+   "Settle"
+  ]
+ },
+ {
+  "name": "Uncategorized",
+  "type": "balance",
+  "subcategories": [
+   "Unknown"
+  ]
+ }
+]
