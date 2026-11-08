@@ -389,8 +389,11 @@ def drafts(conn, state: dict | None = None) -> list[dict]:
         leg = legs.get(r["id"])
         if leg:
             kind, (cat, sub) = "transfer", (BALANCE, "")
-            title = (f"Transfer to {leg['peer']}" if leg["peer"] else "Transfer out") if negative else \
-                    (f"Transfer from {leg['peer']}" if leg["peer"] else "Transfer in")
+            # A name the user gave this payee group (merchant_names) always wins; the
+            # generated "Transfer to <bank>" is only the fallback.
+            title = overrides.get(r["group_key"]) or (
+                (f"Transfer to {leg['peer']}" if leg["peer"] else "Transfer out") if negative else
+                (f"Transfer from {leg['peer']}" if leg["peer"] else "Transfer in"))
         else:
             kind = "spend" if negative else "income"
             bc = bill_cats.get(r["id"])

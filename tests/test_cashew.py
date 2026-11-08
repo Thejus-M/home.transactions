@@ -254,6 +254,17 @@ class DraftTests(Base):
         self.assertTrue(any("without partner" in w for w in lone_res["warnings"]))
         self.assertEqual((lone_res["transfers"], lone_res["links"][0]["ids"]), ([], ["t-1"]))
 
+    def test_transfer_titles_use_the_names_the_user_assigned(self):
+        self.add(self.sbi, row(1, "2026-10-02", -500.0, SBI_OUT))
+        self.add(self.hdfc, row(2, "2026-10-02", 500.0, HDFC_IN))
+        first = {d["id"]: d for d in self.drafts()}
+        # a name saved for the OUT leg's payee group wins over "Transfer to HDFC"
+        self.conn.execute("INSERT INTO merchant_names VALUES (?, ?, 'now')", (first["t-1"]["groupKey"], "HDFC <-> SBI"))
+        ds = {d["id"]: d for d in self.drafts()}
+        self.assertEqual((ds["t-1"]["title"], ds["t-2"]["title"]), ("HDFC <-> SBI", "Transfer from SBI"))
+        res = cashew.build_links(list(ds.values()))
+        self.assertEqual(res["transfers"][0]["title"], "HDFC <-> SBI")   # the transfer page carries the user's name
+
     def test_one_sided_own_name_leg(self):
         # the pair teaches the own name; a second row with that name and no partner is one-sided
         self.add(self.sbi, row(1, "2026-10-02", -500.0, SBI_OUT))
