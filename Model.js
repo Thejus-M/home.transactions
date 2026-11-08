@@ -1692,3 +1692,129 @@ function restoreFilter(json, options) {
   })
   return f
 }
+
+// ---------------------------------------------------------------- Cashew
+// Pure helpers for the Cashew verify window. Drafts come from
+// `txdb cashew-draft`; every function returns a NEW array or object so the
+// window replaces its property once per edit.
+
+// Main categories the picker offers for an amount string: income ones for a
+// credit, expense ones for a debit; "balance" types (Balance Correction,
+// Uncategorized) always.
+function cashewCategoriesFor(categories, amount) {
+  var debit = String(amount || "").charAt(0) === "-"
+  return (categories || []).filter(function (c) {
+    return c.type === "balance" || c.type === (debit ? "expense" : "income")
+  })
+}
+
+function cashewIsDebit(d) { return String(d.amount || "").charAt(0) === "-" }
+
+// New array with draft `idx` merged with `patch`.
+function cashewPatch(drafts, idx, patch) {
+  if (idx < 0 || idx >= drafts.length) return drafts
+  var out = drafts.slice()
+  out[idx] = Object.assign({}, drafts[idx], patch)
+  return out
+}
+
+// The same merchant (group key) and direction as drafts[idx], transfers excluded.
+function _cashewSameMerchant(a, b) {
+  return !!a.groupKey && a.groupKey === b.groupKey && a.kind === b.kind && a.kind !== "transfer"
+}
+
+// Sets the category on drafts[idx]; with `spread`, on every other draft of
+// the same merchant and direction too.
+function cashewApplyCategory(drafts, idx, category, subcategory, spread) {
+  if (idx < 0 || idx >= drafts.length) return drafts
+  var src = drafts[idx]
+  return drafts.map(function (d, i) {
+    if (i === idx || (spread && _cashewSameMerchant(src, d)))
+      return Object.assign({}, d, { category: category, subcategory: subcategory })
+    return d
+  })
+}
+
+// Sets the account name on drafts[idx]; with `spread`, on every draft of the
+// same bank account.
+function cashewApplyAccount(drafts, idx, name, spread) {
+  if (idx < 0 || idx >= drafts.length) return drafts
+  var src = drafts[idx]
+  return drafts.map(function (d, i) {
+    if (i === idx || (spread && src.accountId && d.accountId === src.accountId))
+      return Object.assign({}, d, { account: name })
+    return d
+  })
+}
+
+// New state with the merchant's category remembered.
+function cashewRememberCategory(state, groupKey, category, subcategory) {
+  var s = JSON.parse(JSON.stringify(state || { version: 1 }))
+  s.version = 1
+  s.categories = s.categories || {}
+  s.accounts = s.accounts || {}
+  if (groupKey) s.categories[groupKey] = { category: category, subcategory: subcategory }
+  return s
+}
+
+// New state with the bank account's Cashew name remembered.
+function cashewRememberAccount(state, accountId, name) {
+  var s = JSON.parse(JSON.stringify(state || { version: 1 }))
+  s.version = 1
+  s.categories = s.categories || {}
+  s.accounts = s.accounts || {}
+  if (accountId) s.accounts[accountId] = name
+  return s
+}
+
+// Indexes of the drafts the table shows. With `onlyFilter`, only drafts whose
+// id is a key of `idSet` (the ids the RECENT filter lets through).
+function cashewShownIndexes(drafts, onlyFilter, idSet) {
+  var out = []
+  for (var i = 0; i < drafts.length; i++)
+    if (!onlyFilter || (idSet && idSet[drafts[i].id])) out.push(i)
+  return out
+}
+
+// What `txdb cashew-links` reads: shown drafts only, `include` kept.
+function cashewPayload(drafts, shown, maxChars) {
+  var keep = {}
+  shown.forEach(function (i) { keep[i] = true })
+  return JSON.stringify({
+    drafts: drafts.map(function (d, i) {
+      return keep[i] ? d : Object.assign({}, d, { include: false })
+    }),
+    maxChars: maxChars || 6000
+  })
+}
+
+function cashewIncluded(drafts, shown) {
+  return shown.map(function (i) { return drafts[i] }).filter(function (d) { return d.include })
+}
+
+function cashewValidDate(text) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(text).trim())
+  if (!m) return false
+  var mo = Number(m[2]), da = Number(m[3])
+  return mo >= 1 && mo <= 12 && da >= 1 && da <= 31
+}
+
+// "-250" -> "-250.00"; null when it is not a plain number.
+function cashewNormAmount(text) {
+  var t = String(text).trim().replace(/,/g, "")
+  if (!/^[-+]?\d+(\.\d+)?$/.test(t)) return null
+  var n = Number(t)
+  if (!isFinite(n)) return null
+  return n.toFixed(2).replace(/^\+/, "")
+}
+
+// Link counts for the card title: "Link 2 of 5  ·  17 transactions  ·  5,310 characters".
+function cashewLinkLabel(i, n, count, chars) {
+  var c = String(chars).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+  return "Link " + (i + 1) + " of " + n + "  ·  " + count + (count === 1 ? " transaction" : " transactions")
+    + "  ·  " + c + " characters"
+}
+
+function cashewPrettyJson(text) {
+  try { return JSON.stringify(JSON.parse(text), null, 1) } catch (e) { return String(text) }
+}

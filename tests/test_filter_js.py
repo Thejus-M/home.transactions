@@ -373,7 +373,7 @@ class PanelSource(unittest.TestCase):
 
     def test_one_opened_handler_and_save_flush(self):
         self.assertEqual(self.src.count("onOpenedChanged"), 1)
-        self.assertIn("Component.onDestruction: root.flushFilterSave()", self.src)
+        self.assertIn("Component.onDestruction: { root.flushFilterSave(); root.flushCashewSave() }", self.src)
         self.assertIn("interval: 120", self.src)
 
     def test_escape_collapses_panel_before_closing(self):

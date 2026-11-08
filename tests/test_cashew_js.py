@@ -1,0 +1,105 @@
+"""The Cashew verify window's pure helpers in Model.js, run through node
+(same vm harness as test_filter_js.py)."""
+import json
+import shutil
+import subprocess
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+NODE = shutil.which("node")
+
+SCRIPT = """
+const fs = require("fs"), vm = require("vm");
+const ctx = {}; vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), ctx);
+ctx.input = JSON.parse(process.argv[2]);
+console.log(JSON.stringify(vm.runInContext(process.argv[3], ctx)));
+"""
+
+CATS = [
+    {"name": "Balance Correction", "type": "balance", "subcategories": []},
+    {"name": "Salary", "type": "income", "subcategories": ["Monthly"]},
+    {"name": "Food Out", "type": "expense", "subcategories": ["Lunch"]},
+    {"name": "Uncategorized", "type": "balance", "subcategories": ["Unknown"]},
+]
+
+
+def draft(id, amount="-100.00", group="g1", kind="spend", account_id="a1", **extra):
+    d = {"id": id, "include": True, "date": "2026-11-01", "title": "T", "amount": amount,
+         "category": "Uncategorized", "subcategory": "Unknown", "account": "", "notes": "",
+         "kind": kind, "groupKey": group, "accountId": account_id}
+    d.update(extra)
+    return d
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class CashewJs(unittest.TestCase):
+    def js(self, expression, **values):
+        out = subprocess.run([NODE, "-e", SCRIPT, str(ROOT / "Model.js"), json.dumps(values), expression],
+                             capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_categories_follow_the_sign(self):
+        names = lambda a: [c["name"] for c in self.js("cashewCategoriesFor(input.c, input.a)", c=CATS, a=a)]
+        self.assertEqual(names("-5.00"), ["Balance Correction", "Food Out", "Uncategorized"])
+        self.assertEqual(names("5.00"), ["Balance Correction", "Salary", "Uncategorized"])
+
+    def test_patch_returns_new_array_and_keeps_others(self):
+        ds = [draft("a"), draft("b")]
+        out = self.js("cashewPatch(input.d, 1, {title: 'X'})", d=ds)
+        self.assertEqual([d["title"] for d in out], ["T", "X"])
+        self.assertEqual(self.js("cashewPatch(input.d, 5, {title: 'X'})", d=ds), ds)
+
+    def test_category_spreads_to_same_merchant_and_direction_only(self):
+        ds = [draft("a"), draft("b"), draft("c", group="g2"), draft("d", amount="50.00", kind="income"),
+              draft("e", kind="transfer")]
+        out = self.js("cashewApplyCategory(input.d, 0, 'Food Out', 'Lunch', true)", d=ds)
+        self.assertEqual([d["category"] for d in out],
+                         ["Food Out", "Food Out", "Uncategorized", "Uncategorized", "Uncategorized"])
+        one = self.js("cashewApplyCategory(input.d, 0, 'Food Out', '', false)", d=ds)
+        self.assertEqual([d["category"] for d in one].count("Food Out"), 1)
+
+    def test_account_spreads_by_account_id(self):
+        ds = [draft("a"), draft("b", group="g2"), draft("c", account_id="a2")]
+        out = self.js("cashewApplyAccount(input.d, 0, 'HDFC', true)", d=ds)
+        self.assertEqual([d["account"] for d in out], ["HDFC", "HDFC", ""])
+
+    def test_remember_does_not_mutate_input(self):
+        st = {"version": 1, "categories": {}, "accounts": {}}
+        out = self.js("(function(){var s=input.s;var r=cashewRememberCategory(s,'g1','Food Out','Lunch');"
+                      "r=cashewRememberAccount(r,'a1','HDFC');return [s,r]})()", s=st)
+        self.assertEqual(out[0], st)
+        self.assertEqual(out[1]["categories"]["g1"], {"category": "Food Out", "subcategory": "Lunch"})
+        self.assertEqual(out[1]["accounts"], {"a1": "HDFC"})
+
+    def test_shown_indexes_and_payload_respect_the_filter(self):
+        ds = [draft("a"), draft("b"), draft("c")]
+        shown = self.js("cashewShownIndexes(input.d, true, {a: true, c: true})", d=ds)
+        self.assertEqual(shown, [0, 2])
+        self.assertEqual(self.js("cashewShownIndexes(input.d, false, {})", d=ds), [0, 1, 2])
+        payload = json.loads(self.js("cashewPayload(input.d, input.s, 6000)", d=ds, s=shown))
+        self.assertEqual([d["include"] for d in payload["drafts"]], [True, False, True])
+        self.assertEqual(payload["maxChars"], 6000)
+        ds[0]["include"] = False
+        inc = self.js("cashewIncluded(input.d, input.s)", d=ds, s=shown)
+        self.assertEqual([d["id"] for d in inc], ["c"])
+
+    def test_validation(self):
+        self.assertTrue(self.js("cashewValidDate('2026-11-08')"))
+        self.assertFalse(self.js("cashewValidDate('08-11-2026')"))
+        self.assertFalse(self.js("cashewValidDate('2026-13-01')"))
+        self.assertEqual(self.js("cashewNormAmount('-250')"), "-250.00")
+        self.assertEqual(self.js("cashewNormAmount('1,250.5')"), "1250.50")
+        self.assertIsNone(self.js("cashewNormAmount('12abc')"))
+
+    def test_labels(self):
+        self.assertEqual(self.js("cashewLinkLabel(1, 5, 17, 5310)"),
+                         "Link 2 of 5  ·  17 transactions  ·  5,310 characters")
+        self.assertIn("1 transaction ", self.js("cashewLinkLabel(0, 1, 1, 90)"))
+        self.assertEqual(self.js("cashewPrettyJson('{\"a\":1}')"), '{\n "a": 1\n}')
+        self.assertEqual(self.js("cashewPrettyJson('nope')"), "nope")
+
+
+if __name__ == "__main__":
+    unittest.main()

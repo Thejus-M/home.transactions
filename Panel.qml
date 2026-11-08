@@ -308,6 +308,175 @@ Panel {
     }
     onLoadFailed: root.filterRestored = true
   }
+  // ------------------------------------------------------------ Cashew
+  // The verify window (cashewWin below) turns the untracked, settled rows
+  // into Cashew links. The drafts and links come from `txdb cashew-draft` and
+  // `txdb cashew-links`; the widget only edits and shows them. The state file
+  // (merchant -> category, bank account -> Cashew name) is written here and
+  // only read by Python.
+  property bool cashewOpen: false
+  property bool cashewLoading: false
+  property string cashewError: ""
+  property var cashewDrafts: []
+  property var cashewShown: []        // indexes into cashewDrafts that the table shows
+  property var cashewCategories: []
+  property var cashewAccountNames: []
+  property var cashewState: ({ version: 1, categories: {}, accounts: {} })
+  property string cashewStateSavedJson: ""
+  property bool cashewStateLoaded: false
+  property bool cashewOnlyFilter: false
+  property var cashewLinks: []
+  property var cashewWarnings: []
+  property string cashewLinksError: ""
+  property bool cashewLinksBusy: false
+  property bool cashewLinksPending: false
+  // Same set the Python side drafts: untracked and settled.
+  readonly property int cashewCount: transactions.filter(function (t) { return !t.tracked && t.status === "settled" }).length
+  readonly property int cashewIncludedCount: Model.cashewIncluded(root.cashewDrafts, root.cashewShown).length
+  readonly property var cashewFilterIds: {
+    var set = ({})
+    root.filteredTransactions.forEach(function (t) { set[t.id] = true })
+    return set
+  }
+  readonly property string cashewLinksPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/transactions-cashew-drafts.json"
+
+  function closeCashew() {
+    root.flushCashewSave()
+    root.cashewOpen = false
+  }
+  function cashewLoad() {
+    root.cashewLoading = true
+    root.cashewError = ""
+    root.cashewDrafts = []
+    root.cashewShown = []
+    root.cashewLinks = []
+    root.cashewWarnings = []
+    root.cashewLinksError = ""
+    if (!cashewDraftProc.running) cashewDraftProc.running = true
+  }
+  function cashewApplyDrafts(text) {
+    if (!root.cashewOpen || text.trim() === "") return
+    var data
+    try { data = JSON.parse(text) } catch (e) { data = null }
+    if (!data || !Array.isArray(data.drafts)) {
+      root.cashewError = "The draft reader printed something that is not valid JSON."
+      root.cashewLoading = false
+      return
+    }
+    root.cashewCategories = data.categories || []
+    root.cashewAccountNames = data.accountNames || []
+    root.cashewState = data.state || ({ version: 1, categories: {}, accounts: {} })
+    root.cashewStateSavedJson = JSON.stringify(root.cashewState)
+    root.cashewStateLoaded = true
+    root.cashewDrafts = data.drafts
+    root.cashewReshow()
+    root.cashewLoading = false
+    root.cashewQueueLinks()
+  }
+  // Recomputes which drafts the table shows; skipped when nothing changed so
+  // the list keeps its scroll position.
+  function cashewReshow() {
+    var next = Model.cashewShownIndexes(root.cashewDrafts, root.cashewOnlyFilter, root.cashewFilterIds)
+    if (JSON.stringify(next) !== JSON.stringify(root.cashewShown)) root.cashewShown = next
+    root.cashewQueueLinks()
+  }
+  onCashewOnlyFilterChanged: if (root.cashewOpen) root.cashewReshow()
+  onCashewFilterIdsChanged: if (root.cashewOpen && root.cashewOnlyFilter) root.cashewReshow()
+  // Every edit replaces the drafts array once.
+  function cashewEdit(next) {
+    root.cashewDrafts = next
+    root.cashewQueueLinks()
+  }
+  function cashewSetAll(value) {
+    var keep = ({})
+    root.cashewShown.forEach(function (i) { keep[i] = true })
+    root.cashewEdit(root.cashewDrafts.map(function (d, i) {
+      return keep[i] ? Object.assign({}, d, { include: value }) : d
+    }))
+  }
+  function cashewSetState(next) {
+    root.cashewState = next
+    cashewStateTimer.restart()
+  }
+  Timer {
+    id: cashewStateTimer
+    interval: 400
+    onTriggered: root.flushCashewSave()
+  }
+  // Writes the state now if it differs from what is on disk. Also called from
+  // Component.onDestruction.
+  function flushCashewSave() {
+    cashewStateTimer.stop()
+    if (!root.cashewStateLoaded) return
+    var json = JSON.stringify(root.cashewState)
+    if (json === root.cashewStateSavedJson) return
+    root.cashewStateSavedJson = json
+    cashewStateFile.setText(json + "\n")
+  }
+  FileView {
+    id: cashewStateFile
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/transactions-cashew.json"
+    atomicWrites: true
+    printErrors: false
+  }
+  Process {
+    id: cashewDraftProc
+    command: ["python3", root.txdbBin, "cashew-draft"]
+    stdout: StdioCollector { onStreamFinished: root.cashewApplyDrafts(text) }
+    stderr: StdioCollector { id: cashewDraftErr }
+    onExited: function (exitCode) {
+      if (exitCode === 0) return
+      var first = (cashewDraftErr.text || "").trim().split("\n").pop()
+      root.cashewError = "cashew-draft failed (" + exitCode + ")" + (first ? ": " + first : "")
+      root.cashewLoading = false
+    }
+  }
+
+  // Links are rebuilt 150 ms after the last edit. The drafts go to a small
+  // file in the runtime dir and the CLI reads it, so no pipe has to be closed.
+  function cashewQueueLinks() { if (root.cashewOpen) cashewLinksTimer.restart() }
+  Timer {
+    id: cashewLinksTimer
+    interval: 150
+    onTriggered: {
+      if (!root.cashewOpen) return
+      if (cashewLinksProc.running || root.cashewLinksBusy) { root.cashewLinksPending = true; return }
+      root.cashewLinksBusy = true
+      cashewLinksFile.setText(Model.cashewPayload(root.cashewDrafts, root.cashewShown, 6000))
+    }
+  }
+  FileView {
+    id: cashewLinksFile
+    path: root.cashewLinksPath
+    atomicWrites: true
+    printErrors: false
+    onSaved: cashewLinksProc.running = true
+    onSaveFailed: { root.cashewLinksBusy = false; root.cashewLinksError = "Could not write the drafts file." }
+  }
+  Process {
+    id: cashewLinksProc
+    command: ["python3", root.txdbBin, "cashew-links", root.cashewLinksPath]
+    stdout: StdioCollector { onStreamFinished: root.cashewApplyLinks(text) }
+    stderr: StdioCollector { id: cashewLinksErr }
+    onExited: function (exitCode) {
+      root.cashewLinksBusy = false
+      if (exitCode !== 0) {
+        var first = (cashewLinksErr.text || "").trim().split("\n").pop()
+        root.cashewLinksError = "cashew-links failed (" + exitCode + ")" + (first ? ": " + first : "")
+      }
+      if (root.cashewLinksPending) { root.cashewLinksPending = false; cashewLinksTimer.restart() }
+    }
+  }
+  function cashewApplyLinks(text) {
+    if (!root.cashewOpen || root.cashewLinksPending || text.trim() === "") return
+    var data
+    try { data = JSON.parse(text) } catch (e) { data = null }
+    if (!data || !Array.isArray(data.links)) { root.cashewLinksError = "The link builder printed invalid JSON."; return }
+    root.cashewLinksError = ""
+    root.cashewLinks = data.links
+    root.cashewWarnings = data.warnings || []
+  }
+
   readonly property var groupedTransactions: Model.groupByDate(Model.collapseTransfers(root.filteredTransactions, store.transfers))
 
   // Biggest bill first, then by card, so rows do not reshuffle between
@@ -541,7 +710,7 @@ Panel {
   }
 
   Component.onCompleted: { root.syncAccountChipOptions(); refreshData() }
-  Component.onDestruction: root.flushFilterSave()
+  Component.onDestruction: { root.flushFilterSave(); root.flushCashewSave() }
 
   QtObject {
     id: store
@@ -2349,6 +2518,44 @@ Panel {
                 if (turningOn) root.focusNext(selectToggleBtn, true)
               }
             }
+          }
+        }
+
+        // Opens the Cashew verify window for every untracked, settled row.
+        BorderSurface {
+          id: cashewBtn
+          visible: root.tab === "bank" && root.cashewCount > 0
+          height: Style.space(28)
+          width: cashewBtnText.implicitWidth + Style.space(22)
+          radius: Style.space(8)
+          readonly property bool _hot: cashewBtnMouse.containsMouse || cashewBtn.activeFocus
+          opacity: cashewBtnMouse.pressed ? 0.7 : 1
+          color: Util.alpha(Color.accent, cashewBtn._hot ? 0.26 : 0.16)
+          borderSpec: cashewBtn.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+
+          activeFocusOnTab: cashewBtn.visible
+          Keys.onReturnPressed: root.cashewOpen = true
+          Keys.onEnterPressed: root.cashewOpen = true
+          Keys.onSpacePressed: root.cashewOpen = true
+          Keys.onDownPressed: root.focusNext(cashewBtn, true)
+          Keys.onUpPressed: root.focusNext(cashewBtn, false)
+
+          Text {
+            id: cashewBtnText
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: "Cashew  ·  " + root.cashewCount
+            color: Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75))
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+          MouseArea {
+            id: cashewBtnMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.cashewOpen = true
           }
         }
 
@@ -6297,6 +6504,890 @@ Panel {
         color: root.debitColor
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------------
+  // Cashew verify window: a layer-shell surface like receiptFullScreen. Left,
+  // the drafts to check and edit; right, the links built from them. Nothing
+  // is marked tracked until the user says so.
+  PanelWindow {
+    id: cashewWin
+    visible: root.cashewOpen
+    anchors { top: true; bottom: true; left: true; right: true }
+    color: "transparent"
+    exclusionMode: ExclusionMode.Ignore
+    WlrLayershell.namespace: "omarchy-transactions-cashew"
+    WlrLayershell.layer: WlrLayer.Overlay
+    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+
+    // The in-card picker: "" (closed), "category" or "account".
+    property string pickKind: ""
+    property int pickIdx: -1
+    property string pickMain: ""
+    property bool pickRemember: true
+    property bool linksCollapsed: false
+    property bool confirmMark: false
+    readonly property color muted: Qt.darker(root.foreground, 1.2)
+    readonly property var pickDraft: cashewWin.pickIdx >= 0 ? (root.cashewDrafts[cashewWin.pickIdx] || ({})) : ({})
+    readonly property var pickCats: cashewWin.pickKind === "category"
+      ? Model.cashewCategoriesFor(root.cashewCategories, cashewWin.pickDraft.amount) : []
+    readonly property var pickSubs: {
+      for (var i = 0; i < cashewWin.pickCats.length; i++)
+        if (cashewWin.pickCats[i].name === cashewWin.pickMain) return cashewWin.pickCats[i].subcategories || []
+      return []
+    }
+
+    onVisibleChanged: {
+      cashewWin.pickKind = ""
+      cashewWin.confirmMark = false
+      if (cashewWin.visible) {
+        root.cashewLoad()
+        cashewCard.forceActiveFocus()
+      }
+    }
+
+    function openPicker(kind, idx) {
+      var d = root.cashewDrafts[idx]
+      if (!d) return
+      cashewWin.pickIdx = idx
+      cashewWin.pickRemember = true
+      cashewWin.pickMain = d.category || ""
+      cashewWin.pickKind = kind
+    }
+    function closePicker() {
+      cashewWin.pickKind = ""
+      cashewCard.forceActiveFocus()
+    }
+    // Reads the draft first: the edit replaces the array the picker reads from.
+    function pickCategory(category, sub) {
+      var idx = cashewWin.pickIdx
+      var d = root.cashewDrafts[idx]
+      if (!d) return
+      var key = d.groupKey
+      var remember = cashewWin.pickRemember && d.kind !== "transfer" && category !== "Uncategorized"
+      var next = Model.cashewApplyCategory(root.cashewDrafts, idx, category, sub, remember)
+      var st = remember ? Model.cashewRememberCategory(root.cashewState, key, category, sub) : null
+      cashewWin.closePicker()
+      root.cashewEdit(next)
+      if (st) root.cashewSetState(st)
+    }
+    function pickAccount(name) {
+      var idx = cashewWin.pickIdx
+      var d = root.cashewDrafts[idx]
+      if (!d) return
+      var spread = cashewWin.pickRemember
+      var accountId = d.accountId
+      var next = Model.cashewApplyAccount(root.cashewDrafts, idx, name, spread)
+      var st = spread ? Model.cashewRememberAccount(root.cashewState, accountId, name) : null
+      cashewWin.closePicker()
+      root.cashewEdit(next)
+      if (st) root.cashewSetState(st)
+    }
+    function markTracked() {
+      var rows = Model.cashewIncluded(root.cashewDrafts, root.cashewShown)
+      var st = store
+      cashewWin.confirmMark = false
+      st.setTrackedMany(rows, true)
+      root.closeCashew()
+    }
+
+    Rectangle {
+      anchors.fill: parent
+      color: Qt.rgba(0, 0, 0, 0.78)
+      MouseArea { anchors.fill: parent; onClicked: root.closeCashew() }
+    }
+
+    Item {
+      id: cashewCard
+      anchors.centerIn: parent
+      width: Math.min(parent.width - Style.space(80), Style.space(1100))
+      height: Math.min(parent.height - Style.space(80), Style.space(680))
+      focus: true
+      Keys.onEscapePressed: function (event) {
+        if (cashewWin.pickKind !== "") cashewWin.closePicker()
+        else root.closeCashew()
+        event.accepted = true
+      }
+
+      MouseArea { anchors.fill: parent; onClicked: {} }
+
+      BorderSurface {
+        anchors.fill: parent
+        color: Color.popups.background
+        borderSpec: Border.none()
+        radius: Style.cornerRadius
+      }
+
+      // ---- header
+      Item {
+        id: cwHeader
+        anchors { top: parent.top; left: parent.left; right: parent.right; margins: Style.space(16) }
+        height: Style.space(30)
+
+        Row {
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(12)
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: "Cashew links"
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: root.cashewIncludedCount + " of " + root.cashewShown.length + " included"
+            color: cashewWin.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+        Row {
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(6)
+          CashewBtn {
+            label: "Only the current filter"
+            active: root.cashewOnlyFilter
+            onClicked: root.cashewOnlyFilter = !root.cashewOnlyFilter
+          }
+          CashewBtn { label: "Include all"; onClicked: root.cashewSetAll(true) }
+          CashewBtn { label: "Exclude all"; onClicked: root.cashewSetAll(false) }
+          CashewBtn { label: "Close"; onClicked: root.closeCashew() }
+        }
+      }
+
+      // ---- right pane: links
+      Rectangle {
+        id: cwRight
+        anchors { top: cwHeader.bottom; bottom: parent.bottom; right: parent.right; margins: Style.space(16) }
+        anchors.topMargin: Style.space(10)
+        width: cashewWin.linksCollapsed ? Style.space(40) : Math.round((cashewCard.width - Style.space(48)) * 0.4)
+        radius: Style.space(10)
+        color: Util.alpha(root.foreground, 0.05)
+
+        CashewBtn {
+          id: cwChevron
+          anchors { top: parent.top; right: parent.right; margins: Style.space(6) }
+          label: cashewWin.linksCollapsed ? "‹" : "›"
+          width: Style.space(28)
+          onClicked: cashewWin.linksCollapsed = !cashewWin.linksCollapsed
+        }
+
+        Text {
+          visible: !cashewWin.linksCollapsed
+          anchors { top: parent.top; left: parent.left; margins: Style.space(14) }
+          anchors.topMargin: Style.space(14)
+          textFormat: Text.PlainText
+          text: "LINKS"
+          color: cashewWin.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Flickable {
+          id: cwLinksFlick
+          visible: !cashewWin.linksCollapsed
+          anchors { top: cwChevron.bottom; left: parent.left; right: parent.right; bottom: cwMarkRow.top }
+          anchors.margins: Style.space(12)
+          clip: true
+          contentWidth: width
+          contentHeight: cwLinksCol.implicitHeight
+          boundsBehavior: Flickable.StopAtBounds
+
+          Column {
+            id: cwLinksCol
+            width: parent.width
+            spacing: Style.space(10)
+
+            Text {
+              visible: root.cashewLinksError !== ""
+              width: parent.width
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: root.cashewLinksError
+              color: root.debitColor
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            Column {
+              visible: root.cashewWarnings.length > 0
+              width: parent.width
+              spacing: Style.space(3)
+              Repeater {
+                model: root.cashewWarnings.slice(0, 5)
+                delegate: Text {
+                  required property string modelData
+                  width: parent.width
+                  wrapMode: Text.Wrap
+                  maximumLineCount: 2
+                  elide: Text.ElideRight
+                  textFormat: Text.PlainText
+                  text: "•  " + modelData
+                  color: root.pendingColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
+              Text {
+                visible: root.cashewWarnings.length > 5
+                textFormat: Text.PlainText
+                text: "+" + (root.cashewWarnings.length - 5) + " more"
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            Text {
+              visible: root.cashewLinks.length === 0 && root.cashewLinksError === "" && !root.cashewLoading
+              width: parent.width
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: root.cashewIncludedCount === 0 ? "No row is included, so there is no link." : "Building the links…"
+              color: cashewWin.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            Repeater {
+              model: root.cashewLinks
+              delegate: Rectangle {
+                id: lk
+                required property var modelData
+                required property int index
+                property bool copied: false
+                property bool showRaw: false
+                width: cwLinksCol.width
+                height: lkCol.implicitHeight + Style.space(20)
+                radius: Style.space(8)
+                color: Util.alpha(root.foreground, 0.06)
+                Timer { id: lkCopiedTimer; interval: 1500; onTriggered: lk.copied = false }
+
+                Column {
+                  id: lkCol
+                  anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(10) }
+                  spacing: Style.space(8)
+
+                  Text {
+                    width: parent.width
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: Model.cashewLinkLabel(lk.index, root.cashewLinks.length, lk.modelData.count, lk.modelData.chars)
+                    color: root.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+
+                  Item {
+                    width: parent.width
+                    height: Style.space(56)
+                    clip: true
+                    TextEdit {
+                      width: parent.width
+                      readOnly: true
+                      selectByMouse: true
+                      wrapMode: TextEdit.WrapAnywhere
+                      textFormat: TextEdit.PlainText
+                      text: lk.modelData.url
+                      color: cashewWin.muted
+                      selectionColor: Util.alpha(Color.accent, 0.4)
+                      font.family: "monospace"
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+
+                  Row {
+                    spacing: Style.space(6)
+                    CashewBtn {
+                      label: lk.copied ? "Copied" : "Copy"
+                      primary: true
+                      onClicked: {
+                        var url = lk.modelData.url
+                        Quickshell.execDetached(["wl-copy", url])
+                        lk.copied = true
+                        lkCopiedTimer.restart()
+                      }
+                    }
+                    CashewBtn {
+                      label: "Open"
+                      onClicked: Quickshell.execDetached(["xdg-open", lk.modelData.url])
+                    }
+                    CashewBtn {
+                      label: "Raw JSON"
+                      active: lk.showRaw
+                      onClicked: lk.showRaw = !lk.showRaw
+                    }
+                  }
+
+                  Flickable {
+                    id: lkRawFlick
+                    visible: lk.showRaw
+                    width: parent.width
+                    height: lk.showRaw ? Style.space(160) : 0
+                    clip: true
+                    contentWidth: width
+                    contentHeight: lkRawText.implicitHeight
+                    boundsBehavior: Flickable.StopAtBounds
+                    TextEdit {
+                      id: lkRawText
+                      width: parent.width
+                      readOnly: true
+                      selectByMouse: true
+                      wrapMode: TextEdit.WrapAnywhere
+                      textFormat: TextEdit.PlainText
+                      text: lk.showRaw ? Model.cashewPrettyJson(lk.modelData.json) : ""
+                      color: cashewWin.muted
+                      selectionColor: Util.alpha(Color.accent, 0.4)
+                      font.family: "monospace"
+                      font.pixelSize: Style.font.caption
+                    }
+                    ScrollWheelArea { anchors.fill: parent; target: lkRawFlick }
+                  }
+                }
+              }
+            }
+          }
+          ScrollWheelArea { anchors.fill: parent; target: cwLinksFlick }
+        }
+
+        // Mark as tracked, asked twice and inline (no popup).
+        Item {
+          id: cwMarkRow
+          visible: !cashewWin.linksCollapsed
+          anchors { left: parent.left; right: parent.right; bottom: parent.bottom; margins: Style.space(12) }
+          height: Style.space(30)
+          Timer { id: cwConfirmTimer; interval: 8000; running: cashewWin.confirmMark; onTriggered: cashewWin.confirmMark = false }
+
+          CashewBtn {
+            visible: !cashewWin.confirmMark
+            label: "Mark " + root.cashewIncludedCount + " as tracked"
+            primary: true
+            enabled: root.cashewIncludedCount > 0
+            onClicked: cashewWin.confirmMark = true
+          }
+          Row {
+            visible: cashewWin.confirmMark
+            spacing: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: "Mark " + root.cashewIncludedCount + " as tracked?"
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+            CashewBtn { label: "Yes"; primary: true; onClicked: cashewWin.markTracked() }
+            CashewBtn { label: "No"; onClicked: cashewWin.confirmMark = false }
+          }
+        }
+      }
+
+      // ---- left pane: the drafts
+      Item {
+        id: cwLeft
+        anchors { top: cwHeader.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors.topMargin: Style.space(10)
+        anchors.rightMargin: Style.space(12)
+
+        Text {
+          id: cwLeftTitle
+          textFormat: Text.PlainText
+          text: "TRANSACTIONS"
+          color: cashewWin.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Text {
+          visible: root.cashewLoading || root.cashewError !== "" || (root.cashewShown.length === 0)
+          anchors.centerIn: parent
+          width: parent.width - Style.space(40)
+          horizontalAlignment: Text.AlignHCenter
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          text: root.cashewError !== "" ? root.cashewError : (root.cashewLoading ? "Reading…" : "Nothing to track here.")
+          color: root.cashewError !== "" ? root.debitColor : cashewWin.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.body
+        }
+
+        ListView {
+          id: cwList
+          anchors { top: cwLeftTitle.bottom; bottom: parent.bottom; left: parent.left; right: parent.right }
+          anchors.topMargin: Style.space(8)
+          clip: true
+          spacing: Style.space(5)
+          boundsBehavior: Flickable.StopAtBounds
+          model: root.cashewShown
+          reuseItems: false
+
+          delegate: Rectangle {
+            id: crow
+            required property int modelData
+            readonly property var d: root.cashewDrafts[crow.modelData] || ({})
+            readonly property bool warn: (crow.d.warn || "") !== "" || crow.d.category === "Uncategorized"
+            readonly property color kindColor: crow.d.kind === "transfer" ? Color.accent
+              : (crow.d.kind === "income" ? root.creditColor : root.debitColor)
+            width: cwList.width
+            height: Style.space(62)
+            radius: Style.space(8)
+            color: Util.alpha(root.foreground, 0.05)
+
+            Rectangle {
+              anchors { left: parent.left; top: parent.top; bottom: parent.bottom; margins: Style.space(6) }
+              anchors.leftMargin: Style.space(5)
+              width: Style.space(3)
+              radius: width / 2
+              color: crow.kindColor
+              opacity: crow.d.include ? 1 : 0.3
+            }
+
+            Item {
+              id: crowBody
+              anchors { fill: parent; leftMargin: Style.space(16); rightMargin: Style.space(10) }
+              opacity: crow.d.include ? 1 : 0.5
+
+              // line 1
+              CashewCheck {
+                id: crowCheck
+                anchors { left: parent.left; top: parent.top; topMargin: Style.space(10) }
+                checked: !!crow.d.include
+                onToggled: root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { include: !crow.d.include }))
+              }
+              CashewCell {
+                id: cDate
+                anchors { left: crowCheck.right; leftMargin: Style.space(10); top: parent.top; topMargin: Style.space(7) }
+                width: Style.space(86)
+                kind: "date"
+                value: crow.d.date || ""
+                color: cashewWin.muted
+                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { date: v })) }
+              }
+              CashewCell {
+                id: cAmount
+                anchors { right: parent.right; top: parent.top; topMargin: Style.space(7) }
+                width: Style.space(92)
+                kind: "amount"
+                alignRight: true
+                bold: true
+                value: crow.d.amount || ""
+                color: String(crow.d.amount || "").charAt(0) === "-" ? root.debitColor : root.creditColor
+                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { amount: v })) }
+              }
+              CashewCell {
+                id: cTitle
+                anchors { left: cDate.right; leftMargin: Style.space(10); right: cAmount.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(7) }
+                value: crow.d.title || ""
+                color: root.foreground
+                bold: true
+                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { title: v })) }
+              }
+
+              // line 2
+              Rectangle {
+                id: warnDot
+                anchors { left: parent.left; leftMargin: Style.space(5); verticalCenter: cCat.verticalCenter }
+                width: Style.space(6)
+                height: width
+                radius: width / 2
+                color: crow.warn ? root.pendingColor : "transparent"
+              }
+              CashewChip {
+                id: cCat
+                anchors { left: crowCheck.right; leftMargin: Style.space(10); bottom: parent.bottom; bottomMargin: Style.space(8) }
+                maxWidth: Style.space(210)
+                text: (crow.d.category || "—") + ((crow.d.subcategory || "") !== "" ? "  ›  " + crow.d.subcategory : "")
+                warn: crow.warn
+                onClicked: cashewWin.openPicker("category", crow.modelData)
+              }
+              CashewChip {
+                id: cAcct
+                anchors { left: cCat.right; leftMargin: Style.space(6); bottom: parent.bottom; bottomMargin: Style.space(8) }
+                maxWidth: Style.space(110)
+                text: (crow.d.account || "") !== "" ? crow.d.account : "No account"
+                warn: (crow.d.account || "") === ""
+                onClicked: cashewWin.openPicker("account", crow.modelData)
+              }
+              CashewCell {
+                id: cNotes
+                anchors { left: cAcct.right; leftMargin: Style.space(10); right: parent.right; bottom: parent.bottom; bottomMargin: Style.space(8) }
+                value: crow.d.notes || ""
+                placeholder: "Add a note"
+                color: cashewWin.muted
+                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { notes: v })) }
+              }
+            }
+          }
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        }
+        ScrollWheelArea { anchors.fill: cwList; target: cwList }
+      }
+
+      // ---- in-card picker (no popup)
+      Item {
+        id: cwPicker
+        anchors.fill: parent
+        visible: cashewWin.pickKind !== ""
+        z: 20
+        Rectangle {
+          anchors.fill: parent
+          radius: Style.cornerRadius
+          color: Qt.rgba(0, 0, 0, 0.5)
+          MouseArea { anchors.fill: parent; onClicked: cashewWin.closePicker() }
+        }
+        Rectangle {
+          id: cwPickBox
+          anchors.centerIn: parent
+          width: Math.min(parent.width - Style.space(40), Style.space(560))
+          height: Math.min(parent.height - Style.space(40), Style.space(440))
+          radius: Style.space(12)
+          color: Color.popups.background
+          MouseArea { anchors.fill: parent; onClicked: {} }
+          Rectangle { anchors.fill: parent; radius: parent.radius; color: Util.alpha(root.foreground, 0.07) }
+
+          Text {
+            id: cwPickTitle
+            anchors { top: parent.top; left: parent.left; right: parent.right; margins: Style.space(14) }
+            elide: Text.ElideRight
+            textFormat: Text.PlainText
+            text: (cashewWin.pickKind === "category" ? "Category for " : "Account for ") + (cashewWin.pickDraft.title || "")
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+
+          // category: main column | subcategory column
+          Row {
+            visible: cashewWin.pickKind === "category"
+            anchors { top: cwPickTitle.bottom; bottom: cwPickFoot.top; left: parent.left; right: parent.right; margins: Style.space(14) }
+            spacing: Style.space(10)
+
+            ListView {
+              id: cwMainList
+              width: (parent.width - parent.spacing) / 2
+              height: parent.height
+              clip: true
+              spacing: Style.space(2)
+              boundsBehavior: Flickable.StopAtBounds
+              model: cashewWin.pickCats
+              delegate: CashewPickRow {
+                required property var modelData
+                width: cwMainList.width
+                text: modelData.name
+                selected: modelData.name === cashewWin.pickMain
+                onPicked: {
+                  var subs = modelData.subcategories || []
+                  var name = modelData.name
+                  if (subs.length === 0) cashewWin.pickCategory(name, "")
+                  else cashewWin.pickMain = name
+                }
+              }
+              ScrollWheelArea { anchors.fill: parent; target: cwMainList }
+            }
+
+            ListView {
+              id: cwSubList
+              width: (parent.width - parent.spacing) / 2
+              height: parent.height
+              clip: true
+              spacing: Style.space(2)
+              boundsBehavior: Flickable.StopAtBounds
+              header: CashewPickRow {
+                width: cwSubList.width
+                visible: cashewWin.pickMain !== "" && cashewWin.pickSubs.length > 0
+                height: visible ? Style.space(28) : 0
+                text: "No subcategory"
+                dim: true
+                onPicked: cashewWin.pickCategory(cashewWin.pickMain, "")
+              }
+              model: cashewWin.pickSubs
+              delegate: CashewPickRow {
+                required property string modelData
+                width: cwSubList.width
+                text: modelData
+                selected: modelData === cashewWin.pickDraft.subcategory && cashewWin.pickMain === cashewWin.pickDraft.category
+                onPicked: cashewWin.pickCategory(cashewWin.pickMain, modelData)
+              }
+              ScrollWheelArea { anchors.fill: parent; target: cwSubList }
+            }
+          }
+
+          // account list
+          ListView {
+            id: cwAcctList
+            visible: cashewWin.pickKind === "account"
+            anchors { top: cwPickTitle.bottom; bottom: cwPickFoot.top; left: parent.left; right: parent.right; margins: Style.space(14) }
+            clip: true
+            spacing: Style.space(2)
+            boundsBehavior: Flickable.StopAtBounds
+            model: cashewWin.pickKind === "account" ? root.cashewAccountNames : []
+            delegate: CashewPickRow {
+              required property string modelData
+              width: cwAcctList.width
+              text: modelData
+              selected: modelData === cashewWin.pickDraft.account
+              onPicked: cashewWin.pickAccount(modelData)
+            }
+            ScrollWheelArea { anchors.fill: parent; target: cwAcctList }
+          }
+
+          Row {
+            id: cwPickFoot
+            visible: cashewWin.pickKind === "account" || cashewWin.pickDraft.kind !== "transfer"
+            anchors { bottom: parent.bottom; left: parent.left; margins: Style.space(14) }
+            height: Style.space(30)
+            spacing: Style.space(8)
+            CashewCheck {
+              anchors.verticalCenter: parent.verticalCenter
+              checked: cashewWin.pickRemember
+              onToggled: cashewWin.pickRemember = !cashewWin.pickRemember
+            }
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: cashewWin.pickKind === "account"
+                ? "Use for every ••" + (cashewWin.pickDraft.last4 || "") + " row"
+                : "Remember for this merchant"
+              color: cashewWin.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Quiet tonal button, like the filter chips.
+  component CashewBtn: BorderSurface {
+    id: cb
+    property string label: ""
+    property bool primary: false
+    property bool active: false
+    signal clicked()
+    readonly property bool _hot: cbMouse.containsMouse || cb.activeFocus
+    height: Style.space(28)
+    width: cbText.implicitWidth + Style.space(22)
+    radius: Style.space(8)
+    opacity: !cb.enabled ? 0.4 : (cbMouse.pressed ? 0.7 : 1)
+    color: (cb.primary || cb.active) ? Util.alpha(Color.accent, cb._hot ? 0.28 : 0.20)
+      : Util.alpha(root.foreground, cb._hot ? 0.13 : 0.06)
+    borderSpec: cb.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+    activeFocusOnTab: cb.visible && cb.enabled
+    Keys.onReturnPressed: if (cb.enabled) cb.clicked()
+    Keys.onEnterPressed: if (cb.enabled) cb.clicked()
+    Keys.onSpacePressed: if (cb.enabled) cb.clicked()
+    Text {
+      id: cbText
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: cb.label
+      color: (cb.primary || cb.active) ? Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75)) : root.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: cb.primary || cb.active
+    }
+    MouseArea {
+      id: cbMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      enabled: cb.enabled
+      cursorShape: Qt.PointingHandCursor
+      onClicked: cb.clicked()
+    }
+  }
+
+  component CashewCheck: Rectangle {
+    id: cc
+    property bool checked: false
+    signal toggled()
+    width: Style.space(18)
+    height: width
+    radius: Style.space(5)
+    color: cc.checked ? Util.alpha(Color.accent, 0.55) : Util.alpha(root.foreground, 0.14)
+    activeFocusOnTab: cc.visible
+    Keys.onSpacePressed: cc.toggled()
+    Keys.onReturnPressed: cc.toggled()
+    Rectangle {
+      anchors.fill: parent
+      radius: parent.radius
+      color: "transparent"
+      border.width: cc.activeFocus ? 2 : 0
+      border.color: Color.accent
+    }
+    Text {
+      anchors.centerIn: parent
+      visible: cc.checked
+      textFormat: Text.PlainText
+      text: "✓"
+      color: root.foreground
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+    MouseArea { anchors.fill: parent; anchors.margins: -Style.space(4); cursorShape: Qt.PointingHandCursor; onClicked: cc.toggled() }
+  }
+
+  // Category or account chip in a draft row.
+  component CashewChip: Rectangle {
+    id: ch
+    property string text: ""
+    property bool warn: false
+    property real maxWidth: 200
+    signal clicked()
+    height: Style.space(24)
+    width: Math.min(ch.maxWidth, chText.implicitWidth + Style.space(18))
+    radius: Style.space(7)
+    color: Util.alpha(ch.warn ? root.pendingColor : root.foreground, chMouse.containsMouse || ch.activeFocus ? 0.22 : 0.12)
+    activeFocusOnTab: ch.visible
+    Keys.onReturnPressed: ch.clicked()
+    Keys.onEnterPressed: ch.clicked()
+    Keys.onSpacePressed: ch.clicked()
+    Text {
+      id: chText
+      anchors { verticalCenter: parent.verticalCenter; left: parent.left; right: parent.right; leftMargin: Style.space(9); rightMargin: Style.space(9) }
+      elide: Text.ElideRight
+      textFormat: Text.PlainText
+      text: ch.text
+      color: root.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    MouseArea { id: chMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: ch.clicked() }
+  }
+
+  component CashewPickRow: Rectangle {
+    id: pr
+    property string text: ""
+    property bool selected: false
+    property bool dim: false
+    signal picked()
+    height: Style.space(28)
+    radius: Style.space(6)
+    color: pr.selected ? Util.alpha(Color.accent, 0.24) : Util.alpha(root.foreground, prMouse.containsMouse || pr.activeFocus ? 0.12 : 0.0)
+    activeFocusOnTab: pr.visible
+    Keys.onReturnPressed: pr.picked()
+    Keys.onEnterPressed: pr.picked()
+    Keys.onSpacePressed: pr.picked()
+    Text {
+      anchors { verticalCenter: parent.verticalCenter; left: parent.left; right: parent.right; leftMargin: Style.space(10); rightMargin: Style.space(10) }
+      elide: Text.ElideRight
+      textFormat: Text.PlainText
+      text: pr.text
+      color: pr.dim ? Qt.darker(root.foreground, 1.2) : root.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: pr.selected
+    }
+    MouseArea { id: prMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: pr.picked() }
+  }
+
+  // One editable value in a draft row. Click (or Enter) edits; Enter or
+  // leaving the field commits, Esc aborts. Everything is read before the
+  // editor is switched off, because switching it off destroys the TextField.
+  component CashewCell: Item {
+    id: cell
+    property string value: ""
+    property string kind: "text"          // text | date | amount
+    property string placeholder: ""
+    property bool alignRight: false
+    property bool bold: false
+    property color color: root.foreground
+    property bool editing: false
+    property bool bad: false
+    signal commit(string value)
+    implicitHeight: Style.space(22)
+    height: implicitHeight
+    activeFocusOnTab: !cell.editing
+    Keys.onReturnPressed: cell.startEditing()
+    Keys.onEnterPressed: cell.startEditing()
+
+    function startEditing() {
+      cell.bad = false
+      cell.editing = true
+    }
+    function normalised(typed) {
+      if (cell.kind === "date") return Model.cashewValidDate(typed) ? typed.trim() : null
+      if (cell.kind === "amount") return Model.cashewNormAmount(typed)
+      return typed.trim()
+    }
+    function finish(refocus) {
+      if (!cell.editing || !edLoader.item) return
+      var typed = edLoader.item.text
+      var next = cell.normalised(typed)
+      if (next === null) { cell.bad = true; return }
+      var changed = next !== cell.value
+      cell.editing = false
+      if (refocus) cashewCard.forceActiveFocus()
+      if (changed) cell.commit(next)
+    }
+
+    Rectangle {
+      anchors.fill: parent
+      radius: Style.space(5)
+      color: Util.alpha(root.foreground, cell.activeFocus ? 0.12 : (cellMouse.containsMouse ? 0.07 : 0))
+    }
+    Text {
+      visible: !cell.editing
+      anchors { fill: parent; leftMargin: Style.space(4); rightMargin: Style.space(4) }
+      verticalAlignment: Text.AlignVCenter
+      horizontalAlignment: cell.alignRight ? Text.AlignRight : Text.AlignLeft
+      elide: Text.ElideRight
+      textFormat: Text.PlainText
+      text: cell.value !== "" ? cell.value : cell.placeholder
+      color: cell.value !== "" ? cell.color : Qt.darker(root.foreground, 1.6)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: cell.bold
+    }
+    MouseArea {
+      id: cellMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      visible: !cell.editing
+      cursorShape: Qt.IBeamCursor
+      onClicked: cell.startEditing()
+    }
+    Loader {
+      id: edLoader
+      anchors.fill: parent
+      active: cell.editing
+      sourceComponent: TextField {
+        text: cell.value
+        horizontalAlignment: cell.alignRight ? TextInput.AlignRight : TextInput.AlignLeft
+        color: cell.bad ? root.debitColor : root.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        topPadding: 0
+        bottomPadding: 0
+        background: Rectangle {
+          radius: Style.space(5)
+          color: Util.alpha(Color.accent, 0.12)
+          border.width: 1
+          border.color: cell.bad ? root.debitColor : Util.alpha(Color.accent, 0.6)
+        }
+        Component.onCompleted: { forceActiveFocus(); selectAll() }
+        onTextChanged: cell.bad = false
+        onAccepted: cell.finish(true)
+        onEditingFinished: cell.finish(false)
+        Keys.onEscapePressed: function (event) {
+          event.accepted = true
+          cell.editing = false
+          cashewCard.forceActiveFocus()
+        }
       }
     }
   }
