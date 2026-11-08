@@ -1789,7 +1789,7 @@ function cashewPayload(drafts, shown, maxChars) {
 }
 
 function cashewIncluded(drafts, shown) {
-  return shown.map(function (i) { return drafts[i] }).filter(function (d) { return d.include })
+  return shown.map(function (i) { return drafts[i] }).filter(function (d) { return d && d.include })
 }
 
 function cashewValidDate(text) {

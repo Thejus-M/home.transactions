@@ -45,6 +45,11 @@ class CashewJs(unittest.TestCase):
         self.assertEqual(names("-5.00"), ["Balance Correction", "Food Out", "Uncategorized"])
         self.assertEqual(names("5.00"), ["Balance Correction", "Salary", "Uncategorized"])
 
+    def test_a_stale_shown_index_does_not_throw(self):
+        # While the window reloads, `shown` can still hold indexes of the old drafts.
+        ds = [{"id": "a", "include": True}]
+        self.assertEqual(self.js("cashewIncluded(input.d, input.s)", d=ds, s=[0, 5, 9]), [{"id": "a", "include": True}])
+
     def test_patch_returns_new_array_and_keeps_others(self):
         ds = [draft("a"), draft("b")]
         out = self.js("cashewPatch(input.d, 1, {title: 'X'})", d=ds)
