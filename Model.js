@@ -1836,6 +1836,137 @@ function cashewGuessedCount(drafts) {
   return n
 }
 
+// ---- guess results log: one entry per row sent to the model.
+// state: pending | guessed | no-guess | skipped-touched | accepted | reverted
+function _cashewById(drafts) {
+  var m = {}
+  for (var i = 0; i < drafts.length; i++) m[drafts[i].id] = i
+  return m
+}
+
+// A new log for the rows being sent; `before` is the draft as it is now.
+function cashewGuessLogNew(rows, drafts) {
+  var at = _cashewById(drafts)
+  return rows.map(function (r) {
+    var d = drafts[at[r.id]] || ({})
+    return { id: r.id, title: d.title || r.title || "", amount: d.amount || r.amount || "",
+             before: { category: d.category || "", subcategory: d.subcategory || "", warn: d.warn || "" },
+             sent: true, guess: null, state: "pending" }
+  })
+}
+
+// Settles the pending entries a batch answered. Call it BEFORE the drafts
+// get the guesses: a row touched by the user until now is skipped.
+function cashewGuessLogApply(log, drafts, results) {
+  var byId = {}
+  for (var i = 0; i < results.length; i++) if (results[i]) byId[results[i].id] = results[i]
+  var at = _cashewById(drafts), changed = false
+  var out = log.map(function (e) {
+    if (e.state !== "pending" || !byId[e.id]) return e
+    var d = drafts[at[e.id]]
+    var g = byId[e.id]
+    changed = true
+    if (d && d.touched) return Object.assign({}, e, { state: "skipped-touched" })
+    if (!g.category) return Object.assign({}, e, { state: "no-guess" })
+    return Object.assign({}, e, { state: "guessed", guess: { category: g.category, subcategory: g.subcategory || "" } })
+  })
+  return changed ? out : log
+}
+
+// The run is over: rows the model never answered have no guess.
+function cashewGuessLogFinish(log) {
+  var changed = false
+  var out = log.map(function (e) {
+    if (e.state !== "pending") return e
+    changed = true
+    return Object.assign({}, e, { state: "no-guess" })
+  })
+  return changed ? out : log
+}
+
+// The shown state of an entry: a guess the user has since edited by hand
+// is "skipped-touched" too.
+function _cashewGuessState(e, d) {
+  if ((e.state === "guessed" || e.state === "pending") && d && d.touched && !d.guessed) return "skipped-touched"
+  if (e.state === "guessed" && d && !d.guessed) return "skipped-touched"
+  return e.state
+}
+
+// Ids of the entries whose draft still carries the guess.
+function cashewGuessLogLive(log, drafts) {
+  var at = _cashewById(drafts), ids = []
+  for (var i = 0; i < log.length; i++) {
+    var d = drafts[at[log[i].id]]
+    if (log[i].state === "guessed" && d && d.guessed) ids.push(log[i].id)
+  }
+  return ids
+}
+
+// The rows of the results list. filter: "all" | "guessed" | "none".
+function cashewGuessLogView(log, drafts, filter) {
+  var at = _cashewById(drafts), out = []
+  for (var i = 0; i < log.length; i++) {
+    var e = log[i], idx = at[e.id] === undefined ? -1 : at[e.id]
+    var st = _cashewGuessState(e, drafts[idx])
+    if (filter === "guessed" && !e.guess) continue
+    if (filter === "none" && st !== "no-guess") continue
+    out.push({ gid: e.id, idx: idx, title: e.title, amount: e.amount, st: st,
+               beforeCat: e.before.category, beforeSub: e.before.subcategory,
+               guessCat: e.guess ? e.guess.category : "", guessSub: e.guess ? e.guess.subcategory : "" })
+  }
+  return out
+}
+
+function cashewGuessLogCounts(log) {
+  var n = 0
+  for (var i = 0; i < log.length; i++) if (log[i].guess) n++
+  return { guessed: n, sent: log.length }
+}
+
+// Sets `state` on the entries in `ids` (an id list).
+function cashewGuessLogMark(log, ids, state) {
+  var set = {}
+  ids.forEach(function (id) { set[id] = true })
+  return log.map(function (e) { return set[e.id] ? Object.assign({}, e, { state: state }) : e })
+}
+
+// {drafts, state}: the guess of row `id` remembered for its merchant.
+function cashewAcceptOne(drafts, state, id) {
+  var st = state
+  var out = drafts.map(function (d) {
+    if (d.id !== id || !d.guessed) return d
+    st = cashewRememberCategory(st, d.groupKey, d.category, d.subcategory)
+    return Object.assign({}, d, { guessed: false })
+  })
+  return { drafts: out, state: st }
+}
+
+// New drafts with the guessed rows in `ids` back to what the log kept.
+function cashewRevertGuesses(drafts, log, ids) {
+  var set = {}, before = {}
+  ids.forEach(function (id) { set[id] = true })
+  log.forEach(function (e) { before[e.id] = e.before })
+  return drafts.map(function (d) {
+    if (!set[d.id] || !d.guessed || !before[d.id]) return d
+    return Object.assign({}, d, { category: before[d.id].category, subcategory: before[d.id].subcategory,
+                                  warn: before[d.id].warn || "", guessed: false })
+  })
+}
+
+// Appends a raw output line; keeps the last `cap` (200).
+function cashewGuessRawPush(lines, line, cap) {
+  var out = lines.concat([String(line)])
+  var max = cap || 200
+  return out.length > max ? out.slice(out.length - max) : out
+}
+
+function cashewGuessSummary(sent, batches, seconds, model) {
+  var s = sent + (sent === 1 ? " row" : " rows") + " in " + batches + (batches === 1 ? " batch" : " batches")
+  s += seconds > 0 ? " \u00b7 " + Math.round(seconds) + " s" : " \u00b7 running"
+  if (model) s += " \u00b7 " + model
+  return s
+}
+
 // Sets the account name on drafts[idx]; with `spread`, on every draft of the
 // same bank account.
 function cashewApplyAccount(drafts, idx, name, spread) {

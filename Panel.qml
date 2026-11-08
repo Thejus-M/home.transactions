@@ -325,6 +325,7 @@ Panel {
   property string cashewStateSavedJson: ""
   property bool cashewStateLoaded: false
   property bool cashewOnlyFilter: false
+  property bool cashewGuessedOnly: false   // the list shows only rows guessed by the model
   property var cashewLinks: []
   property var cashewTransfers: []    // paired transfers: one addTransferRoute page each
   property var cashewWarnings: []
@@ -345,6 +346,9 @@ Panel {
   }
   function cashewLoad() {
     root.cashewGuessError = ""
+    root.cashewGuessLog = []
+    root.cashewGuessRaw = []
+    root.cashewGuessMeta = ({ batches: 0, seconds: 0, model: "" })
     root.cashewLoading = true
     root.cashewError = ""
     root.cashewDrafts = []
@@ -410,6 +414,11 @@ Panel {
   property int cashewGuessTotal: 0
   property string cashewGuessError: ""
   property string cashewGuessInput: ""
+  // Result log of the last run: one entry per row sent (see Model.cashewGuessLogNew).
+  property var cashewGuessLog: []
+  property var cashewGuessRaw: []      // the NDJSON lines received, the last 200
+  property var cashewGuessMeta: ({ batches: 0, seconds: 0, model: "" })
+  readonly property var cashewGuessCounts: Model.cashewGuessLogCounts(root.cashewGuessLog)
   readonly property var cashewGuessPrefs: root.cashewState.guess || ({})
   readonly property int cashewGuessWorkers: Math.max(1, Math.min(4, Math.round(Number(root.cashewGuessPrefs.workers) || 3)))
   readonly property bool cashewGuessOnlyUncat: root.cashewGuessPrefs.onlyUncategorized !== false
@@ -426,6 +435,9 @@ Panel {
     root.cashewGuessDone = 0
     root.cashewGuessTotal = rows.length
     root.cashewGuessStopping = false
+    root.cashewGuessLog = Model.cashewGuessLogNew(rows, root.cashewDrafts)
+    root.cashewGuessRaw = []
+    root.cashewGuessMeta = ({ batches: Math.ceil(rows.length / 8), seconds: 0, model: "" })
     root.cashewGuessInput = JSON.stringify({ rows: rows, taught: Model.cashewTaught(root.cashewState) }) + "\n"
     cashewGuessProc.command = ["python3", root.txdbBin, "cashew-guess", "-", "--workers", String(root.cashewGuessWorkers), "--batch", "8"]
     root.cashewGuessing = true
@@ -438,19 +450,42 @@ Panel {
   }
   function cashewGuessLine(line) {
     if (line.trim() === "") return
+    root.cashewGuessRaw = Model.cashewGuessRawPush(root.cashewGuessRaw, line, 200)
     var m
     try { m = JSON.parse(line) } catch (e) { return }
     if (m.error) root.cashewGuessError = String(m.error)
+    if (m.finished) {
+      root.cashewGuessLog = Model.cashewGuessLogFinish(root.cashewGuessLog)
+      root.cashewGuessMeta = Object.assign({}, root.cashewGuessMeta, { seconds: Number(m.seconds) || 0, model: String(m.model || "") })
+    }
     if (m.results) {
+      root.cashewGuessLog = Model.cashewGuessLogApply(root.cashewGuessLog, root.cashewDrafts, m.results)
       root.cashewEdit(Model.cashewApplyGuesses(root.cashewDrafts, m.results))
       root.cashewGuessDone = m.done
       root.cashewGuessTotal = m.total
     }
   }
   function cashewAcceptGuesses() {
+    var ids = Model.cashewGuessLogLive(root.cashewGuessLog, root.cashewDrafts)
     var r = Model.cashewAcceptGuesses(root.cashewDrafts, root.cashewState)
+    root.cashewGuessLog = Model.cashewGuessLogMark(root.cashewGuessLog, ids, "accepted")
     root.cashewEdit(r.drafts)
     root.cashewSetState(r.state)
+  }
+  // One row of the results list: remember it for its merchant, like "Accept guesses".
+  function cashewAcceptOneGuess(id) {
+    var r = Model.cashewAcceptOne(root.cashewDrafts, root.cashewState, id)
+    root.cashewGuessLog = Model.cashewGuessLogMark(root.cashewGuessLog, [id], "accepted")
+    root.cashewEdit(r.drafts)
+    root.cashewSetState(r.state)
+  }
+  // Puts the rows in `ids` (null = every guessed row of the log) back as they were.
+  function cashewRevertGuessRows(ids) {
+    var list = ids || Model.cashewGuessLogLive(root.cashewGuessLog, root.cashewDrafts)
+    if (list.length === 0) return
+    var next = Model.cashewRevertGuesses(root.cashewDrafts, root.cashewGuessLog, list)
+    root.cashewGuessLog = Model.cashewGuessLogMark(root.cashewGuessLog, list, "reverted")
+    root.cashewEdit(next)
   }
   Process {
     id: cashewGuessProc
@@ -6842,6 +6877,11 @@ Panel {
     property bool linksCollapsed: false
     property bool confirmMark: false
     property bool oldestFirst: false
+    // The guess results panel (an in-card overlay).
+    property bool resultsOpen: false
+    property bool resultsRaw: false
+    property string resultsFilter: "all"      // all | guessed | none
+    property int flashIdx: -1
     readonly property var catMap: Model.cashewCategoryMap(root.cashewCategories)
     readonly property var dayTotals: Model.cashewDayTotals(root.cashewDrafts, root.cashewShown)
     readonly property color muted: Qt.darker(root.foreground, 1.2)
@@ -6857,6 +6897,8 @@ Panel {
     onVisibleChanged: {
       cashewWin.pickKind = ""
       cashewWin.confirmMark = false
+      cashewWin.resultsOpen = false
+      cashewWin.resultsRaw = false
       if (cashewWin.visible) {
         root.cashewLoad()
         cashewCard.forceActiveFocus()
@@ -6870,6 +6912,10 @@ Panel {
     ListModel { id: cwRows }
     function syncRows() {
       var rows = Model.cashewRowOrder(root.cashewDrafts, root.cashewShown, !cashewWin.oldestFirst)
+      if (root.cashewGuessedOnly) rows = rows.filter(function (r) {
+        var a = root.cashewDrafts[r.idx], b = r.partner >= 0 ? root.cashewDrafts[r.partner] : null
+        return !!((a && a.guessed) || (b && b.guessed))
+      })
       cwRows.clear()
       for (var i = 0; i < rows.length; i++) cwRows.append(rows[i])
     }
@@ -6877,8 +6923,42 @@ Panel {
     Connections {
       target: root
       function onCashewShownChanged() { cashewWin.syncRows() }
+      function onCashewGuessedOnlyChanged() { cashewWin.syncRows() }
+      function onCashewGuessLogChanged() { if (cashewWin.resultsOpen) cashewWin.syncGuessRows() }
+      function onCashewDraftsChanged() { if (cashewWin.resultsOpen) cashewWin.syncGuessRows() }
+      function onCashewGuessedCountChanged() { if (root.cashewGuessedOnly) cashewWin.syncRows() }
     }
 
+    onResultsOpenChanged: if (cashewWin.resultsOpen) cashewWin.syncGuessRows()
+    onResultsFilterChanged: cashewWin.syncGuessRows()
+    ListModel { id: cgRows }
+    Timer { id: cwFlashTimer; interval: 1600; onTriggered: cashewWin.flashIdx = -1 }
+    // Brings cgRows up to date in place, so the rows and the scroll stay while a run adds results.
+    function syncGuessRows() {
+      var view = Model.cashewGuessLogView(root.cashewGuessLog, root.cashewDrafts, cashewWin.resultsFilter)
+      var n = Math.min(view.length, cgRows.count)
+      var prefix = cgRows.count <= view.length
+      for (var i = 0; prefix && i < n; i++) if (cgRows.get(i).gid !== view[i].gid) prefix = false
+      if (!prefix) { cgRows.clear(); n = 0; cgList.positionViewAtBeginning() }
+      for (var j = 0; j < n; j++) {
+        var cur = cgRows.get(j)
+        if (cur.st !== view[j].st || cur.guessCat !== view[j].guessCat || cur.idx !== view[j].idx) cgRows.set(j, view[j])
+      }
+      for (var k = n; k < view.length; k++) cgRows.append(view[k])
+    }
+    // Scrolls the list to draft `idx` and marks it for a moment.
+    function revealRow(idx) {
+      cashewWin.resultsOpen = false
+      for (var i = 0; i < cwRows.count; i++) {
+        var r = cwRows.get(i)
+        if (r.idx === idx || r.partner === idx) {
+          cwList.positionViewAtIndex(i, ListView.Center)
+          cashewWin.flashIdx = r.idx
+          cwFlashTimer.restart()
+          return
+        }
+      }
+    }
     function openPicker(kind, idx) {
       var d = root.cashewDrafts[idx]
       if (!d) return
@@ -6945,6 +7025,7 @@ Panel {
       focus: true
       Keys.onEscapePressed: function (event) {
         if (cashewWin.pickKind !== "") cashewWin.closePicker()
+        else if (cashewWin.resultsOpen) cashewWin.resultsOpen = false
         else root.closeCashew()
         event.accepted = true
       }
@@ -6980,6 +7061,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
             text: root.cashewIncludedCount + " of " + root.cashewShown.length + " included"
+              + (root.cashewGuessedCount > 0 ? "  ·  " + root.cashewGuessedCount + " guessed" : "")
             color: cashewWin.muted
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -6994,6 +7076,12 @@ Panel {
             label: "Only the current filter"
             active: root.cashewOnlyFilter
             onClicked: root.cashewOnlyFilter = !root.cashewOnlyFilter
+          }
+          CashewBtn {
+            label: "Guessed only"
+            active: root.cashewGuessedOnly
+            enabled: root.cashewGuessedOnly || root.cashewGuessedCount > 0
+            onClicked: root.cashewGuessedOnly = !root.cashewGuessedOnly
           }
           CashewBtn { label: "Oldest first"; active: cashewWin.oldestFirst; onClicked: cashewWin.oldestFirst = !cashewWin.oldestFirst }
           CashewBtn { label: "Include all"; onClicked: root.cashewSetAll(true) }
@@ -7338,10 +7426,11 @@ Panel {
         anchors { top: cwHeader.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
         anchors.topMargin: Style.space(10)
         anchors.rightMargin: Style.space(12)
-        height: Style.space(28)
+        height: cwGuessRow.implicitHeight
 
-        Row {
+        Flow {
           id: cwGuessRow
+          width: parent.width
           spacing: Style.space(6)
           CashewBtn {
             label: root.cashewGuessing ? "Stop" : "✦ Guess categories" + (root.cashewGuessCount > 0 ? "  ·  " + root.cashewGuessCount : "")
@@ -7363,17 +7452,263 @@ Panel {
             label: "Accept guesses  ·  " + root.cashewGuessedCount
             onClicked: root.cashewAcceptGuesses()
           }
+          CashewBtn {
+            visible: root.cashewGuessLog.length > 0
+            label: "Results  ·  " + root.cashewGuessCounts.guessed + " guessed / " + root.cashewGuessCounts.sent + " sent"
+            active: cashewWin.resultsOpen
+            onClicked: cashewWin.resultsOpen = !cashewWin.resultsOpen
+          }
+          Text {
+            height: Style.space(28)
+            width: Math.min(implicitWidth, cwGuessRow.width)
+            verticalAlignment: Text.AlignVCenter
+            leftPadding: Style.space(6)
+            elide: Text.ElideRight
+            textFormat: Text.PlainText
+            text: root.cashewGuessError !== "" ? root.cashewGuessError
+              : root.cashewGuessing ? "Guessing " + root.cashewGuessDone + " / " + root.cashewGuessTotal
+              : root.cashewGuessedCount > 0 ? "✦ = guessed by the local model: check it" : ""
+            color: root.cashewGuessError !== "" ? root.debitColor : cashewWin.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
         }
+      }
+
+      // ---- guess results: what the model returned for each row sent
+      Rectangle {
+        id: cwResults
+        visible: cashewWin.resultsOpen
+        z: 20
+        anchors { top: cwGuessBar.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors.topMargin: Style.space(10)
+        anchors.rightMargin: Style.space(12)
+        radius: Style.space(12)
+        color: Color.popups.background
+        border.width: 1
+        border.color: Util.alpha(root.foreground, 0.18)
+
+        MouseArea { anchors.fill: parent; onClicked: {} }
+
+        Row {
+          id: cgTitleRow
+          anchors { left: parent.left; top: parent.top; margins: Style.space(14) }
+          height: Style.space(28)
+          spacing: Style.space(12)
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: "GUESS RESULTS"
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: Model.cashewGuessSummary(root.cashewGuessCounts.sent, root.cashewGuessMeta.batches, root.cashewGuessing ? 0 : root.cashewGuessMeta.seconds, root.cashewGuessMeta.model)
+            color: cashewWin.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+        Flow {
+          id: cgButtons
+          anchors { left: parent.left; right: parent.right; top: cgTitleRow.bottom; leftMargin: Style.space(14); rightMargin: Style.space(14); topMargin: Style.space(8) }
+          spacing: Style.space(6)
+          CashewBtn { label: "All"; active: cashewWin.resultsFilter === "all"; onClicked: cashewWin.resultsFilter = "all" }
+          CashewBtn { label: "Guessed"; active: cashewWin.resultsFilter === "guessed"; onClicked: cashewWin.resultsFilter = "guessed" }
+          CashewBtn { label: "No guess"; active: cashewWin.resultsFilter === "none"; onClicked: cashewWin.resultsFilter = "none" }
+          CashewBtn {
+            label: "Accept all"
+            primary: true
+            enabled: root.cashewGuessedCount > 0
+            onClicked: root.cashewAcceptGuesses()
+          }
+          CashewBtn {
+            label: "Revert all"
+            enabled: root.cashewGuessedCount > 0
+            onClicked: root.cashewRevertGuessRows(null)
+          }
+          CashewBtn { label: "Raw output"; active: cashewWin.resultsRaw; onClicked: cashewWin.resultsRaw = !cashewWin.resultsRaw }
+          CashewBtn { label: "Close"; onClicked: cashewWin.resultsOpen = false }
+        }
+
+        ListView {
+          id: cgList
+          visible: !cashewWin.resultsRaw
+          anchors { top: cgButtons.bottom; bottom: parent.bottom; left: parent.left; right: parent.right; margins: Style.space(14) }
+          anchors.topMargin: Style.space(10)
+          clip: true
+          spacing: Style.space(2)
+          boundsBehavior: Flickable.StopAtBounds
+          model: cgRows
+          reuseItems: false
+
+          delegate: Rectangle {
+            id: cgr
+            required property string gid
+            required property int idx
+            required property string title
+            required property string amount
+            required property string st
+            required property string beforeCat
+            required property string beforeSub
+            required property string guessCat
+            required property string guessSub
+            readonly property bool hasGuess: cgr.guessCat !== ""
+            readonly property var catInfo: cashewWin.catMap[cgr.hasGuess ? cgr.guessCat : cgr.beforeCat] || ({ icon: "❓", color: "#5A2A2E" })
+            readonly property var beforeInfo: cashewWin.catMap[cgr.beforeCat] || ({ icon: "❓", color: "#5A2A2E" })
+            readonly property bool isCredit: cgr.amount.charAt(0) !== "-"
+            width: cgList.width
+            height: Style.space(62)
+            radius: Style.space(10)
+            color: Util.alpha(root.foreground, cgHover.hovered ? 0.06 : 0)
+            HoverHandler { id: cgHover }
+
+            CashewIcon {
+              id: cgIcon
+              anchors { left: parent.left; leftMargin: Style.space(8); verticalCenter: parent.verticalCenter }
+              width: Style.space(36)
+              icon: cgr.catInfo.icon
+              fill: cgr.catInfo.color
+            }
+            Item {
+              id: cgActions
+              anchors { right: parent.right; rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
+              width: Style.space(215)
+              height: Style.space(54)
+              Rectangle {
+                id: cgTag
+                anchors { left: parent.left; top: parent.top }
+                width: Style.space(84)
+                height: Style.space(22)
+                radius: height / 2
+                color: cgr.st === "guessed" ? Util.alpha(Color.accent, 0.28)
+                  : cgr.st === "accepted" ? Util.alpha(root.creditColor, 0.28)
+                  : Util.alpha(root.foreground, 0.10)
+                Text {
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: cgr.st === "no-guess" ? "no guess" : cgr.st === "skipped-touched" ? "edited" : cgr.st
+                  color: cgr.st === "guessed" ? Color.accent : cgr.st === "accepted" ? root.creditColor : cashewWin.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.bold: cgr.st === "guessed" || cgr.st === "accepted"
+                }
+              }
+              CashewBtn {
+                id: cgRevert
+                anchors { right: parent.right; bottom: parent.bottom }
+                label: "Revert"
+                visible: cgr.st === "guessed"
+                onClicked: { var rid = cgr.gid; root.cashewRevertGuessRows([rid]) }
+              }
+              CashewBtn {
+                id: cgAccept
+                anchors { right: cgRevert.left; rightMargin: Style.space(6); bottom: parent.bottom }
+                label: "Accept"
+                primary: true
+                visible: cgr.st === "guessed"
+                onClicked: { var rid = cgr.gid; root.cashewAcceptOneGuess(rid) }
+              }
+            }
+            Text {
+              id: cgAmount
+              anchors { right: cgActions.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(8) }
+              width: Style.space(100)
+              horizontalAlignment: Text.AlignRight
+              elide: Text.ElideRight
+              textFormat: Text.PlainText
+              text: Model.cashewMoney(cgr.amount)
+              color: cgr.isCredit ? root.creditColor : root.debitColor
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Text {
+              id: cgTitle
+              anchors { left: cgIcon.right; leftMargin: Style.space(12); right: cgAmount.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(8) }
+              elide: Text.ElideRight
+              textFormat: Text.PlainText
+              text: cgr.title
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              font.underline: cgTitleMouse.containsMouse
+              MouseArea {
+                id: cgTitleMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: { var ri = cgr.idx; cashewWin.revealRow(ri) }
+              }
+            }
+            Row {
+              anchors { left: cgTitle.left; bottom: parent.bottom; bottomMargin: Style.space(7) }
+              spacing: Style.space(6)
+              CashewChip {
+                maxWidth: Style.space(220)
+                tint: cgr.beforeInfo.color
+                text: cgr.beforeCat + (cgr.beforeSub !== "" && cgr.beforeSub !== "Unknown" ? "  ›  " + cgr.beforeSub : "")
+              }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: "››"
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              CashewChip {
+                visible: cgr.hasGuess
+                maxWidth: Style.space(300)
+                tint: cgr.catInfo.color
+                text: "✦ " + cgr.guessCat + (cgr.guessSub !== "" ? "  ›  " + cgr.guessSub : "")
+              }
+              Text {
+                visible: !cgr.hasGuess
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: cgr.st === "pending" ? "waiting for the model" : cgr.st === "skipped-touched" ? "you edited this row" : "no guess"
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+        }
+
         Text {
-          anchors { left: cwGuessRow.right; leftMargin: Style.space(12); right: parent.right; verticalCenter: parent.verticalCenter }
-          elide: Text.ElideRight
+          visible: !cashewWin.resultsRaw && cgRows.count === 0
+          anchors.centerIn: cgList
           textFormat: Text.PlainText
-          text: root.cashewGuessError !== "" ? root.cashewGuessError
-            : root.cashewGuessing ? "Guessing " + root.cashewGuessDone + " / " + root.cashewGuessTotal
-            : root.cashewGuessedCount > 0 ? "✦ = guessed by the local model: check it" : ""
-          color: root.cashewGuessError !== "" ? root.debitColor : cashewWin.muted
+          text: "No rows here."
+          color: cashewWin.muted
           font.family: Style.font.family
-          font.pixelSize: Style.font.caption
+          font.pixelSize: Style.font.body
+        }
+
+        Flickable {
+          id: cgRawFlick
+          visible: cashewWin.resultsRaw
+          anchors.fill: cgList
+          clip: true
+          contentWidth: width
+          contentHeight: cgRawText.implicitHeight
+          boundsBehavior: Flickable.StopAtBounds
+          Text {
+            id: cgRawText
+            width: cgRawFlick.width
+            wrapMode: Text.WrapAnywhere
+            textFormat: Text.PlainText
+            text: root.cashewGuessRaw.length > 0 ? root.cashewGuessRaw.join("\n") : "No output yet."
+            color: Qt.darker(root.foreground, 1.2)
+            font.family: "monospace"
+            font.pixelSize: Style.font.caption
+          }
         }
       }
 
@@ -7457,7 +7792,7 @@ Panel {
             width: cwList.width
             height: crow.isTransfer ? (crow.paired ? Style.space(112) : Style.space(80)) : Style.space(68)
             radius: Style.space(12)
-            color: Util.alpha(root.foreground, crowHover.hovered ? 0.06 : 0)
+            color: crow.idx === cashewWin.flashIdx ? Util.alpha(Color.accent, 0.22) : Util.alpha(root.foreground, crowHover.hovered ? 0.06 : 0)
             HoverHandler { id: crowHover }
 
             Loader {
