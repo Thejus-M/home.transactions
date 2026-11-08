@@ -1818,3 +1818,123 @@ function cashewLinkLabel(i, n, count, chars) {
 function cashewPrettyJson(text) {
   try { return JSON.stringify(JSON.parse(text), null, 1) } catch (e) { return String(text) }
 }
+
+// ---------------------------------------------------------- Cashew link builder
+// Port of txdb/cashew.py build_links: same links, same warnings, byte for byte
+// (tests/test_cashew_js.py checks it against the Python). `categories` is the
+// list from `cashew-draft` ({name, type}); `shown` the indexes the table
+// shows (other drafts count as excluded). Runs in microseconds, so the window
+// builds the links in-process instead of spawning the CLI.
+var CASHEW_BASE_URL = "https://cashewapp.web.app/addTransaction?JSON="
+
+// Python urllib.parse.quote(text, safe=""): encodeURIComponent also keeps ! ' ( ) *
+function _cashewQuote(text) {
+  return encodeURIComponent(text).replace(/[!'()*]/g, function (c) {
+    return "%" + c.charCodeAt(0).toString(16).toUpperCase()
+  })
+}
+
+// Python slices by code point, JS by UTF-16 unit.
+function _cashewCut(s, n) {
+  if (s.length <= n) return s
+  var cp = Array.from(s)
+  return cp.length <= n ? s : cp.slice(0, n).join("")
+}
+function _cashewLen(s) { return s.length <= 250 ? s.length : Array.from(s).length }
+
+function _cashewRepr(s) {
+  return s.indexOf("'") >= 0 && s.indexOf('"') < 0 ? '"' + s + '"' : "'" + s.replace(/'/g, "\\'") + "'"
+}
+
+function _cashewPct(s) { return s.replace(/%/g, "%25") }
+
+function _cashewStr(v) { return v ? String(v) : "" }
+
+function cashewBuildLinks(drafts, shown, maxChars, categories) {
+  var max = maxChars || 6000
+  var types = {}
+  ;(categories || []).forEach(function (c) { types[c.name] = c.type })
+  var keep = null
+  if (shown) { keep = {}; shown.forEach(function (i) { keep[i] = true }) }
+  var warnings = []
+  var inc = []
+  for (var i = 0; i < drafts.length; i++) {
+    var dd = drafts[i]
+    if (keep && !keep[i]) continue
+    if (dd.include === undefined ? true : dd.include) inc.push(dd)
+  }
+  var key = function (d) { return [_cashewStr(d.date), _cashewStr(d.id)] }
+  var cmp = function (a, b) {
+    var x = key(a), y = key(b)
+    return x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0
+  }
+  inc.sort(cmp)
+
+  var entryOf = function (d) {
+    var label = (d.title || d.id) + " (" + (d.date === undefined || d.date === null ? "" : d.date) + ")"
+    var title = _cashewStr(d.title), notes = _cashewStr(d.notes)
+    if (_cashewLen(title) > 250) { warnings.push("title cut to 250 characters: " + label); title = _cashewCut(title, 250) }
+    if (_cashewLen(notes) > 500) { warnings.push("notes cut to 500 characters: " + label); notes = _cashewCut(notes, 500) }
+    var cat = _cashewStr(d.category), sub = _cashewStr(d.subcategory), acct = _cashewStr(d.account)
+    var amount = _cashewStr(d.amount)
+    if (cat === "Uncategorized") warnings.push("no category: " + label)
+    else if (types.hasOwnProperty(cat)) {
+      var t = types[cat], neg = amount.charAt(0) === "-"
+      if (!(t === "balance" || (neg ? t === "expense" : t === "income")))
+        warnings.push("category " + _cashewRepr(cat) + " does not fit the amount sign: " + label)
+    }
+    var e = { amount: amount, title: _cashewPct(title), date: _cashewStr(d.date), notes: _cashewPct(notes), category: _cashewPct(cat) }
+    if (sub) e.subcategory = _cashewPct(sub)
+    if (acct) e.account = _cashewPct(acct)
+    return JSON.stringify(e)
+  }
+  var entries = inc.map(entryOf)
+  // the URL length is additive: quote(prefix) + sum(quote(entry)) + "%2C" per comma + quote("]}")
+  var head = '{"transactions":['
+  var fixed = _cashewQuote(head).length + _cashewQuote("]}").length + CASHEW_BASE_URL.length
+  var elen = entries.map(function (e) { return _cashewQuote(e).length })
+
+  var pairs = {}
+  inc.forEach(function (d) { if (d.pairId) pairs[d.pairId] = (pairs[d.pairId] || 0) + 1 })
+  inc.forEach(function (d) {
+    if (d.kind === "transfer" && (!d.pairId || (pairs[d.pairId] || 0) < 2))
+      warnings.push("transfer leg without partner: " + d.title + " (" + d.date + ")")
+  })
+
+  var units = [], byPair = {}
+  inc.forEach(function (d, k) {
+    if (d.pairId) {
+      if (!byPair.hasOwnProperty(d.pairId)) { byPair[d.pairId] = []; units.push(byPair[d.pairId]) }
+      byPair[d.pairId].push(k)
+    } else units.push([k])
+  })
+  var batches = [], cur = [], curLen = 0
+  var lenOf = function (idx) {
+    var n = fixed + 3 * Math.max(idx.length - 1, 0)
+    idx.forEach(function (k) { n += elen[k] })
+    return n
+  }
+  units.forEach(function (unit) {
+    var trial = cur.concat(unit)
+    if (cur.length && lenOf(trial) > max) { batches.push(cur); cur = unit.slice() }
+    else cur = trial
+  })
+  if (cur.length) batches.push(cur)
+
+  var links = []
+  batches.forEach(function (b) {
+    b.sort(function (p, q) { return cmp(inc[p], inc[q]) })
+    var text = head + b.map(function (k) { return entries[k] }).join(",") + "]}"
+    var url = CASHEW_BASE_URL + _cashewQuote(text)
+    if (url.length > max)
+      warnings.push("one link is " + url.length + " characters, over the " + max + " limit: " + inc[b[0]].title)
+    links.push({ url: url, count: b.length, chars: url.length, ids: b.map(function (k) { return inc[k].id }), json: text })
+  })
+  return { links: links, warnings: warnings }
+}
+
+// Short stand-in for a ~6,000 character link: the start, an ellipsis, the end.
+function cashewPreview(url, head, tail) {
+  var h = head || 140, t = tail || 20
+  return url.length <= h + t + 1 ? url : url.slice(0, h) + "…" + url.slice(url.length - t)
+}

@@ -328,8 +328,6 @@ Panel {
   property var cashewLinks: []
   property var cashewWarnings: []
   property string cashewLinksError: ""
-  property bool cashewLinksBusy: false
-  property bool cashewLinksPending: false
   // Same set the Python side drafts: untracked and settled.
   readonly property int cashewCount: transactions.filter(function (t) { return !t.tracked && t.status === "settled" }).length
   readonly property int cashewIncludedCount: Model.cashewIncluded(root.cashewDrafts, root.cashewShown).length
@@ -338,7 +336,6 @@ Panel {
     root.filteredTransactions.forEach(function (t) { set[t.id] = true })
     return set
   }
-  readonly property string cashewLinksPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/transactions-cashew-drafts.json"
 
   function closeCashew() {
     root.flushCashewSave()
@@ -369,23 +366,26 @@ Panel {
     root.cashewStateSavedJson = JSON.stringify(root.cashewState)
     root.cashewStateLoaded = true
     root.cashewDrafts = data.drafts
-    root.cashewReshow()
     root.cashewLoading = false
-    root.cashewQueueLinks()
+    root.cashewReshow()   // also builds the links, once
   }
   // Recomputes which drafts the table shows; skipped when nothing changed so
   // the list keeps its scroll position.
   function cashewReshow() {
     var next = Model.cashewShownIndexes(root.cashewDrafts, root.cashewOnlyFilter, root.cashewFilterIds)
     if (JSON.stringify(next) !== JSON.stringify(root.cashewShown)) root.cashewShown = next
-    root.cashewQueueLinks()
+    root.cashewRebuildLinks()
   }
   onCashewOnlyFilterChanged: if (root.cashewOpen) root.cashewReshow()
   onCashewFilterIdsChanged: if (root.cashewOpen && root.cashewOnlyFilter) root.cashewReshow()
   // Every edit replaces the drafts array once.
-  function cashewEdit(next) {
+  // The ListView model is cashewShown (row indexes), not the drafts, so a new
+  // drafts array re-reads each row but keeps every delegate and the scroll.
+  // `typed` is true for a text cell: its rebuild waits 30 ms.
+  function cashewEdit(next, typed) {
     root.cashewDrafts = next
-    root.cashewQueueLinks()
+    if (typed === true) root.cashewQueueLinks()
+    else root.cashewRebuildLinks()
   }
   function cashewSetAll(value) {
     var keep = ({})
@@ -432,49 +432,26 @@ Panel {
     }
   }
 
-  // Links are rebuilt 150 ms after the last edit. The drafts go to a small
-  // file in the runtime dir and the CLI reads it, so no pipe has to be closed.
+  // Links are built in-process by Model.cashewBuildLinks (microseconds): a
+  // picker choice or checkbox rebuilds at once, a typed cell edit after a
+  // very short Timer so typing stays smooth.
+  function cashewRebuildLinks() {
+    cashewLinksTimer.stop()
+    if (!root.cashewOpen) return
+    try {
+      var out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories)
+      root.cashewLinksError = ""
+      root.cashewLinks = out.links
+      root.cashewWarnings = out.warnings
+    } catch (e) {
+      root.cashewLinksError = "Could not build the links: " + e
+    }
+  }
   function cashewQueueLinks() { if (root.cashewOpen) cashewLinksTimer.restart() }
   Timer {
     id: cashewLinksTimer
-    interval: 150
-    onTriggered: {
-      if (!root.cashewOpen) return
-      if (cashewLinksProc.running || root.cashewLinksBusy) { root.cashewLinksPending = true; return }
-      root.cashewLinksBusy = true
-      cashewLinksFile.setText(Model.cashewPayload(root.cashewDrafts, root.cashewShown, 6000))
-    }
-  }
-  FileView {
-    id: cashewLinksFile
-    path: root.cashewLinksPath
-    atomicWrites: true
-    printErrors: false
-    onSaved: cashewLinksProc.running = true
-    onSaveFailed: { root.cashewLinksBusy = false; root.cashewLinksError = "Could not write the drafts file." }
-  }
-  Process {
-    id: cashewLinksProc
-    command: ["python3", root.txdbBin, "cashew-links", root.cashewLinksPath]
-    stdout: StdioCollector { onStreamFinished: root.cashewApplyLinks(text) }
-    stderr: StdioCollector { id: cashewLinksErr }
-    onExited: function (exitCode) {
-      root.cashewLinksBusy = false
-      if (exitCode !== 0) {
-        var first = (cashewLinksErr.text || "").trim().split("\n").pop()
-        root.cashewLinksError = "cashew-links failed (" + exitCode + ")" + (first ? ": " + first : "")
-      }
-      if (root.cashewLinksPending) { root.cashewLinksPending = false; cashewLinksTimer.restart() }
-    }
-  }
-  function cashewApplyLinks(text) {
-    if (!root.cashewOpen || root.cashewLinksPending || text.trim() === "") return
-    var data
-    try { data = JSON.parse(text) } catch (e) { data = null }
-    if (!data || !Array.isArray(data.links)) { root.cashewLinksError = "The link builder printed invalid JSON."; return }
-    root.cashewLinksError = ""
-    root.cashewLinks = data.links
-    root.cashewWarnings = data.warnings || []
+    interval: 30
+    onTriggered: root.cashewRebuildLinks()
   }
 
   readonly property var groupedTransactions: Model.groupByDate(Model.collapseTransfers(root.filteredTransactions, store.transfers))
@@ -6792,15 +6769,16 @@ Panel {
                     width: parent.width
                     height: Style.space(56)
                     clip: true
-                    TextEdit {
+                    // A short preview only: laying out ~6,000 characters per card was slow.
+                    // Copy and Open use the full URL.
+                    Text {
                       width: parent.width
-                      readOnly: true
-                      selectByMouse: true
-                      wrapMode: TextEdit.WrapAnywhere
-                      textFormat: TextEdit.PlainText
-                      text: lk.modelData.url
+                      wrapMode: Text.WrapAnywhere
+                      maximumLineCount: 3
+                      elide: Text.ElideRight
+                      textFormat: Text.PlainText
+                      text: Model.cashewPreview(lk.modelData.url, 140, 20)
                       color: cashewWin.muted
-                      selectionColor: Util.alpha(Color.accent, 0.4)
                       font.family: "monospace"
                       font.pixelSize: Style.font.caption
                     }
@@ -6974,7 +6952,7 @@ Panel {
                 kind: "date"
                 value: crow.d.date || ""
                 color: cashewWin.muted
-                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { date: v })) }
+                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { date: v }), true) }
               }
               CashewCell {
                 id: cAmount
@@ -6985,7 +6963,7 @@ Panel {
                 bold: true
                 value: crow.d.amount || ""
                 color: String(crow.d.amount || "").charAt(0) === "-" ? root.debitColor : root.creditColor
-                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { amount: v })) }
+                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { amount: v }), true) }
               }
               CashewCell {
                 id: cTitle
@@ -6993,7 +6971,7 @@ Panel {
                 value: crow.d.title || ""
                 color: root.foreground
                 bold: true
-                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { title: v })) }
+                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { title: v }), true) }
               }
 
               // line 2
@@ -7027,7 +7005,7 @@ Panel {
                 value: crow.d.notes || ""
                 placeholder: "Add a note"
                 color: cashewWin.muted
-                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { notes: v })) }
+                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { notes: v }), true) }
               }
             }
           }
