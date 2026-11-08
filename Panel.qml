@@ -344,6 +344,7 @@ Panel {
     root.cashewOpen = false
   }
   function cashewLoad() {
+    root.cashewGuessError = ""
     root.cashewLoading = true
     root.cashewError = ""
     root.cashewDrafts = []
@@ -400,6 +401,77 @@ Panel {
   function cashewSetState(next) {
     root.cashewState = next
     cashewStateTimer.restart()
+  }
+  // ---- auto-guess categories (txdb cashew-guess, local Ollama). Rows are
+  // filled in as each batch finishes; nothing is remembered until accepted.
+  property bool cashewGuessing: false
+  property bool cashewGuessStopping: false
+  property int cashewGuessDone: 0
+  property int cashewGuessTotal: 0
+  property string cashewGuessError: ""
+  property string cashewGuessInput: ""
+  readonly property var cashewGuessPrefs: root.cashewState.guess || ({})
+  readonly property int cashewGuessWorkers: Math.max(1, Math.min(4, Math.round(Number(root.cashewGuessPrefs.workers) || 3)))
+  readonly property bool cashewGuessOnlyUncat: root.cashewGuessPrefs.onlyUncategorized !== false
+  readonly property int cashewGuessCount: Model.cashewGuessRows(root.cashewDrafts, root.cashewShown, root.cashewGuessOnlyUncat).length
+  readonly property int cashewGuessedCount: Model.cashewGuessedCount(root.cashewDrafts)
+  function cashewSetGuessPref(patch) {
+    root.cashewSetState(Object.assign({}, root.cashewState, { guess: Object.assign({}, root.cashewGuessPrefs, patch) }))
+  }
+  function cashewGuessStart() {
+    if (root.cashewGuessing || cashewGuessProc.running) return
+    var rows = Model.cashewGuessRows(root.cashewDrafts, root.cashewShown, root.cashewGuessOnlyUncat)
+    if (rows.length === 0) return
+    root.cashewGuessError = ""
+    root.cashewGuessDone = 0
+    root.cashewGuessTotal = rows.length
+    root.cashewGuessStopping = false
+    root.cashewGuessInput = JSON.stringify({ rows: rows, taught: Model.cashewTaught(root.cashewState) }) + "\n"
+    cashewGuessProc.command = ["python3", root.txdbBin, "cashew-guess", "-", "--workers", String(root.cashewGuessWorkers), "--batch", "8"]
+    root.cashewGuessing = true
+    cashewGuessProc.running = true
+  }
+  function cashewGuessStop() {
+    if (!cashewGuessProc.running) { root.cashewGuessing = false; return }
+    root.cashewGuessStopping = true
+    cashewGuessProc.running = false
+  }
+  function cashewGuessLine(line) {
+    if (line.trim() === "") return
+    var m
+    try { m = JSON.parse(line) } catch (e) { return }
+    if (m.error) root.cashewGuessError = String(m.error)
+    if (m.results) {
+      root.cashewEdit(Model.cashewApplyGuesses(root.cashewDrafts, m.results))
+      root.cashewGuessDone = m.done
+      root.cashewGuessTotal = m.total
+    }
+  }
+  function cashewAcceptGuesses() {
+    var r = Model.cashewAcceptGuesses(root.cashewDrafts, root.cashewState)
+    root.cashewEdit(r.drafts)
+    root.cashewSetState(r.state)
+  }
+  Process {
+    id: cashewGuessProc
+    stdinEnabled: true
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function (line) { root.cashewGuessLine(line) }
+    }
+    stderr: StdioCollector { id: cashewGuessErr }
+    onRunningChanged: if (cashewGuessProc.running && root.cashewGuessInput !== "") {
+      cashewGuessProc.write(root.cashewGuessInput)
+      root.cashewGuessInput = ""
+    }
+    onExited: function (exitCode) {
+      root.cashewGuessing = false
+      if (exitCode !== 0 && !root.cashewGuessStopping) {
+        var first = (cashewGuessErr.text || "").trim().split("\n").pop()
+        root.cashewGuessError = "Guessing failed (" + exitCode + ")" + (first ? ": " + first : "")
+      }
+      root.cashewGuessStopping = false
+    }
   }
   Timer {
     id: cashewStateTimer
@@ -6788,6 +6860,8 @@ Panel {
       if (cashewWin.visible) {
         root.cashewLoad()
         cashewCard.forceActiveFocus()
+      } else {
+        root.cashewGuessStop()
       }
     }
 
@@ -7258,10 +7332,55 @@ Panel {
         }
       }
 
+      // ---- guess bar: ask the local model for categories, several batches at once
+      Item {
+        id: cwGuessBar
+        anchors { top: cwHeader.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors.topMargin: Style.space(10)
+        anchors.rightMargin: Style.space(12)
+        height: Style.space(28)
+
+        Row {
+          id: cwGuessRow
+          spacing: Style.space(6)
+          CashewBtn {
+            label: root.cashewGuessing ? "Stop" : "✦ Guess categories" + (root.cashewGuessCount > 0 ? "  ·  " + root.cashewGuessCount : "")
+            primary: !root.cashewGuessing
+            active: root.cashewGuessing
+            enabled: root.cashewGuessing || (root.cashewGuessCount > 0 && !root.cashewLoading)
+            onClicked: root.cashewGuessing ? root.cashewGuessStop() : root.cashewGuessStart()
+          }
+          CashewBtn {
+            label: root.cashewGuessOnlyUncat ? "Only uncategorized" : "All rows"
+            onClicked: root.cashewSetGuessPref({ onlyUncategorized: !root.cashewGuessOnlyUncat })
+          }
+          CashewBtn {
+            label: "Parallel: " + root.cashewGuessWorkers
+            onClicked: root.cashewSetGuessPref({ workers: root.cashewGuessWorkers % 4 + 1 })
+          }
+          CashewBtn {
+            visible: root.cashewGuessedCount > 0
+            label: "Accept guesses  ·  " + root.cashewGuessedCount
+            onClicked: root.cashewAcceptGuesses()
+          }
+        }
+        Text {
+          anchors { left: cwGuessRow.right; leftMargin: Style.space(12); right: parent.right; verticalCenter: parent.verticalCenter }
+          elide: Text.ElideRight
+          textFormat: Text.PlainText
+          text: root.cashewGuessError !== "" ? root.cashewGuessError
+            : root.cashewGuessing ? "Guessing " + root.cashewGuessDone + " / " + root.cashewGuessTotal
+            : root.cashewGuessedCount > 0 ? "✦ = guessed by the local model: check it" : ""
+          color: root.cashewGuessError !== "" ? root.debitColor : cashewWin.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+
       // ---- left pane: the drafts
       Item {
         id: cwLeft
-        anchors { top: cwHeader.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors { top: cwGuessBar.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
         anchors.topMargin: Style.space(10)
         anchors.rightMargin: Style.space(12)
 
@@ -7421,9 +7540,29 @@ Panel {
                   anchors { left: cAcct.right; leftMargin: Style.space(6); verticalCenter: cAcct.verticalCenter }
                   maxWidth: Style.space(220)
                   tint: crow.cat.color
-                  text: (crow.d.category || "—") + ((crow.d.subcategory || "") !== "" ? "  ›  " + crow.d.subcategory : "")
+                  text: (crow.d.guessed ? "✦ " : "") + (crow.d.category || "—") + ((crow.d.subcategory || "") !== "" ? "  ›  " + crow.d.subcategory : "")
                   warn: crow.warn
                   onClicked: cashewWin.openPicker("category", crow.idx)
+                }
+                Rectangle {
+                  visible: crow.d.guessed === true && cCat.hovered
+                  z: 5
+                  anchors { left: cCat.left; bottom: cCat.top; bottomMargin: Style.space(2) }
+                  width: guessTipText.implicitWidth + Style.space(16)
+                  height: guessTipText.implicitHeight + Style.space(8)
+                  radius: Style.space(6)
+                  color: Color.popups.background
+                  border.width: 1
+                  border.color: Util.alpha(root.foreground, 0.25)
+                  Text {
+                    id: guessTipText
+                    anchors.centerIn: parent
+                    textFormat: Text.PlainText
+                    text: "Guessed by the local model: check it"
+                    color: root.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
                 }
                 CashewNote {
                   id: cNotes
@@ -7763,6 +7902,7 @@ Panel {
     property real maxWidth: 200
     signal clicked()
     readonly property bool _hot: chMouse.containsMouse || ch.activeFocus
+    readonly property bool hovered: chMouse.containsMouse
     height: Style.space(24)
     width: Math.min(ch.maxWidth, chText.implicitWidth + Style.space(18))
     radius: height / 2

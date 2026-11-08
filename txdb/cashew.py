@@ -408,7 +408,7 @@ def drafts(conn, state: dict | None = None) -> list[dict]:
             "account": account or "",
             "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title)),
             "kind": kind, "bank": r["bank"], "last4": r["last4"], "accountId": aid,
-            "groupKey": r["group_key"], "pairId": leg["pairId"] if leg else "", "warn": warn,
+            "groupKey": r["group_key"], "merchant": r["merchant"] or "", "pairId": leg["pairId"] if leg else "", "warn": warn,
         })
     return out
 

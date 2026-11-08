@@ -1774,9 +1774,66 @@ function cashewApplyCategory(drafts, idx, category, subcategory, spread) {
   var src = drafts[idx]
   return drafts.map(function (d, i) {
     if (i === idx || (spread && _cashewSameMerchant(src, d)))
-      return Object.assign({}, d, { category: category, subcategory: subcategory })
+      return Object.assign({}, d, { category: category, subcategory: subcategory, touched: true, guessed: false })
     return d
   })
+}
+
+// The rows `cashew-guess` reads. Transfers and rows the user already edited
+// are never sent; `onlyUncat` keeps the ones still without a category.
+function cashewGuessRows(drafts, shown, onlyUncat) {
+  var out = []
+  for (var k = 0; k < shown.length; k++) {
+    var d = drafts[shown[k]]
+    if (!d || d.kind === "transfer" || d.touched) continue
+    if (onlyUncat && !(d.category === "Uncategorized" || (d.warn || "") !== "")) continue
+    out.push({ id: d.id, title: d.title || "", merchant: d.merchant || "", notes: d.notes || "",
+               amount: d.amount || "", kind: d.kind || "", bank: d.bank || "", accountType: d.accountId ? String(d.accountId).split("|")[1] || "" : "" })
+  }
+  return out
+}
+
+// A few confirmed merchants as examples for the model (at most 20).
+function cashewTaught(state) {
+  var cats = (state && state.categories) || {}
+  var out = {}, n = 0
+  for (var k in cats) {
+    if (n >= 20) break
+    if (cats[k] && cats[k].category && cats[k].category !== "Uncategorized") { out[k] = cats[k]; n++ }
+  }
+  return out
+}
+
+// New array with the guesses applied: [{id, category, subcategory}]. An
+// empty category is "no guess"; a row the user edited meanwhile is kept.
+function cashewApplyGuesses(drafts, results) {
+  var byId = {}
+  for (var i = 0; i < results.length; i++) if (results[i] && results[i].category) byId[results[i].id] = results[i]
+  var changed = false
+  var out = drafts.map(function (d) {
+    var g = byId[d.id]
+    if (!g || d.touched) return d
+    changed = true
+    return Object.assign({}, d, { category: g.category, subcategory: g.subcategory || "", guessed: true, warn: "" })
+  })
+  return changed ? out : drafts
+}
+
+// {drafts, state}: every guessed draft remembered for its merchant, mark cleared.
+function cashewAcceptGuesses(drafts, state) {
+  var st = state
+  var out = drafts.map(function (d) {
+    if (!d.guessed) return d
+    st = cashewRememberCategory(st, d.groupKey, d.category, d.subcategory)
+    return Object.assign({}, d, { guessed: false })
+  })
+  return { drafts: out, state: st }
+}
+
+function cashewGuessedCount(drafts) {
+  var n = 0
+  for (var i = 0; i < drafts.length; i++) if (drafts[i].guessed) n++
+  return n
 }
 
 // Sets the account name on drafts[idx]; with `spread`, on every draft of the

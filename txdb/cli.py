@@ -48,6 +48,13 @@
                                          accountFrom,accountTo,ids}],"warnings":[...]}
   txdb cashew-links --untracked [--state PATH]   bulk links, then "# transfer pages" and one transfer link per
                                          line, on stdout; a summary on stderr (read only)
+  txdb cashew-guess [FILE|-] [--model qwen2.5:3b] [--workers 3] [--batch 8] [--url http://127.0.0.1:11434]
+                    [--timeout 120]
+                                         read {"rows":[{id,title,merchant,notes,amount,kind,bank,accountType}],
+                                         "taught":{key:{category,subcategory}}} and ask the local Ollama model for a
+                                         Cashew category per row; batches run in parallel; one NDJSON line per
+                                         finished batch {"results":[{id,category,subcategory}],done,total}, then
+                                         {"finished":true,...}; errors as {"error":"..."} (read only, no database)
 
 Arguments come as separate argv entries (no shell), so names and ids need
 no quoting."""
@@ -139,6 +146,9 @@ def main(argv: list[str]) -> int:
         print(__doc__)
         return 2
     cmd, args = argv[0], argv[1:]
+    if cmd == "cashew-guess":
+        from . import cashew_guess
+        return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
     conn = connect()
