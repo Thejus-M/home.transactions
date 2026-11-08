@@ -657,6 +657,31 @@ MIGRATIONS = [
         PRIMARY KEY (out_id, in_id)
     );
     """,
+    # v20: app-order bills (Swiggy style). The amount PAID as printed gets its
+    # own column (printed_total_paise) so a check can compare it with the sum
+    # of the parts instead of trusting a computed total; a charge can be
+    # waived (printed struck through + FREE: amount 0, original kept); the
+    # model's raw JSON is kept for diagnosis; and the bill's category (from the
+    # model, or the user's own choice, which a re-read never overwrites) lives
+    # in its own table. `receipts_view` selects `r.*`, and SQLite expands the
+    # star each time the view is used, so it picks the new columns up as is.
+    """
+    ALTER TABLE receipts ADD COLUMN platform TEXT;
+    ALTER TABLE receipts ADD COLUMN order_id TEXT;
+    ALTER TABLE receipts ADD COLUMN payment_method TEXT;
+    ALTER TABLE receipts ADD COLUMN printed_total_paise INTEGER;
+    ALTER TABLE receipts ADD COLUMN saved_paise INTEGER;
+    ALTER TABLE receipts ADD COLUMN llm_json TEXT;
+    ALTER TABLE receipt_fees ADD COLUMN original_paise INTEGER;
+    ALTER TABLE receipt_fees ADD COLUMN waived INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE receipt_categories (
+        receipt_id   TEXT PRIMARY KEY REFERENCES receipts(id) ON DELETE CASCADE,
+        category     TEXT NOT NULL,
+        subcategory  TEXT NOT NULL DEFAULT '',
+        source       TEXT NOT NULL CHECK (source IN ('llm', 'user')),
+        updated_at   TEXT NOT NULL
+    );
+    """,
 ]
 
 
@@ -686,6 +711,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version >= len(MIGRATIONS):
         return
+    _backup_before_migrating(conn, version)
     conn.execute("BEGIN IMMEDIATE")
     try:
         version = conn.execute("PRAGMA user_version").fetchone()[0]  # another process may have migrated
@@ -701,6 +727,27 @@ def _migrate(conn: sqlite3.Connection) -> None:
     except BaseException:
         conn.execute("ROLLBACK")
         raise
+
+
+def _backup_before_migrating(conn: sqlite3.Connection, version: int) -> None:
+    """Copy an existing database to <db dir>/backups/pre-v<N>-<time>.db before
+    upgrading it. A brand-new (version 0) or in-memory database has nothing
+    worth saving."""
+    if version < 1:
+        return
+    row = conn.execute("PRAGMA database_list").fetchone()
+    if not row or not row[2]:
+        return
+    folder = Path(row[2]).parent / "backups"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"pre-v{len(MIGRATIONS)}-{datetime.now():%Y%m%d-%H%M%S}.db"
+    dest = sqlite3.connect(target)
+    try:
+        with dest:
+            conn.backup(dest)
+    finally:
+        dest.close()
+    target.chmod(0o600)
 
 
 def _statements(script: str):

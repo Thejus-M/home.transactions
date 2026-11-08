@@ -157,6 +157,15 @@ class CashewJs(unittest.TestCase):
         self.assertEqual(self.js("cashewMarkQuestion(3, 1)"), "Mark 3 as tracked (1 transfer needs a tap on Save in Cashew)?")
         self.assertEqual(self.js("cashewMarkQuestion(3, 0)"), "Mark 3 as tracked?")
 
+    def test_friend_settlement_split_paid_passes_the_sign_rule_both_ways(self):
+        # parity with txdb/cashew.py _friend_fits: only the Split Paid default is relaxed
+        ds = [draft("a", amount="-5.00", category="Friend Settlement", subcategory="Split Paid"),
+              draft("b", amount="5.00", category="Friend Settlement", subcategory="Split Paid"),
+              draft("c", amount="5.00", category="Friend Settlement", subcategory="Lent")]
+        res = self.js("cashewBuildLinks(input.d, [0, 1, 2], 6000, input.c)", d=ds, c=CATS + [{"name": "Friend Settlement", "type": "expense", "subcategories": ["Split Paid", "Lent"]}])
+        self.assertEqual(len(res["warnings"]), 1)
+        self.assertIn("does not fit", res["warnings"][0])
+
     def test_category_map(self):
         out = self.js("cashewCategoryMap(input.c)", c=[{"name": "A", "icon": "x", "color": "#111111"}, {"name": "B"}])
         self.assertEqual(out["A"], {"icon": "x", "color": "#111111"})

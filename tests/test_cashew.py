@@ -189,14 +189,14 @@ class DraftTests(Base):
         self.assertEqual(ds["t-5"]["account"], "HDFC ₹")
         self.assertEqual(ds["t-2"]["kind"], "income")
         self.assertEqual((ds["t-2"]["amount"], ds["t-2"]["category"], ds["t-2"]["subcategory"]),
-                         ("40.00", "Uncategorized", "Unknown"))
+                         ("40.00", "Friend Settlement", "Split Paid"))   # HDFC savings default, was Uncategorized
 
     def test_sign_rule_and_fallback(self):
         # a debit that a credit-only rule would hit stays a debit rule: "interest" credit rule is skipped
         self.add(self.hdfc, row(1, "2026-10-02", -9.0, "OTHER- CREDIT INTEREST"),
                  row(2, "2026-10-02", 9.0, "OTHER- CREDIT INTEREST"))
         ds = {d["id"]: d for d in self.drafts()}
-        self.assertEqual(ds["t-1"]["category"], "Uncategorized")
+        self.assertEqual(ds["t-1"]["category"], "Friend Settlement")   # HDFC savings default (was Uncategorized)
         self.assertEqual(ds["t-2"]["category"], "Returns & Interest")
         # a taught income category on a debit falls back with a warning
         gk = ds["t-1"]["groupKey"]
@@ -322,7 +322,7 @@ class CliTests(Base):
         self.assertTrue(lines[-1].startswith("https://budget-track.web.app/addTransferRoute?"))
 
     def test_untracked_lines(self):
-        self.add(self.hdfc, *[row(i, "2026-10-02", -10.0 - i, f"Shop {i}" + "y" * 80) for i in range(60)])
+        self.add(self.sbi, *[row(i, "2026-10-02", -10.0 - i, f"Shop {i}" + "y" * 80) for i in range(60)])
         p = self.cli("cashew-links", "--untracked")
         lines = p.stdout.splitlines()
         self.assertGreater(len(lines), 1)
@@ -406,3 +406,95 @@ class NoteTests(Base):
         self.add(self.hdfc, row(1, "2026-10-02", -149.0, "SHOP"))
         self.link_bill("t-1", items=0)
         self.assertEqual(self.drafts()[0]["notes"], "")
+
+
+class CategoryPriorityTests(Base):
+    """Bill category > taught merchant > bill LLM category > keyword rule >
+    HDFC-savings Friend Settlement > Uncategorized."""
+
+    def bill(self, txn, category=None, source="llm", fees=None, sha="b" * 64):
+        from txdb import receipts
+        rid = receipts.save_parse(self.conn, {
+            "image_sha256": sha, "stored_path": "x.jpg", "merchant": "Kottayam Kitchen", "date": "2026-10-02",
+            "total_paise": 16000, "printed_total_paise": 16000, "tax_paise": 675, "discount_paise": 4400,
+            "items": [{"description": "Biryani", "qty": 1, "amount": 179.0}], "fees": fees or [],
+            "category": {"category": category[0], "subcategory": category[1]} if category and source == "llm" else None})
+        if category and source == "user":
+            receipts.set_category(self.conn, rid, *category)
+        receipts.set_link(self.conn, rid, txn)
+        return rid
+
+    def cat(self, tid="t-1", state=None):
+        d = {x["id"]: x for x in self.drafts(state)}[tid]
+        return d["category"], d["subcategory"], d["warn"]
+
+    def test_llm_bill_category_beats_rules_but_not_taught(self):
+        self.add(self.sbi, row(1, "2026-10-02", -160.0, "SWIGGY ORDER 1"))
+        self.bill("t-1", ("Groceries", "Provisions"))
+        self.assertEqual(self.cat()[:2], ("Groceries", "Provisions"))
+        gk = self.drafts()[0]["groupKey"]
+        st = cashew.empty_state()
+        st["categories"][gk] = {"category": "Food Out", "subcategory": "Delivery"}
+        self.assertEqual(self.cat(state=st)[:2], ("Food Out", "Delivery"))
+
+    def test_user_bill_category_beats_taught(self):
+        self.add(self.sbi, row(1, "2026-10-02", -160.0, "Corner Shop"))
+        self.bill("t-1", ("Groceries", "Provisions"), source="user")
+        gk = self.drafts()[0]["groupKey"]
+        st = cashew.empty_state()
+        st["categories"][gk] = {"category": "Food Out", "subcategory": "Delivery"}
+        self.assertEqual(self.cat(state=st)[:2], ("Groceries", "Provisions"))
+
+    def test_llm_category_that_is_unknown_or_does_not_fit_is_ignored(self):
+        self.add(self.sbi, row(1, "2026-10-02", -160.0, "SWIGGY ORDER 1"))
+        self.bill("t-1", ("Nope", ""))
+        self.assertEqual(self.cat()[:2], ("Food Out", "Delivery"))        # the keyword rule
+        self.conn.execute("DELETE FROM receipt_links")
+        self.bill("t-1", ("Salary", "Monthly"), sha="c" * 64)              # income on a debit
+        self.assertEqual(self.cat()[:2], ("Food Out", "Delivery"))
+
+    def test_llm_category_needs_a_linked_bill(self):
+        from txdb import receipts
+        self.add(self.sbi, row(1, "2026-10-02", -160.0, "Corner Shop"))
+        rid = self.bill("t-1", ("Groceries", "Provisions"))
+        receipts.clear_link(self.conn, rid)
+        self.assertEqual(self.cat()[0], "Uncategorized")
+
+    def test_bill_note_lists_charges_discount_tax_and_paid_total(self):
+        self.add(self.sbi, row(1, "2026-10-02", -160.0, "Kottayam"))
+        self.bill("t-1", fees=[{"label": "Packaging", "amount": 0, "original": 9, "waived": True},
+                               {"label": "Platform fee", "amount": 17.98}])
+        n = self.drafts()[0]["notes"]
+        self.assertIn("• Packaging — FREE", n)
+        self.assertIn("• Platform fee — ₹17.98", n)
+        self.assertIn("Discount -₹44", n)
+        self.assertIn("Total ₹160", n)
+        self.assertLessEqual(len(n), 500)
+
+    def test_hdfc_savings_default_is_friend_settlement_split_paid_both_ways(self):
+        self.add(self.hdfc, row(1, "2026-10-02", -75.0, "Mystery Co"), row(2, "2026-10-02", 75.0, "Other Co"))
+        self.assertEqual(self.cat("t-1"), ("Friend Settlement", "Split Paid", ""))
+        self.assertEqual(self.cat("t-2"), ("Friend Settlement", "Split Paid", ""))
+        res = cashew.build_links(self.drafts())
+        self.assertEqual(res["warnings"], [])               # no "no category", no sign warning
+
+    def test_friend_default_only_for_hdfc_savings_without_a_bill(self):
+        self.add(self.hdfc, row(1, "2026-10-02", -75.0, "Mystery Co"), row(2, "2026-10-03", -5.0, "SWIGGY X"))
+        ingest.upsert_rows(self.conn, self.card, [row(3, "2026-10-04", -9.0, "Card shop")])
+        self.add(self.sbi, row(4, "2026-10-04", -9.0, "Other shop"))
+        self.bill("t-1", None)
+        self.assertEqual(self.cat("t-1")[0], "Uncategorized")                 # has a bill
+        self.assertEqual(self.cat("t-2")[:2], ("Food Out", "Delivery"))        # a rule wins
+        self.assertEqual(self.cat("t-3")[0], "Uncategorized")                 # card
+        self.assertEqual(self.cat("t-4")[0], "Uncategorized")                 # other bank
+        gk = {d["id"]: d for d in self.drafts()}["t-1"]["groupKey"]
+        st = cashew.empty_state()
+        st["categories"][gk] = {"category": "Groceries", "subcategory": "Provisions"}
+        self.assertEqual(self.cat("t-1", st)[:2], ("Groceries", "Provisions"))   # taught wins
+
+    def test_friend_default_is_not_used_for_transfer_legs(self):
+        self.add(self.sbi, row(1, "2026-10-02", -500.0, SBI_OUT))
+        self.add(self.hdfc, row(2, "2026-10-02", 500.0, HDFC_IN))
+        ds = {d["id"]: d for d in self.drafts()}
+        self.assertEqual((ds["t-1"]["category"], ds["t-2"]["category"]), ("Balance Correction",) * 2)
+

@@ -32,6 +32,7 @@ HEADER_FIELDS = (
     "subtotal_paise", "tax_paise", "discount_paise", "round_off_paise", "payment_hint",
     "currency", "before_payment", "method", "confidence", "needs_review", "warnings",
     "raw_text", "parser_version", "image_meta",
+    "platform", "order_id", "payment_method", "printed_total_paise", "saved_paise", "llm_json",
 )
 STATES = ("linked", "cash", "ignored")
 
@@ -110,9 +111,16 @@ def save_parse(conn: sqlite3.Connection, parsed: dict) -> str:
         conn.execute("DELETE FROM receipt_fees WHERE receipt_id = ?", (rid,))
         for n, fee in enumerate(parsed.get("fees") or [], start=1):
             amount = to_paise(fee.get("amount"))
-            if amount:
-                conn.execute("INSERT INTO receipt_fees (receipt_id, line_no, label, amount_paise) VALUES (?,?,?,?)",
-                             (rid, n, str(fee.get("label") or "").strip() or "Fee", abs(amount)))
+            original = to_paise(fee.get("original"))
+            waived = bool(fee.get("waived"))
+            # A waived charge is amount 0 with the struck-through original;
+            # a plain zero fee (no original, not waived) says nothing.
+            if amount or waived:
+                conn.execute(
+                    "INSERT INTO receipt_fees (receipt_id, line_no, label, amount_paise, original_paise, waived) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (rid, n, str(fee.get("label") or "").strip() or "Fee", abs(amount or 0),
+                     None if original is None else abs(original), int(waived)))
 
         conn.execute("DELETE FROM receipt_taxes WHERE receipt_id = ?", (rid,))
         seen: set[int] = set()
@@ -128,7 +136,58 @@ def save_parse(conn: sqlite3.Connection, parsed: dict) -> str:
                 f"INSERT INTO receipt_taxes ({', '.join(TAX_FIELDS)}, receipt_id) "
                 f"VALUES ({', '.join('?' * len(TAX_FIELDS))}, ?)",
                 (*[row[f] for f in TAX_FIELDS], rid))
+
+        _save_llm_category(conn, rid, parsed.get("category"), ts)
     return rid
+
+
+def _save_llm_category(conn: sqlite3.Connection, rid: str, category, ts: str) -> None:
+    """The model's pick goes in as source 'llm', replacing an older 'llm' row
+    but never a row the user chose (source 'user')."""
+    if not isinstance(category, dict):
+        return
+    name = str(category.get("category") or "").strip()
+    if not name:
+        return
+    sub = str(category.get("subcategory") or "").strip()
+    conn.execute(
+        "INSERT INTO receipt_categories (receipt_id, category, subcategory, source, updated_at) "
+        "VALUES (?,?,?,'llm',?) ON CONFLICT(receipt_id) DO UPDATE SET category = excluded.category, "
+        "subcategory = excluded.subcategory, source = 'llm', updated_at = excluded.updated_at "
+        "WHERE receipt_categories.source != 'user'", (rid, name, sub, ts))
+
+
+def set_category(conn: sqlite3.Connection, rid: str, category: str | None, subcategory: str | None = None) -> None:
+    """The user's own category for a bill. An empty category removes the
+    user's choice (a model pick, if any, comes back with the next read)."""
+    _require(conn, rid)
+    name = (category or "").strip()
+    with write(conn):
+        if not name:
+            conn.execute("DELETE FROM receipt_categories WHERE receipt_id = ? AND source = 'user'", (rid,))
+            return
+        conn.execute(
+            "INSERT INTO receipt_categories (receipt_id, category, subcategory, source, updated_at) "
+            "VALUES (?,?,?,'user',?) ON CONFLICT(receipt_id) DO UPDATE SET category = excluded.category, "
+            "subcategory = excluded.subcategory, source = 'user', updated_at = excluded.updated_at",
+            (rid, name, (subcategory or "").strip(), now()))
+
+
+def use_computed_total(conn: sqlite3.Connection, rid: str) -> None:
+    """The ONLY way the printed total is replaced: an explicit override (the
+    "Use computed total" button). The new printed total (and the stored total)
+    is what the parts add up to; with no items to add up, the stored total is
+    simply taken as the printed one."""
+    _require(conn, rid)
+    p = _parts(conn, rid)
+    if conn.execute("SELECT COUNT(*) FROM receipt_items WHERE receipt_id = ?", (rid,)).fetchone()[0]:
+        value = _parts_total(p)
+    else:
+        value = p["old_total"]
+    if value is None:
+        return
+    with write(conn):
+        conn.execute("UPDATE receipts SET printed_total_paise = ?, total_paise = ? WHERE id = ?", (value, value, rid))
 
 
 def _require(conn: sqlite3.Connection, rid: str) -> None:
@@ -244,15 +303,17 @@ def linked_without_saved_image(conn: sqlite3.Connection) -> list[dict]:
 
 
 # A human correcting a field by hand, kept apart from save_parse (what the
-# parser read) the same way set_link is kept apart from it: a re-parse
-# replaces everything save_parse owns, but must never silently undo a
-# correction a person already made here. Only money columns need the paise
-# conversion; the rest are plain text.
+# parser read) the same way set_link is kept apart from it. Note: a re-parse
+# DOES replace every header figure, items, fees and taxes (save_parse), so a
+# hand edit to those is lost on a re-read; only the link and the user's
+# category survive one. Only money columns need the paise conversion; the
+# rest are plain text.
 EDITABLE_FIELDS = {
     "merchant", "date", "time", "invoice_no", "gstin", "payment_hint",
     "total", "subtotal", "discount", "round_off",
+    "printed_total", "platform", "order_id", "payment_method", "tax",
 }
-_MONEY_FIELDS = {"total", "subtotal", "discount", "round_off"}
+_MONEY_FIELDS = {"total", "subtotal", "discount", "round_off", "printed_total", "tax"}
 
 
 def edit_field(conn: sqlite3.Connection, rid: str, field: str, value: str | None) -> None:
@@ -278,7 +339,13 @@ def edit_field(conn: sqlite3.Connection, rid: str, field: str, value: str | None
         else:
             stored = value.strip()
     with write(conn):
-        conn.execute(f"UPDATE receipts SET {column} = ? WHERE id = ?", (stored, rid))
+        if field == "printed_total" or (field == "total" and conn.execute(
+                "SELECT printed_total_paise IS NOT NULL FROM receipts WHERE id = ?", (rid,)).fetchone()[0]):
+            # the amount paid: the stored total stays equal to it
+            conn.execute("UPDATE receipts SET printed_total_paise = ?, total_paise = ? WHERE id = ?",
+                         (stored, stored, rid))
+        else:
+            conn.execute(f"UPDATE receipts SET {column} = ? WHERE id = ?", (stored, rid))
 
 
 _ITEM_EDITABLE_FIELDS = {"description", "amount", "qty", "rate", "unit", "hsn", "gst_rate"}
@@ -420,37 +487,62 @@ def add_tax(conn: sqlite3.Connection, rid: str, rate: str, field: str, value: st
                      (to_paise(amount), rid, rate_e2))
 
 
-def add_fee(conn: sqlite3.Connection, rid: str, label: str, amount: str) -> int:
-    """A platform / delivery / service fee the reader missed. Returns its line."""
+def _flag(value) -> bool:
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def add_fee(conn: sqlite3.Connection, rid: str, label: str, amount: str,
+            original: str | None = None, waived: str | None = None) -> int:
+    """A platform / delivery / service fee the reader missed. Returns its line.
+    A waived fee has amount 0 (pass any amount; it is ignored) and keeps the
+    struck-through `original`."""
     _require(conn, rid)
+    is_waived = _flag(waived) if waived not in (None, "") else False
     value = _number(amount, "amount")
-    if not value:
+    orig = _number(original, "original")
+    if is_waived:
+        value = 0.0
+    elif not value:
         raise SystemExit("A fee needs an amount")
     with write(conn):
         line = conn.execute("SELECT COALESCE(MAX(line_no), 0) + 1 FROM receipt_fees WHERE receipt_id = ?",
                             (rid,)).fetchone()[0]
-        conn.execute("INSERT INTO receipt_fees (receipt_id, line_no, label, amount_paise) VALUES (?,?,?,?)",
-                     (rid, line, (label or "").strip() or "Fee", abs(to_paise(value))))
+        conn.execute("INSERT INTO receipt_fees (receipt_id, line_no, label, amount_paise, original_paise, waived) "
+                     "VALUES (?,?,?,?,?,?)",
+                     (rid, line, (label or "").strip() or "Fee", abs(to_paise(value)),
+                      None if orig is None else abs(to_paise(orig)), int(is_waived)))
     return line
 
 
 def edit_fee(conn: sqlite3.Connection, rid: str, line_no: str, field: str, value: str) -> None:
     _require(conn, rid)
-    if field not in ("label", "amount"):
-        raise SystemExit(f"Unknown fee field {field!r}; expected label or amount")
+    if field not in ("label", "amount", "original", "waived"):
+        raise SystemExit(f"Unknown fee field {field!r}; expected label, amount, original or waived")
     try:
         line = int(line_no)
     except ValueError:
         raise SystemExit(f"line number needs to be a plain integer, not {line_no!r}")
+    extra = ""
     if field == "amount":
         amount = _number(value, "amount")
         if not amount:
             raise SystemExit("A fee needs an amount (delete it to remove it)")
         column, stored = "amount_paise", abs(to_paise(amount))
+        extra = ", waived = 0"   # a real amount means the charge is paid
+    elif field == "original":
+        orig = _number(value, "original")
+        column, stored = "original_paise", None if orig is None else abs(to_paise(orig))
+    elif field == "waived":
+        column, stored = "waived", int(_flag(value))
+        if stored:
+            extra = ", amount_paise = 0"
+        else:   # back to a paid charge: the struck-through amount is what it costs
+            extra = ", amount_paise = CASE WHEN amount_paise = 0 AND original_paise IS NOT NULL " \
+                    "THEN original_paise ELSE amount_paise END"
     else:
         column, stored = "label", (value or "").strip() or "Fee"
     with write(conn):
-        done = conn.execute(f"UPDATE receipt_fees SET {column} = ? WHERE receipt_id = ? AND line_no = ?",
+        done = conn.execute(f"UPDATE receipt_fees SET {column} = ?{extra} WHERE receipt_id = ? AND line_no = ?",
                             (stored, rid, line)).rowcount
     if not done:
         raise SystemExit(f"No fee on line {line} for receipt {rid}")
@@ -468,53 +560,100 @@ def delete_fee(conn: sqlite3.Connection, rid: str, line_no: str) -> None:
         raise SystemExit(f"No fee on line {line} for receipt {rid}")
 
 
-def recalc_totals(conn: sqlite3.Connection, rid: str, clear_flags: bool = False) -> None:
-    """subtotal = sum of the items, total = subtotal - |discount| + round off.
-    A line with no amount but a qty and a rate gets qty x rate first; a line
-    that already has an amount is never overwritten (a weighed item's printed
-    amount is the bill's own rounding). Tax is not added: the bills this reads
-    print GST as an inclusive split of the item prices, unless the bill's own
-    total shows the tax was added on top.
+def _tax_paise(conn: sqlite3.Connection, rid: str) -> int:
+    """The bill's tax: the GST slabs when it has them, else the lump figure."""
+    slabs = conn.execute("SELECT COALESCE(SUM(COALESCE(cgst_paise,0) + COALESCE(sgst_paise,0) + "
+                         "COALESCE(igst_paise,0) + COALESCE(cess_paise,0)), 0) FROM receipt_taxes "
+                         "WHERE receipt_id = ?", (rid,)).fetchone()[0]
+    if slabs:
+        return slabs
+    return conn.execute("SELECT COALESCE(tax_paise, 0) FROM receipts WHERE id = ?", (rid,)).fetchone()[0]
 
-    `clear_flags` is the explicit "recalculate and verify" button: the figures
-    have just been reconciled, so the parser's stale warnings and its "check
-    this parse" flag are cleared too."""
-    _require(conn, rid)
-    if not conn.execute("SELECT COUNT(*) FROM receipt_items WHERE receipt_id = ?", (rid,)).fetchone()[0]:
-        raise SystemExit("Nothing to add up: this receipt has no items")
-    head = conn.execute("SELECT discount_paise, round_off_paise, subtotal_paise, total_paise FROM receipts "
-                        "WHERE id = ?", (rid,)).fetchone()
-    tax = conn.execute("SELECT COALESCE(SUM(COALESCE(cgst_paise,0) + COALESCE(sgst_paise,0) + "
-                       "COALESCE(igst_paise,0) + COALESCE(cess_paise,0)), 0) FROM receipt_taxes "
-                       "WHERE receipt_id = ?", (rid,)).fetchone()[0]
+
+def _parts(conn: sqlite3.Connection, rid: str) -> dict:
+    """The bill's figures in paise and the tax mode they imply (see
+    Model.receiptTaxMode, which uses the same rule). `printed` is what the
+    bill says was paid: printed_total_paise, else the stored total."""
+    head = conn.execute("SELECT discount_paise, round_off_paise, subtotal_paise, total_paise, "
+                        "printed_total_paise FROM receipts WHERE id = ?", (rid,)).fetchone()
+    tax = _tax_paise(conn, rid)
+    items = conn.execute("SELECT COALESCE(SUM(amount_paise), 0) FROM receipt_items WHERE receipt_id = ?",
+                         (rid,)).fetchone()[0]
+    fees = conn.execute("SELECT COALESCE(SUM(amount_paise), 0) FROM receipt_fees WHERE receipt_id = ?",
+                        (rid,)).fetchone()[0]
+    disc, ro = abs(head["discount_paise"] or 0), head["round_off_paise"] or 0
+    old_sub = head["subtotal_paise"]
+    printed = head["printed_total_paise"] if head["printed_total_paise"] is not None else head["total_paise"]
     # The subtotal is the amount BEFORE GST. Three shapes occur (the bill's own
     # figures say which, same rule as Model.receiptTaxMode): item prices that
     # already include GST ("inclusive": they add up to subtotal + tax), tax
     # added after the items ("on-top"), or no tax to add ("inside").
-    old_items = conn.execute("SELECT COALESCE(SUM(amount_paise), 0) FROM receipt_items WHERE receipt_id = ?",
-                             (rid,)).fetchone()[0]
-    old_sub, old_total = head["subtotal_paise"], head["total_paise"]
-    fees = conn.execute("SELECT COALESCE(SUM(amount_paise), 0) FROM receipt_fees WHERE receipt_id = ?",
-                        (rid,)).fetchone()[0]
     mode = "inside"
-    if tax and old_sub is not None and old_total is not None:
-        if abs(old_items - tax - old_sub) <= 50:
+    if tax and old_sub is not None and printed is not None:
+        if abs(items - tax - old_sub) <= 50:
             mode = "inclusive"
-        elif old_total - old_sub - fees > tax / 2:
+        elif printed - (old_sub - disc + ro) - fees > tax / 2:
             mode = "on-top"
+    return {"items": items, "fees": fees, "tax": tax, "discount": disc, "round_off": ro,
+            "mode": mode, "printed": printed, "has_printed": head["printed_total_paise"] is not None,
+            "subtotal": items - tax if mode == "inclusive" else items,
+            "old_subtotal": old_sub, "old_total": head["total_paise"]}
+
+
+def _computed_total(p: dict) -> int:
+    return p["subtotal"] - p["discount"] + p["round_off"] + (0 if p["mode"] == "inside" else p["tax"]) + p["fees"]
+
+
+def _parts_total(p: dict) -> int:
+    """What the parts add up to, as Model.receiptParts: tax counts, unless
+    the item prices already hold it (then the parts match without it)."""
+    with_tax = p["subtotal"] - p["discount"] + p["round_off"] + p["fees"] + p["tax"]
+    tol = max(100, abs(p["round_off"]) + 50)
+    if (p["printed"] is not None and p["tax"] and abs(with_tax - p["printed"]) > tol
+            and abs(with_tax - p["tax"] - p["printed"]) <= tol):
+        return with_tax - p["tax"]
+    return with_tax
+
+
+def recalc_totals(conn: sqlite3.Connection, rid: str, clear_flags: bool = False) -> None:
+    """Re-add the parts from the items, charges and tax.
+
+    A bill WITHOUT a printed total (older reads): subtotal = sum of the items,
+    total = subtotal - |discount| + round off (+ tax and charges). A line with
+    no amount but a qty and a rate gets qty x rate first; a line that already
+    has an amount is never overwritten (a weighed item's printed amount is the
+    bill's own rounding). Tax is not added when the bill prints GST as an
+    inclusive split of the item prices.
+
+    A bill WITH a printed total (printed_total_paise, the amount paid): only
+    the subtotal is recomputed. The printed total is never written here (only
+    `use_computed_total` replaces it) and `total_paise` stays equal to it, so
+    the widget can compare the parts with what the bill says.
+
+    `clear_flags` is the explicit "recalculate and verify" button: when the
+    figures reconcile, the parser's stale warnings and its "check this parse"
+    flag are cleared too. When the parts do not match the printed total they
+    are left on."""
+    _require(conn, rid)
+    if not conn.execute("SELECT COUNT(*) FROM receipt_items WHERE receipt_id = ?", (rid,)).fetchone()[0]:
+        raise SystemExit("Nothing to add up: this receipt has no items")
     with write(conn):
         conn.execute(
             "UPDATE receipt_items SET amount_paise = CAST(ROUND(qty_e4 / 10000.0 * rate_paise) AS INTEGER) "
             "WHERE receipt_id = ? AND amount_paise IS NULL AND qty_e4 IS NOT NULL AND rate_paise IS NOT NULL",
             (rid,))
-        items_sum = conn.execute("SELECT COALESCE(SUM(amount_paise), 0) FROM receipt_items "
-                                 "WHERE receipt_id = ?", (rid,)).fetchone()[0]
-        subtotal = items_sum - tax if mode == "inclusive" else items_sum
-        total = subtotal - abs(head["discount_paise"] or 0) + (head["round_off_paise"] or 0) \
-            + (0 if mode == "inside" else tax) + fees
-        conn.execute("UPDATE receipts SET subtotal_paise = ?, total_paise = ? WHERE id = ?",
-                     (subtotal, total, rid))
-        if clear_flags:
+        p = _parts(conn, rid)
+        computed = _computed_total(p)
+        if p["has_printed"]:
+            computed = _parts_total(p)
+            conn.execute("UPDATE receipts SET subtotal_paise = ?, total_paise = printed_total_paise WHERE id = ?",
+                         (p["subtotal"], rid))
+            agrees = abs(computed - p["printed"]) <= max(100, abs(p["round_off"]) + 50)
+        else:
+            conn.execute("UPDATE receipts SET subtotal_paise = ?, total_paise = ? WHERE id = ?",
+                         (p["subtotal"], computed, rid))
+            agrees = True
+        if clear_flags and agrees:
             conn.execute("UPDATE receipts SET warnings = '[]', needs_review = 0 WHERE id = ?", (rid,))
 
 
@@ -536,7 +675,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     fees: dict[str, list] = {}
     for r in conn.execute("SELECT * FROM receipt_fees ORDER BY receipt_id, line_no"):
         fees.setdefault(r["receipt_id"], []).append(
-            {"line": r["line_no"], "label": r["label"], "amount": _from_paise(r["amount_paise"])})
+            {"line": r["line_no"], "label": r["label"], "amount": _from_paise(r["amount_paise"]),
+             "original": _from_paise(r["original_paise"]), "waived": bool(r["waived"])})
+    cats = {r["receipt_id"]: {"category": r["category"], "subcategory": r["subcategory"], "source": r["source"]}
+            for r in conn.execute("SELECT * FROM receipt_categories")}
     taxes: dict[str, list] = {}
     for r in conn.execute("SELECT * FROM receipt_taxes ORDER BY receipt_id, rate_e2"):
         taxes.setdefault(r["receipt_id"], []).append({
@@ -566,6 +708,9 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             "total": _from_paise(r["total_paise"]), "subtotal": _from_paise(r["subtotal_paise"]),
             "tax": _from_paise(r["tax_paise"]), "discount": _from_paise(r["discount_paise"]),
             "roundOff": _from_paise(r["round_off_paise"]),
+            "platform": r["platform"], "orderId": r["order_id"], "paymentMethod": r["payment_method"],
+            "printedTotal": _from_paise(r["printed_total_paise"]), "saved": _from_paise(r["saved_paise"]),
+            "category": cats.get(r["id"]),
             "paymentHint": r["payment_hint"], "currency": r["currency"],
             "beforePayment": bool(r["before_payment"]),
             "rotation": r["rotation"],
@@ -594,4 +739,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             "items": items.get(r["id"], []), "taxes": taxes.get(r["id"], []),
             "fees": fees.get(r["id"], []),
         })
-    return {"receipts": out}
+    from . import cashew
+    cats = [{"name": c["name"], "type": c["type"], "icon": c.get("icon", ""), "color": c.get("color", ""),
+             "subcategories": c.get("subcategories") or []} for c in cashew.load_categories()]
+    return {"receipts": out, "receiptCategories": cats}

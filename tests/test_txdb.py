@@ -716,7 +716,8 @@ class ReceiptTests(Base):
             items=[{"description": "Nike shoes", "amount": 3795.0}], taxes=[],
             fees=[{"label": "Platform Fee", "amount": 10.0}, {"label": "junk", "amount": 0}]))
         row = receipts.snapshot(self.conn)["receipts"][0]
-        self.assertEqual(row["fees"], [{"line": 1, "label": "Platform Fee", "amount": 10.0}])
+        self.assertEqual(row["fees"], [{"line": 1, "label": "Platform Fee", "amount": 10.0,
+                                       "original": None, "waived": False}])    # v20 added original/waived
         line = receipts.add_fee(self.conn, rid, "Delivery", "40")
         receipts.edit_fee(self.conn, rid, str(line), "amount", "45")
         receipts.edit_fee(self.conn, rid, "1", "label", "Platform fee (Flipkart)")

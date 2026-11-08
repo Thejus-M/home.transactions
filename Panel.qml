@@ -717,6 +717,7 @@ Panel {
     // portfolio keys above: a snapshot from before receipts existed just
     // leaves this empty and the RECEIPTS section stays hidden.
     property var rawReceipts: []
+    property var receiptCategories: []
     property var receiptOverrides: ({})   // optimistic: id -> {state, transactionId, ...}
     property var receipts: []
 
@@ -748,6 +749,7 @@ Panel {
       transfers = snap.transfers || []
       lastFetched = snap.lastFetched || ({})
       rawReceipts = snap.receipts || []
+      receiptCategories = snap.receiptCategories || []
       receiptOverrides = {}
       recompute()
       recomputeReceipts()
@@ -827,9 +829,11 @@ Panel {
     readonly property var _receiptFieldToJs: ({
       merchant: "merchant", date: "date", time: "time", invoice_no: "invoiceNo",
       gstin: "gstin", payment_hint: "paymentHint", total: "total", subtotal: "subtotal",
-      discount: "discount", round_off: "roundOff",
+      discount: "discount", round_off: "roundOff", printed_total: "printedTotal", tax: "tax",
+      platform: "platform", order_id: "orderId", payment_method: "paymentMethod",
     })
-    readonly property var _receiptMoneyFields: ({ total: true, subtotal: true, discount: true, roundOff: true })
+    readonly property var _receiptMoneyFields: ({ total: true, subtotal: true, discount: true, roundOff: true,
+                                                  printedTotal: true, tax: true })
     function editReceiptField(id, field, value) {
       var jsKey = _receiptFieldToJs[field]
       var before = receipts.find(function (r) { return r.id === id })
@@ -837,6 +841,10 @@ Panel {
       var patch = {}
       var trimmed = String(value || "").trim()
       patch[jsKey] = trimmed === "" ? null : (_receiptMoneyFields[jsKey] ? Number(trimmed) : trimmed)
+      // The amount paid and the stored total are one figure (receipts.edit_field).
+      if (field === "printed_total" || (field === "total" && before && before.printedTotal != null)) {
+        patch.printedTotal = patch[jsKey]; patch.total = patch[jsKey]
+      }
       _patchReceipt(id, patch)
       root.txdb(["receipt-edit", id, field, trimmed])
       // The total follows the figures that make it up, on the spot:
@@ -848,7 +856,7 @@ Panel {
     // receipt holds now (the sum of its items when it has none printed).
     function _followTotal(id, mode) {
       var cur = receipts.find(function (r) { return r.id === id })
-      if (!cur) return
+      if (!cur || cur.printedTotal != null) return   // the printed total is what the bill says, never followed
       var sub = cur.subtotal != null ? cur.subtotal : ((cur.items || []).length ? Model.receiptItemsSum(cur) : null)
       if (sub == null) return
       var total = Model.receiptExpectedTotal(cur, sub, mode !== "inside")
@@ -942,17 +950,20 @@ Panel {
 
     // Platform / delivery / service fees: extra charges on top of the
     // subtotal. The total follows them on the spot.
-    function addReceiptFee(id, label, amount) {
+    function addReceiptFee(id, label, amount, original, waived) {
       var current = receipts.find(function (r) { return r.id === id })
-      var amt = Math.abs(Number(amount))
-      if (!current || !(amt > 0)) return false
+      var isFree = waived === true
+      var amt = isFree ? 0 : Math.abs(Number(amount))
+      var orig = String(original || "").trim() === "" ? null : Math.abs(Number(original))
+      if (orig !== null && isNaN(orig)) return false
+      if (!current || (!isFree && !(amt > 0))) return false
       var mode = Model.receiptTaxMode(current)
       var fees = (current.fees || []).slice()
       var line = fees.reduce(function (m, f) { return Math.max(m, f.line) }, 0) + 1
       var name = String(label || "").trim() || "Fee"
-      fees.push({ line: line, label: name, amount: amt })
+      fees.push({ line: line, label: name, amount: amt, original: orig, waived: isFree })
       _patchReceipt(id, { fees: fees })
-      root.txdb(["receipt-add-fee", id, name, String(amt)])
+      root.txdb(["receipt-add-fee", id, name, String(amt), orig === null ? "" : String(orig), isFree ? "1" : "0"])
       _followTotal(id, mode)
       return true
     }
@@ -965,16 +976,27 @@ Panel {
       var f = fees.find(function (x) { return x.line === line })
       if (!f) return
       var trimmed = String(value || "").trim()
+      var sent = trimmed
       if (field === "amount") {
         var n = Math.abs(Number(trimmed))
         if (!(n > 0)) return
-        f.amount = n
+        f.amount = n; f.waived = false
+        sent = String(n)
+      } else if (field === "original") {
+        var o = Math.abs(Number(trimmed))
+        f.original = trimmed === "" || isNaN(o) ? null : o
+        sent = f.original === null ? "" : String(f.original)
+      } else if (field === "waived") {
+        f.waived = trimmed === "1"
+        if (f.waived) f.amount = 0
+        else if (!f.amount && f.original) f.amount = f.original
       } else {
         f.label = trimmed || "Fee"
+        sent = f.label
       }
       _patchReceipt(id, { fees: fees })
-      root.txdb(["receipt-edit-fee", id, String(line), field, field === "amount" ? String(f.amount) : f.label])
-      if (field === "amount") _followTotal(id, mode)
+      root.txdb(["receipt-edit-fee", id, String(line), field, sent])
+      if (field === "amount" || field === "waived") _followTotal(id, mode)
     }
 
     function deleteReceiptFee(id, line) {
@@ -1008,7 +1030,8 @@ Panel {
       var current = receipts.find(function (r) { return r.id === id })
       if (!current || !(current.items || []).length) return
       var rc = Model.receiptRecompute(current, mode)
-      _patchReceipt(id, { subtotal: rc.subtotal, total: rc.total })
+      // a bill with a printed total keeps it (and the total equal to it)
+      _patchReceipt(id, current.printedTotal != null ? { subtotal: rc.subtotal } : { subtotal: rc.subtotal, total: rc.total })
       root.txdb(["receipt-recalc", id])
     }
 
@@ -1029,8 +1052,32 @@ Panel {
         return o
       })
       var rc = Model.receiptRecompute(Object.assign({}, current, { items: items }), mode)
-      _patchReceipt(id, { items: items, subtotal: rc.subtotal, total: rc.total, warnings: [], needsReview: false })
+      var after = Object.assign({}, current, { items: items, subtotal: rc.subtotal })
+      if (current.printedTotal != null) {
+        // Non-destructive for the printed total: the parts are recomputed and
+        // the check shown; the warnings go only when the parts agree with it.
+        var ok = Model.receiptParts(after).ok
+        _patchReceipt(id, ok ? { items: items, subtotal: rc.subtotal, warnings: [], needsReview: false }
+                             : { items: items, subtotal: rc.subtotal })
+      } else {
+        _patchReceipt(id, { items: items, subtotal: rc.subtotal, total: rc.total, warnings: [], needsReview: false })
+      }
       root.txdb(["receipt-recalc", id, "verify"])
+    }
+
+    // The explicit override: the printed total becomes what the parts add up to.
+    function useComputedTotal(id) {
+      var current = receipts.find(function (r) { return r.id === id })
+      if (!current) return
+      var p = Model.receiptParts(current)
+      _patchReceipt(id, { printedTotal: p.computed, total: p.computed })
+      root.txdb(["receipt-use-computed", id])
+    }
+
+    // The user's own category for a bill; an empty category removes the choice.
+    function setReceiptCategory(id, category, sub) {
+      _patchReceipt(id, { category: category ? { category: category, subcategory: sub || "", source: "user" } : null })
+      root.txdb(["receipt-set-category", id, category || "", sub || ""])
     }
 
     // `transactions` = the snapshot rows with optimistic tracked changes on top.
@@ -3539,6 +3586,42 @@ Panel {
                   placeholder: "Shop name"
                 }
 
+                // App orders: which app, and the order number, as muted lines.
+                Row {
+                  visible: !receiptFullScreen.billCollapsed && (!!receiptFullScreen.r.platform || receiptFullScreen.editingFields)
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  spacing: Style.space(4)
+                  Text {
+                    textFormat: Text.PlainText; text: "via"
+                    color: Qt.darker(root.foreground, 1.6)
+                    font.family: "monospace"; font.pixelSize: Style.font.caption
+                  }
+                  InlineEdit {
+                    fieldName: "platform"
+                    display: receiptFullScreen.r.platform || "—"
+                    initial: receiptFullScreen.r.platform || ""
+                    textColor: Qt.darker(root.foreground, 1.6)
+                    placeholder: "Swiggy, Zomato…"
+                  }
+                }
+                Row {
+                  visible: !receiptFullScreen.billCollapsed && (!!receiptFullScreen.r.orderId || receiptFullScreen.editingFields)
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  spacing: Style.space(4)
+                  Text {
+                    textFormat: Text.PlainText; text: "Order"
+                    color: Qt.darker(root.foreground, 1.6)
+                    font.family: "monospace"; font.pixelSize: Style.font.caption
+                  }
+                  InlineEdit {
+                    fieldName: "order_id"
+                    display: receiptFullScreen.r.orderId || "—"
+                    initial: receiptFullScreen.r.orderId || ""
+                    textColor: Qt.darker(root.foreground, 1.6)
+                    placeholder: "Order id"
+                  }
+                }
+
                 // Folded: one line - date, item count, total - instead of the
                 // whole bill. Click it, or the chevron, to open again.
                 Text {
@@ -3821,32 +3904,22 @@ Panel {
 
                 FsRule {}
 
-                // Subtotal / Bill Discount / Round Off. The discount is kept
-                // as a positive amount but printed with its minus sign, as
-                // on the bill.
-                Repeater {
-                  model: [
-                    { label: "Subtotal", field: "subtotal",
-                      value: receiptFullScreen.r.subtotal != null ? receiptFullScreen.r.subtotal.toFixed(2) : "" },
-                    { label: "Bill Discount", field: "discount",
-                      value: receiptFullScreen.r.discount != null
-                        ? (receiptFullScreen.r.discount ? "-" : "") + Math.abs(receiptFullScreen.r.discount).toFixed(2) : "" },
-                    { label: "Round Off", field: "round_off",
-                      value: receiptFullScreen.r.roundOff != null ? receiptFullScreen.r.roundOff.toFixed(2) : "" },
-                  ]
-                  delegate: ReceiptEditField {
-                    required property var modelData
-                    ledger: true
-                    numeric: true
-                    label: modelData.label
-                    fieldName: modelData.field
-                    value: modelData.value
-                  }
+                // Item total, then one row per charge, then the discount, the
+                // taxes and the round off, as the app prints them. The
+                // discount is kept as a positive amount but printed with its
+                // minus sign.
+                ReceiptEditField {
+                  ledger: true
+                  numeric: true
+                  label: "Item total"
+                  fieldName: "subtotal"
+                  value: receiptFullScreen.r.subtotal != null ? receiptFullScreen.r.subtotal.toFixed(2) : ""
                 }
 
-                // Platform / delivery / service fees, as printed - extra charges
-                // on top of the subtotal. Click an amount to change it; the
-                // total follows. (Edit mode: remove one, or add one.)
+                // Platform / delivery / service charges, as printed. A waived
+                // one shows the struck-through original and a green FREE.
+                // Click an amount to change it. (Edit mode: waive it, remove
+                // it, or add one.)
                 Repeater {
                   model: receiptFullScreen.r.fees || []
                   delegate: Item {
@@ -3856,13 +3929,30 @@ Panel {
                     height: feeField.height
                     ReceiptEditField {
                       id: feeField
-                      width: parent.width - (receiptFullScreen.editingFields ? Style.space(24) : 0)
+                      width: parent.width - (receiptFullScreen.editingFields ? Style.space(84) : 0)
                       ledger: true
                       numeric: true
                       label: feeRow.modelData.label
-                      fieldName: "amount"
+                      fieldName: feeRow.modelData.waived ? "original" : "amount"
+                      feeField: feeRow.modelData.waived ? "original" : "amount"
                       feeLine: feeRow.modelData.line
-                      value: Number(feeRow.modelData.amount).toFixed(2)
+                      struck: !!feeRow.modelData.waived && feeRow.modelData.original != null
+                      free: !!feeRow.modelData.waived
+                      value: feeRow.modelData.waived
+                        ? (feeRow.modelData.original != null ? Number(feeRow.modelData.original).toFixed(2) : "")
+                        : Number(feeRow.modelData.amount).toFixed(2)
+                    }
+                    TextAction {
+                      visible: receiptFullScreen.editingFields
+                      anchors.right: parent.right
+                      anchors.rightMargin: Style.space(24)
+                      anchors.verticalCenter: parent.verticalCenter
+                      label: feeRow.modelData.waived ? "charge" : "free"
+                      onTriggered: {
+                        var rid = receiptFullScreen.r.id, ln = feeRow.modelData.line
+                        var next = feeRow.modelData.waived ? "0" : "1"
+                        store.editReceiptFee(rid, ln, "waived", next)
+                      }
                     }
                     Text {
                       visible: receiptFullScreen.editingFields
@@ -3888,24 +3978,43 @@ Panel {
                   width: parent.width
                   spacing: Style.space(4)
 
-                  NewItemBox { id: addFeeLabel; width: Style.space(150); placeholderText: "Fee (Platform Fee, Delivery…)" }
+                  NewItemBox { id: addFeeLabel; width: Style.space(130); placeholderText: "Charge (Platform fee…)" }
+                  NewItemBox { id: addFeeAmt; width: Style.space(64); placeholderText: "amount" }
                   NewItemBox {
-                    id: addFeeAmt; width: Style.space(80); placeholderText: "amount"
+                    id: addFeeOrig; width: Style.space(64); placeholderText: "was"
                     onAccepted: addFeeBtn.triggered()
                   }
                   TextAction {
                     id: addFeeBtn
-                    label: "+ Add fee"
+                    label: "+ Add"
                     onTriggered: {
-                      if (store.addReceiptFee(receiptFullScreen.r.id, addFeeLabel.text, addFeeAmt.text)) {
-                        addFeeLabel.text = ""; addFeeAmt.text = ""
+                      if (store.addReceiptFee(receiptFullScreen.r.id, addFeeLabel.text, addFeeAmt.text,
+                                              addFeeOrig.text, false)) {
+                        addFeeLabel.text = ""; addFeeAmt.text = ""; addFeeOrig.text = ""
+                        addFeeLabel.forceActiveFocus()
+                      }
+                    }
+                  }
+                  TextAction {
+                    label: "+ Add free"
+                    onTriggered: {
+                      if (store.addReceiptFee(receiptFullScreen.r.id, addFeeLabel.text, "0",
+                                              addFeeOrig.text, true)) {
+                        addFeeLabel.text = ""; addFeeAmt.text = ""; addFeeOrig.text = ""
                         addFeeLabel.forceActiveFocus()
                       }
                     }
                   }
                 }
 
-                FsRule { visible: Model.receiptTaxRows(receiptFullScreen.r).length > 0 || receiptFullScreen.editingFields }
+                ReceiptEditField {
+                  ledger: true
+                  numeric: true
+                  label: "Discount"
+                  fieldName: "discount"
+                  value: receiptFullScreen.r.discount != null
+                    ? (receiptFullScreen.r.discount ? "-" : "") + Math.abs(receiptFullScreen.r.discount).toFixed(2) : ""
+                }
 
                 Repeater {
                   model: Model.receiptTaxRows(receiptFullScreen.r)
@@ -3953,7 +4062,13 @@ Panel {
                   }
                 }
 
-                FsRule { visible: Model.receiptTaxRows(receiptFullScreen.r).length > 0 || receiptFullScreen.editingFields }
+                ReceiptEditField {
+                  ledger: true
+                  numeric: true
+                  label: "Round off"
+                  fieldName: "round_off"
+                  value: receiptFullScreen.r.roundOff != null ? receiptFullScreen.r.roundOff.toFixed(2) : ""
+                }
 
                 Item {
                   width: parent.width
@@ -3983,11 +4098,26 @@ Panel {
                   ledger: true
                   big: true
                   numeric: true
-                  label: "GRAND TOTAL"
-                  fieldName: "total"
+                  label: receiptFullScreen.r.paymentMethod
+                    ? "PAID VIA " + String(receiptFullScreen.r.paymentMethod).toUpperCase() : "GRAND TOTAL"
+                  fieldName: receiptFullScreen.r.printedTotal != null ? "printed_total" : "total"
                   prefix: Model.currencySymbol(receiptFullScreen.r.currency)
-                  value: receiptFullScreen.r.total != null ? receiptFullScreen.r.total.toFixed(2) : ""
+                  value: Model.receiptPrinted(receiptFullScreen.r) != null
+                    ? Model.receiptPrinted(receiptFullScreen.r).toFixed(2) : ""
                   valueColor: Model.receiptIsBalanced(receiptFullScreen.r) ? root.creditColor : root.debitColor
+                }
+
+                // Parts against the printed total, quietly: green when they
+                // agree, the gap in the debit colour when they do not.
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  horizontalAlignment: Text.AlignRight
+                  text: Model.receiptCheckLine(receiptFullScreen.r)
+                  wrapMode: Text.WordWrap
+                  color: Model.receiptParts(receiptFullScreen.r).ok ? Util.alpha(root.creditColor, 0.85) : root.debitColor
+                  font.family: "monospace"
+                  font.pixelSize: Style.font.caption
                 }
 
                 FsRule { doubled: true }
@@ -4017,6 +4147,119 @@ Panel {
                 font.family: Style.font.family
                 font.bold: true
                 font.pixelSize: Style.font.caption
+              }
+            }
+
+            TextAction {
+              visible: !Model.receiptParts(receiptFullScreen.r).ok && Model.receiptPrinted(receiptFullScreen.r) != null
+                && Model.receiptItemCount(receiptFullScreen.r) > 0
+              label: "Use computed total"
+              onTriggered: store.useComputedTotal(receiptFullScreen.r.id)
+            }
+
+            Text {
+              visible: receiptFullScreen.r.saved != null && receiptFullScreen.r.saved > 0
+              textFormat: Text.PlainText
+              text: "You saved " + Model.currencySymbol(receiptFullScreen.r.currency)
+                + (receiptFullScreen.r.saved || 0).toFixed(2)
+              color: Qt.darker(root.foreground, 1.5)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            // The bill's category: a chip that opens a small picker right
+            // here in the card (no popup). Choosing writes the user's own
+            // category, which a later re-read never overwrites.
+            Item {
+              id: catBox
+              property bool picking: false
+              property string pickMain: ""
+              readonly property var cur: receiptFullScreen.r.category
+              readonly property var catDef: {
+                var list = store.receiptCategories || []
+                for (var k = 0; k < list.length; k++) if (cur && list[k].name === cur.category) return list[k]
+                return null
+              }
+              width: parent.width
+              height: catColumn.implicitHeight
+              Column {
+                id: catColumn
+                width: parent.width
+                spacing: Style.space(4)
+                Rectangle {
+                  implicitWidth: chipText.implicitWidth + Style.space(16)
+                  implicitHeight: chipText.implicitHeight + Style.space(8)
+                  width: implicitWidth; height: implicitHeight
+                  radius: height / 2
+                  color: Util.alpha(catBox.catDef && catBox.catDef.color ? catBox.catDef.color : Color.accent, 0.35)
+                  border.width: 1
+                  border.color: Util.alpha(root.foreground, 0.25)
+                  Text {
+                    id: chipText
+                    anchors.centerIn: parent
+                    textFormat: Text.PlainText
+                    text: catBox.cur
+                      ? ((catBox.catDef && catBox.catDef.icon ? catBox.catDef.icon + " " : "") + catBox.cur.category
+                         + (catBox.cur.subcategory ? " › " + catBox.cur.subcategory : "")
+                         + (catBox.cur.source === "user" ? "" : "  (suggested)"))
+                      : "＋ Category"
+                    color: root.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: { catBox.pickMain = catBox.cur ? catBox.cur.category : ""; catBox.picking = !catBox.picking }
+                  }
+                }
+                Flow {
+                  visible: catBox.picking
+                  width: parent.width
+                  spacing: Style.space(4)
+                  Repeater {
+                    model: catBox.pickMain === "" ? (store.receiptCategories || []) : []
+                    delegate: TextAction {
+                      required property var modelData
+                      label: (modelData.icon ? modelData.icon + " " : "") + modelData.name
+                      onTriggered: {
+                        var def = modelData
+                        if ((def.subcategories || []).length > 0) catBox.pickMain = def.name
+                        else { store.setReceiptCategory(receiptFullScreen.r.id, def.name, ""); catBox.picking = false }
+                      }
+                    }
+                  }
+                }
+                Flow {
+                  visible: catBox.picking && catBox.pickMain !== ""
+                  width: parent.width
+                  spacing: Style.space(4)
+                  TextAction {
+                    label: "‹ " + catBox.pickMain
+                    onTriggered: catBox.pickMain = ""
+                  }
+                  TextAction {
+                    label: "no subcategory"
+                    onTriggered: { store.setReceiptCategory(receiptFullScreen.r.id, catBox.pickMain, ""); catBox.picking = false }
+                  }
+                  Repeater {
+                    model: {
+                      var list = store.receiptCategories || []
+                      for (var k = 0; k < list.length; k++) if (list[k].name === catBox.pickMain) return list[k].subcategories || []
+                      return []
+                    }
+                    delegate: TextAction {
+                      required property var modelData
+                      label: modelData
+                      onTriggered: { store.setReceiptCategory(receiptFullScreen.r.id, catBox.pickMain, modelData); catBox.picking = false }
+                    }
+                  }
+                  TextAction {
+                    visible: !!catBox.cur && catBox.cur.source === "user"
+                    label: "clear my choice"
+                    onTriggered: { store.setReceiptCategory(receiptFullScreen.r.id, "", ""); catBox.picking = false }
+                  }
+                }
               }
             }
 
@@ -6370,6 +6613,9 @@ Panel {
     property string prefix: ""        // shown before the value, never part of what is typed or saved
     property var taxRate: null        // set on a GST row: save through the slab, not the header
     property var feeLine: null        // set on a fee row: save through that fee
+    property string feeField: "amount" // which of the fee's fields the value is (amount / original)
+    property bool struck: false       // the value is drawn struck through (a waived charge's original)
+    property bool free: false         // a green FREE follows the value
     property bool autoStart: false
     signal finished()
     required property string label
@@ -6403,7 +6649,7 @@ Panel {
 
         Text {
           id: efLabel
-          width: ef.ledger ? Style.space(120) : Style.space(76)
+          width: ef.big ? Style.space(170) : (ef.ledger ? Style.space(120) : Style.space(76))
           textFormat: Text.PlainText
           text: ef.label
           color: ef.big ? root.foreground : Qt.darker(root.foreground, 1.4)
@@ -6414,9 +6660,10 @@ Panel {
 
         Text {
           visible: !ef.editing
-          width: parent.width - efLabel.width - parent.spacing
+          width: parent.width - efLabel.width - parent.spacing - (ef.free ? freeBadge.width + parent.spacing : 0)
           textFormat: Text.PlainText
           horizontalAlignment: ef.ledger ? Text.AlignRight : Text.AlignLeft
+          font.strikeout: ef.struck
           text: ef.value ? ef.prefix + ef.value : "—"
           elide: Text.ElideRight
           color: ef.valueColor ? ef.valueColor
@@ -6431,6 +6678,17 @@ Panel {
             cursorShape: Qt.IBeamCursor
             onClicked: ef.startEditing()
           }
+        }
+
+        Text {
+          id: freeBadge
+          visible: ef.free && !ef.editing
+          textFormat: Text.PlainText
+          text: "FREE"
+          color: root.creditColor
+          font.family: "monospace"
+          font.bold: true
+          font.pixelSize: Style.font.caption
         }
 
         TextField {
@@ -6460,6 +6718,7 @@ Panel {
             var name = ef.fieldName
             var rate = ef.taxRate
             var fee = ef.feeLine
+            var feeName = ef.feeField
             var typed = text
             var changed = text.trim() !== (ef.value || "").trim()
             // Dates are shown DD-MM-YYYY but stored ISO; a discount is
@@ -6470,7 +6729,7 @@ Panel {
             ef.editing = false
             ef.finished()
             if (!changed) return
-            if (fee !== null) st.editReceiptFee(rid, fee, "amount", typed)
+            if (fee !== null) st.editReceiptFee(rid, fee, feeName, typed)
             else if (rate !== null) st.editReceiptTaxField(rid, rate, name, typed)
             else st.editReceiptField(rid, name, typed)
           }

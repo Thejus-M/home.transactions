@@ -946,30 +946,31 @@ function receiptTaxTotal(r) {
   }, 0)
 }
 
-// The tax split as the bill prints it, one editable row per figure:
+// The tax as the bill prints it, one editable row per figure:
 // "CGST (2.5%)" 8.52 - CGST/SGST each carry half the slab rate, IGST and
 // cess the whole of it. `rate` is the slab (what the database addresses).
+// A slab with no rate shows no rate at all (nothing is guessed from the
+// figures); a bill with one lump "Taxes" figure and no slabs gets one row
+// with field "tax".
 function receiptTaxRows(r) {
   var rows = []
-  var base = (r.subtotal != null ? r.subtotal : receiptItemsSum(r)) - Math.abs(r.discount || 0)
   ;(r.taxes || []).forEach(function (t) {
     ;[["cgst", "CGST", 2], ["sgst", "SGST", 2], ["igst", "IGST", 1], ["cess", "CESS", 1]].forEach(function (p) {
       if (t[p[0]] == null || t[p[0]] === 0) return
       var shown = Math.round((t.rate || 0) / p[2] * 100) / 100
-      // A slab saved without its rate: read it off the bill's own figures
-      // (19.32 on 772.80 is 2.5%), to the nearest half percent.
-      if (!shown && base > 0) shown = Math.round(t[p[0]] / base * 100 * 2) / 2
       rows.push({ rate: t.rate, field: p[0], label: p[1] + (shown ? " (" + shown + "%)" : ""), value: t[p[0]] })
     })
   })
+  if (!rows.length && r.tax) rows.push({ rate: null, field: "tax", label: "Taxes", value: r.tax })
   return rows
 }
 
 // Total tax printed on the bill, from the slabs.
 function receiptTaxSum(r) {
-  return (r.taxes || []).reduce(function (m, t) {
+  var slabs = (r.taxes || []).reduce(function (m, t) {
     return m + (t.cgst || 0) + (t.sgst || 0) + (t.igst || 0) + (t.cess || 0)
   }, 0)
+  return slabs > 0 ? slabs : (r.tax || 0)
 }
 
 // How the bill's tax relates to its figures. The subtotal is always the
@@ -983,14 +984,21 @@ function receiptTaxSum(r) {
 // Platform / delivery / service fees printed on the bill: extra charges on
 // top of the subtotal, neither tax nor discount.
 function receiptFeesSum(r) {
-  return (r.fees || []).reduce(function (m, f) { return m + (f.amount || 0) }, 0)
+  return (r.fees || []).reduce(function (m, f) { return m + (f.waived ? 0 : (f.amount || 0)) }, 0)
+}
+
+// What the bill says was paid: the printed total, and for older reads that
+// have none, the stored total.
+function receiptPrinted(r) {
+  return r.printedTotal != null ? r.printedTotal : (r.total != null ? r.total : null)
 }
 
 function receiptTaxMode(r) {
-  var tax = receiptTaxSum(r)
-  if (!(tax > 0) || r.total == null || r.subtotal == null) return "inside"
+  var tax = receiptTaxSum(r), printed = receiptPrinted(r)
+  if (!(tax > 0) || printed == null || r.subtotal == null) return "inside"
   if ((r.items || []).length && Math.abs(receiptItemsSum(r) - tax - r.subtotal) <= 0.5) return "inclusive"
-  if (r.total - r.subtotal - receiptFeesSum(r) > tax / 2) return "on-top"
+  // what the printed total holds beyond subtotal - discount + round off + charges
+  if (printed - (r.subtotal - Math.abs(r.discount || 0) + (r.roundOff || 0)) - receiptFeesSum(r) > tax / 2) return "on-top"
   return "inside"
 }
 
@@ -1101,54 +1109,90 @@ function receiptGstLines(r) {
   })
 }
 
-// Parser warnings plus one more computed here: items that don't add up to
-// the printed subtotal/total, the same check the Python referee makes, kept
-// visible in the UI even if the parser's own list didn't catch it.
+function _money2(x) { return Math.round(x * 100) / 100 }
+
+// The bill's parts against what it says was paid (the printed total):
+//   computed = item total - |discount| + charges + tax +/- round off
+// `charges` carry the struck-through original and the waived flag (a waived
+// charge adds 0). Tax counts, except for a bill whose item prices already
+// hold it (then the parts match without it, `taxIncluded`). `gap` is
+// printed - computed; `ok` needs a printed total and |gap| within
+// max(1, |round off| + 0.5).
+function receiptParts(r) {
+  var items = r.items || []
+  var itemTotal = r.subtotal != null ? r.subtotal : (items.length ? receiptItemsSum(r) : 0)
+  var discount = Math.abs(r.discount || 0), roundOff = r.roundOff || 0
+  var tax = receiptTaxSum(r), fees = receiptFeesSum(r)
+  var printed = receiptPrinted(r)
+  var tol = Math.max(1, Math.abs(roundOff) + 0.5)
+  var computed = _money2(itemTotal - discount + fees + tax + roundOff)
+  var taxIncluded = false
+  if (printed != null && tax > 0 && Math.abs(computed - printed) > tol && Math.abs(computed - tax - printed) <= tol) {
+    computed = _money2(computed - tax)
+    taxIncluded = true
+  }
+  var gap = printed == null ? null : _money2(printed - computed)
+  return {
+    itemTotal: itemTotal,
+    charges: (r.fees || []).map(function (f) {
+      return { label: f.label, amount: f.waived ? 0 : (f.amount || 0), original: f.original == null ? null : f.original, waived: !!f.waived }
+    }),
+    discount: discount, tax: tax, taxIncluded: taxIncluded, roundOff: roundOff,
+    computed: computed, printed: printed, gap: gap,
+    ok: printed != null && Math.abs(gap) <= tol
+  }
+}
+
+// The quiet line under the printed total.
+function receiptCheckLine(r) {
+  var p = receiptParts(r)
+  if (p.printed == null) return "No total printed on the bill"
+  var sym = currencySymbol(r.currency)
+  if (p.ok) {
+    return "Parts add to " + sym + p.computed.toFixed(2) + (p.gap !== 0 ? " · round off " + sym + Math.abs(p.gap).toFixed(2) : "")
+  }
+  if (p.gap > 0) return sym + p.gap.toFixed(2) + " not explained: add a charge or a tax"
+  return "Parts add to " + sym + p.computed.toFixed(2) + ", " + sym + Math.abs(p.gap).toFixed(2) + " more than the bill says"
+}
+
+// Parser warnings plus more computed here: items that don't add up to
+// the printed subtotal/total, and parts that don't add up to the printed
+// total (the same check the Python referee makes), kept visible in the UI
+// even if the parser's own list didn't catch it, and re-run live after
+// every hand edit.
 function receiptWarnings(r) {
   var out = (r.warnings || []).slice()
   var items = r.items || []
+  var printed = receiptPrinted(r)
   if (items.length) {
     var sum = receiptItemsSum(r)
-    var target = r.subtotal != null ? r.subtotal : r.total
+    var target = r.subtotal != null ? r.subtotal : printed
     // Item prices may already include GST: then they add up to the subtotal
     // plus the tax, or to the grand total, instead of to the subtotal.
     var taxIn = receiptTaxSum(r)
     var inclusiveOk = r.subtotal != null && ((taxIn > 0 && Math.abs(sum - (r.subtotal + taxIn)) <= 0.5)
-      || (taxIn > 0 && r.total != null && Math.abs(sum - r.total) <= 0.5))
+      || (taxIn > 0 && printed != null && Math.abs(sum - printed) <= 0.5))
     if (target != null && Math.abs(sum - target) > 0.5 && !inclusiveOk) {
       out.push("items add up to " + sum.toFixed(2) + ", the bill says " + target.toFixed(2))
     }
   }
-  // subtotal - discount + round-off == total - the same identity
-  // receipt-ledger-stitcher's referee() checks before a bill is ever saved
-  // (discount is always a positive amount taken off, whatever sign a stray
-  // hand edit gave it). Checked again here, live, so a hand edit to any one
-  // of the four figures that breaks the bill's own arithmetic is caught at
-  // once, not just at the next re-parse.
-  if (r.subtotal != null && r.total != null) {
-    var discount = Math.abs(r.discount || 0)
-    var roundOff = r.roundOff || 0
-    var tax = receiptTaxSum(r)
-    var fees = receiptFeesSum(r)
-    var inclusive = r.subtotal - discount + roundOff + fees
-    var onTop = inclusive + tax
-    if (Math.abs(inclusive - r.total) > 0.5 && !(tax > 0 && Math.abs(onTop - r.total) <= 0.5)) {
-      out.push("subtotal " + r.subtotal.toFixed(2) + " - discount " + discount.toFixed(2) +
-              " + round-off " + roundOff.toFixed(2) + (fees > 0 ? " + fees " + fees.toFixed(2) : "") +
-              (tax > 0 ? " + tax " + tax.toFixed(2) : "") +
-              " = " + (tax > 0 ? onTop : inclusive).toFixed(2) +
-              ", not the total " + r.total.toFixed(2))
+  if (printed != null && (r.subtotal != null || r.printedTotal != null)) {
+    var p = receiptParts(r)
+    if (!p.ok) {
+      out.push("subtotal " + p.itemTotal.toFixed(2) + " - discount " + p.discount.toFixed(2) +
+              " + round-off " + p.roundOff.toFixed(2) + (receiptFeesSum(r) > 0 ? " + fees " + receiptFeesSum(r).toFixed(2) : "") +
+              (p.tax > 0 && !p.taxIncluded ? " + tax " + p.tax.toFixed(2) : "") +
+              " = " + p.computed.toFixed(2) + ", not the total " + printed.toFixed(2))
     }
   }
   return out
 }
 
-// True when the bill's own arithmetic holds - no parser warning, and the
-// live checks in receiptWarnings (items vs. subtotal, subtotal - discount
-// + round-off vs. total) agree too, so a hand edit that breaks either one
-// turns this false again at once, same as a parser warning always did.
+// True when the bill's own arithmetic holds: a printed total exists, no
+// parser warning is left, and the live checks in receiptWarnings agree, so a
+// hand edit that breaks them turns this false again at once.
 function receiptIsBalanced(r) {
-  return receiptWarnings(r).length === 0
+  return receiptPrinted(r) != null && receiptWarnings(r).length === 0
 }
 
 // {glyph, pill, tone} for the row's status gutter. "CHECK" covers both
@@ -2026,7 +2070,8 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
     if (cat === "Uncategorized") warnings.push("no category: " + label)
     else if (types.hasOwnProperty(cat)) {
       var t = types[cat], neg = amount.charAt(0) === "-"
-      if (!(t === "balance" || (neg ? t === "expense" : t === "income")))
+      var friendOk = cat === "Friend Settlement" && sub === "Split Paid"
+      if (!(t === "balance" || (neg ? t === "expense" : t === "income")) && !friendOk)
         warnings.push("category " + _cashewRepr(cat) + " does not fit the amount sign: " + label)
     }
     var e = { amount: amount, title: _cashewPct(title), date: _cashewStr(d.date), notes: _cashewPct(notes), category: _cashewPct(cat) }

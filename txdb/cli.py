@@ -20,8 +20,10 @@
   txdb transfers-mark-seen               clear the "new" mark on newly matched transfers
   txdb transfer-split <txnId>...         say a detected transfer pair is NOT a transfer
   txdb transfer-restore <txnId>...       undo that
-  txdb receipt-add-fee <receiptId> <label> <amount>   platform / delivery / service fee
-  txdb receipt-edit-fee <receiptId> <lineNo> <label|amount> <value>
+  txdb receipt-add-fee <receiptId> <label> <amount> [original] [waived 0|1]   platform / delivery / service fee
+  txdb receipt-edit-fee <receiptId> <lineNo> <label|amount|original|waived> <value>
+  txdb receipt-set-category <receiptId> <category> [sub]   the user's category for a bill (empty = remove it)
+  txdb receipt-use-computed <receiptId>  replace the printed total by what the parts add up to (explicit override)
   txdb receipt-delete-fee <receiptId> <lineNo>
   txdb receipt-add-tax <receiptId> <slabRate> <cgst|sgst|igst|cess> <amount>
   txdb receipt-recalc <receiptId> [verify]  (verify also clears warnings) subtotal = sum of items, total = subtotal - discount + round off
@@ -199,13 +201,17 @@ def main(argv: list[str]) -> int:
             for tid in args:
                 conn.execute("DELETE FROM transfer_splits WHERE txn_id = ?", (tid,))
     elif cmd == "receipt-add-fee":
-        receipts.add_fee(conn, args[0], args[1], args[2])
+        receipts.add_fee(conn, args[0], args[1], args[2], *(args[3:5]))
     elif cmd == "receipt-edit-fee":
         receipts.edit_fee(conn, args[0], args[1], args[2], " ".join(args[3:]))
     elif cmd == "receipt-delete-fee":
         receipts.delete_fee(conn, args[0], args[1])
     elif cmd == "receipt-add-tax":
         receipts.add_tax(conn, args[0], args[1], args[2], args[3])
+    elif cmd == "receipt-set-category":
+        receipts.set_category(conn, args[0], args[1] if len(args) > 1 else "", args[2] if len(args) > 2 else "")
+    elif cmd == "receipt-use-computed":
+        receipts.use_computed_total(conn, args[0])
     elif cmd == "receipt-recalc":
         receipts.recalc_totals(conn, args[0], clear_flags=len(args) > 1 and args[1] == "verify")
     elif cmd == "receipt-remove":

@@ -34,6 +34,8 @@ BILL_ITEMS = 12
 DEFAULT_MAX_CHARS = 6000
 UNCATEGORIZED = ("Uncategorized", "Unknown")
 BALANCE = "Balance Correction"
+FRIEND = "Friend Settlement"
+FRIEND_SUB = "Split Paid"                            # both directions
 
 
 def default_state_path() -> Path:
@@ -115,6 +117,14 @@ def _fits(ctype: str, negative: bool) -> bool:
     return ctype == "balance" or (ctype == "expense" if negative else ctype == "income")
 
 
+def _friend_fits(cat: str, sub: str, negative: bool) -> bool:
+    """Friend Settlement is an expense-type category in the user's list, but
+    the default for an HDFC savings row with nothing else to go on covers both
+    directions (money out and money in, subcategory Split Paid), so the sign rule
+    is explicitly relaxed for exactly that pair and no other."""
+    return cat == FRIEND and sub == FRIEND_SUB
+
+
 def _rule_hit(rule: dict, text: str) -> bool:
     m = rule.get("match")
     if isinstance(m, list):
@@ -124,15 +134,26 @@ def _rule_hit(rule: dict, text: str) -> bool:
 
 
 def choose_category(title: str, merchant: str, group_key: str, negative: bool, state: dict,
-                    rules: list[dict] | None = None, types: dict[str, str] | None = None) -> tuple[str, str, str]:
-    """(category, subcategory, warning)."""
+                    rules: list[dict] | None = None, types: dict[str, str] | None = None,
+                    bill_user: tuple[str, str] | None = None, bill_llm: tuple[str, str] | None = None,
+                    friend_default: bool = False) -> tuple[str, str, str]:
+    """(category, subcategory, warning). First hit wins: (a) the category the
+    user set on the linked bill, (b) the merchant mapping the user taught,
+    (c) the linked bill's model category, (d) keyword rules, (e) Friend
+    Settlement for an HDFC savings row with nothing else (`friend_default`),
+    (f) Uncategorized."""
     types = types or _types()
     rules = load_rules() if rules is None else rules
     taught = (state.get("categories") or {}).get(group_key)
     pick, source = None, ""
-    if isinstance(taught, dict) and taught.get("category"):
+    if bill_user and bill_user[0]:
+        pick, source = bill_user, "bill category"
+    elif isinstance(taught, dict) and taught.get("category"):
         pick, source = (taught["category"], taught.get("subcategory") or ""), "taught category"
     else:
+        # the model's pick counts only when it names a real category that fits
+        if bill_llm and bill_llm[0] in types and _fits(types[bill_llm[0]], negative):
+            return bill_llm[0], bill_llm[1] if _valid_sub(bill_llm[0], bill_llm[1]) else "", ""
         text = f"{title} {merchant}"
         for rule in rules:
             if rule.get("sign") and (rule["sign"] == "debit") != negative:
@@ -141,12 +162,40 @@ def choose_category(title: str, merchant: str, group_key: str, negative: bool, s
                 pick, source = (rule["category"], rule.get("subcategory") or ""), "rule"
                 break
     if pick is None:
+        if friend_default:
+            return FRIEND, FRIEND_SUB, ""
         return (*UNCATEGORIZED, "")
     if pick[0] not in types:
         return (*UNCATEGORIZED, f"{source} names unknown category {pick[0]!r}")
     if not _fits(types[pick[0]], negative):
         return (*UNCATEGORIZED, f"{source} {pick[0]!r} does not fit a {'debit' if negative else 'credit'}")
     return pick[0], pick[1], ""
+
+
+def _valid_sub(cat: str, sub: str) -> bool:
+    for c in load_categories():
+        if c["name"] == cat:
+            return not sub or sub in (c.get("subcategories") or [])
+    return False
+
+
+def _bill_categories(conn) -> dict[str, dict]:
+    """transaction id -> {"source": llm|user, "category", "subcategory"} for linked bills."""
+    try:
+        return {r["transaction_id"]: dict(r) for r in conn.execute(
+            "SELECT l.transaction_id, c.category, c.subcategory, c.source FROM receipt_links l "
+            "JOIN receipt_categories c ON c.receipt_id = l.receipt_id "
+            "WHERE l.state = 'linked' AND l.transaction_id IS NOT NULL")}
+    except sqlite3.Error:                        # a database from before v20
+        return {}
+
+
+def _linked_ids(conn) -> set[str]:
+    try:
+        return {r[0] for r in conn.execute(
+            "SELECT transaction_id FROM receipt_links WHERE state = 'linked' AND transaction_id IS NOT NULL")}
+    except sqlite3.Error:
+        return set()
 
 
 def display_title(bank: str, merchant: str, group_key: str, counterparty: str | None, overrides: dict) -> str:
@@ -223,15 +272,20 @@ def _qty(qty_e4: int | None, unit: str | None) -> str:
 
 
 def bill_note(conn, txn_id: str, title: str) -> str:
-    """The concise itemised bill of the receipt linked to a transaction, or ""."""
+    """The concise itemised bill of the receipt linked to a transaction, or "".
+    Besides the items it lists the charges (a waived one as FREE), the discount,
+    the tax and the amount paid."""
     try:
-        r = conn.execute("SELECT r.id, r.merchant, r.date, r.total_paise, r.tax_paise FROM receipt_links l "
+        r = conn.execute("SELECT r.id, r.merchant, r.date, r.total_paise, r.tax_paise, r.discount_paise, "
+                         "r.printed_total_paise FROM receipt_links l "
                          "JOIN receipts r ON r.id = l.receipt_id WHERE l.transaction_id = ? AND l.state = 'linked'",
                          (txn_id,)).fetchone()
         if not r:
             return ""
         items = conn.execute("SELECT description, qty_e4, unit, amount_paise FROM receipt_items "
                              "WHERE receipt_id = ? ORDER BY line_no", (r["id"],)).fetchall()
+        fees = conn.execute("SELECT label, amount_paise, waived FROM receipt_fees "
+                            "WHERE receipt_id = ? ORDER BY line_no", (r["id"],)).fetchall()
     except sqlite3.Error:
         return ""
     if not items:
@@ -243,8 +297,13 @@ def bill_note(conn, txn_id: str, title: str) -> str:
     lines = [f"• {_qty(i['qty_e4'], i['unit'])} × {_squash(i['description'])} — {_money(i['amount_paise'])}"
              for i in items]
     tail = []
-    if r["total_paise"] is not None:
-        tail.append(f"Total {_money(r['total_paise'])}")
+    for f in fees:
+        tail.append(f"• {_squash(f['label'])} — " + ("FREE" if f["waived"] else _money(f["amount_paise"])))
+    if r["discount_paise"]:
+        tail.append(f"Discount -{_money(abs(r['discount_paise']))}")
+    paid = r["printed_total_paise"] if r["printed_total_paise"] is not None else r["total_paise"]
+    if paid is not None:
+        tail.append(f"Total {_money(paid)}")
     if r["tax_paise"]:
         tail.append(f"GST {_money(r['tax_paise'])}")
     shown = lines[:BILL_ITEMS]
@@ -318,6 +377,7 @@ def drafts(conn, state: dict | None = None) -> list[dict]:
             legs[h["id"]] = {"pairId": "", "peer": BANK_NAMES.get(other, other) if other else ""}
     overrides = {r[0]: r[1] for r in conn.execute("SELECT group_key, name FROM merchant_names")}
     acct_over = state.get("accounts") or {}
+    bill_cats, linked = _bill_categories(conn), _linked_ids(conn)
 
     out = []
     for r in rows:
@@ -333,7 +393,13 @@ def drafts(conn, state: dict | None = None) -> list[dict]:
                     (f"Transfer from {leg['peer']}" if leg["peer"] else "Transfer in")
         else:
             kind = "spend" if negative else "income"
-            cat, sub, warn = choose_category(title, r["merchant"], r["group_key"], negative, state, rules, types)
+            bc = bill_cats.get(r["id"])
+            cat, sub, warn = choose_category(
+                title, r["merchant"], r["group_key"], negative, state, rules, types,
+                bill_user=(bc["category"], bc["subcategory"]) if bc and bc["source"] == "user" else None,
+                bill_llm=(bc["category"], bc["subcategory"]) if bc and bc["source"] == "llm" else None,
+                # HDFC savings (not a card, not another bank), no bill, nothing else to go on
+                friend_default=(r["bank"] == "HDFC" and r["account_type"] == "checking" and r["id"] not in linked))
         aid = r["account_id"]
         account = acct_over[aid] if aid in acct_over else ACCOUNT_MAP.get(aid, "")
         out.append({
@@ -362,7 +428,8 @@ def _entry(d: dict, warnings: list[str], types: dict[str, str]) -> dict:
     amount = str(d.get("amount") or "")
     if cat == UNCATEGORIZED[0]:
         warnings.append(f"no category: {label}")
-    elif cat in types and not _fits(types[cat], amount.startswith("-")):
+    elif cat in types and not _fits(types[cat], amount.startswith("-")) \
+            and not _friend_fits(cat, sub, amount.startswith("-")):
         warnings.append(f"category {cat!r} does not fit the amount sign: {label}")
     e = {"amount": amount, "title": escape_percent(title), "date": str(d.get("date") or ""),
          "notes": escape_percent(notes), "category": escape_percent(cat)}

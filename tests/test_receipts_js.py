@@ -182,10 +182,60 @@ class Formatting(Harness):
         self.assertFalse(self.js("receiptTaxExclusive(input.r)", r=r))
         self.assertTrue(self.js("receiptIsBalanced(input.r)", r=r))
 
-    def test_a_missing_slab_rate_is_read_off_the_figures(self):
+    def test_a_missing_slab_rate_shows_no_rate_and_none_is_guessed(self):
+        # was: the rate was read off the figures ("CGST (2.5%)"); an invented rate misled (33%)
         r = receipt(subtotal=772.8, taxes=[{"rate": 0, "cgst": 19.32, "sgst": 19.32}], items=[])
         out = self.js("receiptTaxRows(input.r)", r=r)
-        self.assertEqual([x["label"] for x in out], ["CGST (2.5%)", "SGST (2.5%)"])
+        self.assertEqual([x["label"] for x in out], ["CGST", "SGST"])
+        wild = receipt(subtotal=179.0, taxes=[{"rate": 0, "cgst": 44.75, "sgst": 44.75}], items=[])
+        self.assertFalse(any("%" in x["label"] for x in self.js("receiptTaxRows(input.r)", r=wild)))
+
+    def test_a_lump_tax_is_one_taxes_row(self):
+        out = self.js("receiptTaxRows(input.r)", r=receipt(tax=6.75, taxes=[]))
+        self.assertEqual([(x["label"], x["field"], x["value"]) for x in out], [("Taxes", "tax", 6.75)])
+
+
+KOTTAYAM = dict(
+    subtotal=179.0, discount=44.0, roundOff=None, tax=6.75, taxes=[], total=160.0, printedTotal=160.0,
+    items=[{"description": "Biryani", "amount": 179.0}],
+    fees=[{"line": 1, "label": "Restaurant Packaging", "amount": 0, "original": 9.0, "waived": True},
+          {"line": 2, "label": "Platform fee with GST", "amount": 17.98, "original": None, "waived": False},
+          {"line": 3, "label": "Delivery Fee", "amount": 0, "original": 25.0, "waived": True}])
+
+
+class AppOrder(Harness):
+    def test_kottayam_parts_add_to_159_73_and_balance_against_160(self):
+        r = receipt(**KOTTAYAM)
+        p = self.js("receiptParts(input.r)", r=r)
+        self.assertEqual((p["itemTotal"], p["discount"], p["tax"], p["computed"], p["printed"], p["gap"], p["ok"]),
+                         (179.0, 44.0, 6.75, 159.73, 160.0, 0.27, True))
+        self.assertEqual([(c["label"], c["amount"], c["original"], c["waived"]) for c in p["charges"]],
+                         [("Restaurant Packaging", 0, 9.0, True), ("Platform fee with GST", 17.98, None, False),
+                          ("Delivery Fee", 0, 25.0, True)])
+        self.assertTrue(self.js("receiptIsBalanced(input.r)", r=r))
+        self.assertEqual(self.js("receiptCheckLine(input.r)", r=r), "Parts add to ₹159.73 · round off ₹0.27")
+
+    def test_a_wrong_printed_total_or_a_missing_tax_is_not_balanced(self):
+        for patch in (dict(printedTotal=135.0, total=135.0), dict(tax=None)):
+            r = receipt(**dict(KOTTAYAM, **patch))
+            self.assertFalse(self.js("receiptIsBalanced(input.r)", r=r), patch)
+            self.assertTrue(any("not the total" in w for w in self.js("receiptWarnings(input.r)", r=r)))
+        r = receipt(**dict(KOTTAYAM, tax=None))
+        self.assertEqual(self.js("receiptCheckLine(input.r)", r=r), "₹7.02 not explained: add a charge or a tax")
+        over = receipt(**dict(KOTTAYAM, printedTotal=135.0, total=135.0))
+        self.assertIn("more than the bill says", self.js("receiptCheckLine(input.r)", r=over))
+
+    def test_no_printed_total_means_not_balanced(self):
+        r = receipt(**dict(KOTTAYAM, printedTotal=None, total=None))
+        self.assertFalse(self.js("receiptIsBalanced(input.r)", r=r))
+
+    def test_old_receipts_fall_back_to_the_stored_total(self):
+        r = receipt(total=1250.0, subtotal=1275.0, discount=25.0, items=[{"amount": 1275.0}])
+        self.assertTrue(self.js("receiptIsBalanced(input.r)", r=r))
+
+    def test_a_waived_charge_adds_nothing(self):
+        r = receipt(**KOTTAYAM)
+        self.assertEqual(self.js("receiptFeesSum(input.r)", r=r), 17.98)
 
     def test_the_info_rows_describe_the_photo_and_compare_its_date_to_the_bills(self):
         r = receipt(date="2026-06-25", imageMeta={"taken": "2026-06-26 08:01:09", "camera": "Google Pixel 8",
