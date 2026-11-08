@@ -6506,6 +6506,9 @@ Panel {
     property bool pickRemember: true
     property bool linksCollapsed: false
     property bool confirmMark: false
+    property bool oldestFirst: false
+    readonly property var catMap: Model.cashewCategoryMap(root.cashewCategories)
+    readonly property var dayTotals: Model.cashewDayTotals(root.cashewDrafts, root.cashewShown)
     readonly property color muted: Qt.darker(root.foreground, 1.2)
     readonly property var pickDraft: cashewWin.pickIdx >= 0 ? (root.cashewDrafts[cashewWin.pickIdx] || ({})) : ({})
     readonly property var pickCats: cashewWin.pickKind === "category"
@@ -6523,6 +6526,20 @@ Panel {
         root.cashewLoad()
         cashewCard.forceActiveFocus()
       }
+    }
+
+    // The list rows, in day order. Only a new set of shown rows, a date edit or
+    // the order toggle rebuilds it; every other edit keeps the delegates.
+    ListModel { id: cwRows }
+    function syncRows() {
+      var rows = Model.cashewRowOrder(root.cashewDrafts, root.cashewShown, !cashewWin.oldestFirst)
+      cwRows.clear()
+      for (var i = 0; i < rows.length; i++) cwRows.append(rows[i])
+    }
+    onOldestFirstChanged: cashewWin.syncRows()
+    Connections {
+      target: root
+      function onCashewShownChanged() { cashewWin.syncRows() }
     }
 
     function openPicker(kind, idx) {
@@ -6579,7 +6596,7 @@ Panel {
     Item {
       id: cashewCard
       anchors.centerIn: parent
-      width: Math.min(parent.width - Style.space(80), Style.space(1100))
+      width: Math.min(parent.width - Style.space(80), Style.space(1280))
       height: Math.min(parent.height - Style.space(80), Style.space(680))
       focus: true
       Keys.onEscapePressed: function (event) {
@@ -6634,6 +6651,7 @@ Panel {
             active: root.cashewOnlyFilter
             onClicked: root.cashewOnlyFilter = !root.cashewOnlyFilter
           }
+          CashewBtn { label: "Oldest first"; active: cashewWin.oldestFirst; onClicked: cashewWin.oldestFirst = !cashewWin.oldestFirst }
           CashewBtn { label: "Include all"; onClicked: root.cashewSetAll(true) }
           CashewBtn { label: "Exclude all"; onClicked: root.cashewSetAll(false) }
           CashewBtn { label: "Close"; onClicked: root.closeCashew() }
@@ -6907,105 +6925,137 @@ Panel {
           anchors { top: cwLeftTitle.bottom; bottom: parent.bottom; left: parent.left; right: parent.right }
           anchors.topMargin: Style.space(8)
           clip: true
-          spacing: Style.space(5)
+          spacing: Style.space(2)
           boundsBehavior: Flickable.StopAtBounds
-          model: root.cashewShown
+          model: cwRows
           reuseItems: false
+
+          section.property: "day"
+          section.criteria: ViewSection.FullString
+          section.delegate: Item {
+            id: cdHead
+            required property string section
+            width: cwList.width
+            height: Style.space(40)
+            Text {
+              anchors { left: parent.left; leftMargin: Style.space(4); bottom: parent.bottom; bottomMargin: Style.space(6) }
+              textFormat: Text.PlainText
+              text: Model.cashewDayLabel(cdHead.section)
+              color: cashewWin.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+            }
+            Text {
+              anchors { right: parent.right; rightMargin: Style.space(10); bottom: parent.bottom; bottomMargin: Style.space(6) }
+              textFormat: Text.PlainText
+              text: cashewWin.dayTotals[cdHead.section] || ""
+              color: cashewWin.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+            }
+          }
 
           delegate: Rectangle {
             id: crow
-            required property int modelData
-            readonly property var d: root.cashewDrafts[crow.modelData] || ({})
+            required property int idx
+            readonly property var d: root.cashewDrafts[crow.idx] || ({})
             readonly property bool warn: (crow.d.warn || "") !== "" || crow.d.category === "Uncategorized"
-            readonly property color kindColor: crow.d.kind === "transfer" ? Color.accent
-              : (crow.d.kind === "income" ? root.creditColor : root.debitColor)
+            readonly property bool isTransfer: crow.d.kind === "transfer"
+            readonly property bool isCredit: String(crow.d.amount || "").charAt(0) !== "-"
+            readonly property var cat: cashewWin.catMap[crow.d.category] || ({ icon: "❓", color: "#5A2A2E" })
+            readonly property color kindColor: crow.isTransfer ? Qt.darker(root.foreground, 1.15)
+              : (crow.isCredit ? root.creditColor : root.debitColor)
             width: cwList.width
-            height: Style.space(62)
-            radius: Style.space(8)
-            color: Util.alpha(root.foreground, 0.05)
-
-            Rectangle {
-              anchors { left: parent.left; top: parent.top; bottom: parent.bottom; margins: Style.space(6) }
-              anchors.leftMargin: Style.space(5)
-              width: Style.space(3)
-              radius: width / 2
-              color: crow.kindColor
-              opacity: crow.d.include ? 1 : 0.3
-            }
+            height: Style.space(68)
+            radius: Style.space(12)
+            color: Util.alpha(root.foreground, crowHover.hovered ? 0.06 : 0)
+            HoverHandler { id: crowHover }
 
             Item {
               id: crowBody
-              anchors { fill: parent; leftMargin: Style.space(16); rightMargin: Style.space(10) }
+              anchors { fill: parent; leftMargin: Style.space(8); rightMargin: Style.space(10) }
               opacity: crow.d.include ? 1 : 0.5
 
-              // line 1
               CashewCheck {
                 id: crowCheck
-                anchors { left: parent.left; top: parent.top; topMargin: Style.space(10) }
+                anchors { left: parent.left; verticalCenter: parent.verticalCenter }
                 checked: !!crow.d.include
-                onToggled: root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { include: !crow.d.include }))
+                onToggled: root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { include: !crow.d.include }))
               }
-              CashewCell {
-                id: cDate
-                anchors { left: crowCheck.right; leftMargin: Style.space(10); top: parent.top; topMargin: Style.space(7) }
-                width: Style.space(86)
-                kind: "date"
-                value: crow.d.date || ""
-                color: cashewWin.muted
-                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { date: v }), true) }
+              CashewIcon {
+                id: crowIcon
+                anchors { left: crowCheck.right; leftMargin: Style.space(10); verticalCenter: parent.verticalCenter }
+                icon: crow.cat.icon
+                fill: crow.cat.color
+                warn: crow.warn
+                transfer: crow.isTransfer
+                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: cashewWin.openPicker("category", crow.idx) }
               }
+
+              // right column: amount, then the date
               CashewCell {
                 id: cAmount
-                anchors { right: parent.right; top: parent.top; topMargin: Style.space(7) }
-                width: Style.space(92)
+                anchors { right: parent.right; top: parent.top; topMargin: Style.space(9) }
+                width: Style.space(170)
+                implicitHeight: Style.space(26)
                 kind: "amount"
                 alignRight: true
                 bold: true
+                pixelSize: Style.font.body + 2
                 value: crow.d.amount || ""
-                color: String(crow.d.amount || "").charAt(0) === "-" ? root.debitColor : root.creditColor
-                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { amount: v }), true) }
+                display: (crow.isTransfer ? "⇄ " : (crow.isCredit ? "▴ " : "▾ ")) + Model.cashewMoney(crow.d.amount)
+                color: crow.kindColor
+                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { amount: v }), true) }
               }
               CashewCell {
-                id: cTitle
-                anchors { left: cDate.right; leftMargin: Style.space(10); right: cAmount.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(7) }
-                value: crow.d.title || ""
-                color: root.foreground
-                bold: true
-                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { title: v }), true) }
+                id: cDate
+                anchors { right: parent.right; top: cAmount.bottom; topMargin: Style.space(5) }
+                width: Style.space(110)
+                alignRight: true
+                kind: "date"
+                value: crow.d.date || ""
+                color: cashewWin.muted
+                onCommit: function (v) {
+                  root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { date: v }), true)
+                  Qt.callLater(cashewWin.syncRows)
+                }
               }
 
-              // line 2
-              Rectangle {
-                id: warnDot
-                anchors { left: parent.left; leftMargin: Style.space(5); verticalCenter: cCat.verticalCenter }
-                width: Style.space(6)
-                height: width
-                radius: width / 2
-                color: crow.warn ? root.pendingColor : "transparent"
-              }
-              CashewChip {
-                id: cCat
-                anchors { left: crowCheck.right; leftMargin: Style.space(10); bottom: parent.bottom; bottomMargin: Style.space(8) }
-                maxWidth: Style.space(210)
-                text: (crow.d.category || "—") + ((crow.d.subcategory || "") !== "" ? "  ›  " + crow.d.subcategory : "")
-                warn: crow.warn
-                onClicked: cashewWin.openPicker("category", crow.modelData)
+              // title, then the chips
+              CashewCell {
+                id: cTitle
+                anchors { left: crowIcon.right; leftMargin: Style.space(14); right: cAmount.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(9) }
+                implicitHeight: Style.space(26)
+                pixelSize: Style.font.body + 1
+                value: crow.d.title || ""
+                color: root.foreground
+                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { title: v }), true) }
               }
               CashewChip {
                 id: cAcct
-                anchors { left: cCat.right; leftMargin: Style.space(6); bottom: parent.bottom; bottomMargin: Style.space(8) }
-                maxWidth: Style.space(110)
+                anchors { left: cTitle.left; top: cTitle.bottom; topMargin: Style.space(5) }
+                maxWidth: Style.space(120)
+                tint: "#455A64"
                 text: (crow.d.account || "") !== "" ? crow.d.account : "No account"
                 warn: (crow.d.account || "") === ""
-                onClicked: cashewWin.openPicker("account", crow.modelData)
+                onClicked: cashewWin.openPicker("account", crow.idx)
+              }
+              CashewChip {
+                id: cCat
+                anchors { left: cAcct.right; leftMargin: Style.space(6); verticalCenter: cAcct.verticalCenter }
+                maxWidth: Style.space(220)
+                tint: crow.cat.color
+                text: (crow.d.category || "—") + ((crow.d.subcategory || "") !== "" ? "  ›  " + crow.d.subcategory : "")
+                warn: crow.warn
+                onClicked: cashewWin.openPicker("category", crow.idx)
               }
               CashewCell {
                 id: cNotes
-                anchors { left: cAcct.right; leftMargin: Style.space(10); right: parent.right; bottom: parent.bottom; bottomMargin: Style.space(8) }
+                anchors { left: cCat.right; leftMargin: Style.space(8); right: cDate.left; rightMargin: Style.space(8); verticalCenter: cAcct.verticalCenter }
                 value: crow.d.notes || ""
                 placeholder: "Add a note"
                 color: cashewWin.muted
-                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.modelData, { notes: v }), true) }
+                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { notes: v }), true) }
               }
             }
           }
@@ -7066,6 +7116,8 @@ Panel {
                 required property var modelData
                 width: cwMainList.width
                 text: modelData.name
+                icon: (cashewWin.catMap[modelData.name] || ({})).icon || ""
+                iconFill: (cashewWin.catMap[modelData.name] || ({})).color || "#37474F"
                 selected: modelData.name === cashewWin.pickMain
                 onPicked: {
                   var subs = modelData.subcategories || []
@@ -7077,30 +7129,39 @@ Panel {
               ScrollWheelArea { anchors.fill: parent; target: cwMainList }
             }
 
-            ListView {
-              id: cwSubList
+            Flickable {
+              id: cwSubFlick
               width: (parent.width - parent.spacing) / 2
               height: parent.height
               clip: true
-              spacing: Style.space(2)
+              contentWidth: width
+              contentHeight: cwSubFlow.height
               boundsBehavior: Flickable.StopAtBounds
-              header: CashewPickRow {
-                width: cwSubList.width
-                visible: cashewWin.pickMain !== "" && cashewWin.pickSubs.length > 0
-                height: visible ? Style.space(28) : 0
-                text: "No subcategory"
-                dim: true
-                onPicked: cashewWin.pickCategory(cashewWin.pickMain, "")
+              Flow {
+                id: cwSubFlow
+                width: parent.width
+                spacing: Style.space(6)
+                CashewChip {
+                  visible: cashewWin.pickMain !== "" && cashewWin.pickSubs.length > 0
+                  maxWidth: cwSubFlow.width
+                  text: "No subcategory"
+                  tint: "#455A64"
+                  selected: cashewWin.pickMain === cashewWin.pickDraft.category && (cashewWin.pickDraft.subcategory || "") === ""
+                  onClicked: cashewWin.pickCategory(cashewWin.pickMain, "")
+                }
+                Repeater {
+                  model: cashewWin.pickSubs
+                  delegate: CashewChip {
+                    required property string modelData
+                    maxWidth: cwSubFlow.width
+                    text: modelData
+                    tint: (cashewWin.catMap[cashewWin.pickMain] || ({})).color || "#455A64"
+                    selected: modelData === cashewWin.pickDraft.subcategory && cashewWin.pickMain === cashewWin.pickDraft.category
+                    onClicked: cashewWin.pickCategory(cashewWin.pickMain, modelData)
+                  }
+                }
               }
-              model: cashewWin.pickSubs
-              delegate: CashewPickRow {
-                required property string modelData
-                width: cwSubList.width
-                text: modelData
-                selected: modelData === cashewWin.pickDraft.subcategory && cashewWin.pickMain === cashewWin.pickDraft.category
-                onPicked: cashewWin.pickCategory(cashewWin.pickMain, modelData)
-              }
-              ScrollWheelArea { anchors.fill: parent; target: cwSubList }
+              ScrollWheelArea { anchors.fill: parent; target: cwSubFlick }
             }
           }
 
@@ -7219,17 +7280,23 @@ Panel {
     MouseArea { anchors.fill: parent; anchors.margins: -Style.space(4); cursorShape: Qt.PointingHandCursor; onClicked: cc.toggled() }
   }
 
-  // Category or account chip in a draft row.
+  // Category, account or sub-category chip: a tonal pill, no border.
   component CashewChip: Rectangle {
     id: ch
     property string text: ""
     property bool warn: false
+    property bool selected: false
+    property color tint: "transparent"     // transparent = neutral
     property real maxWidth: 200
     signal clicked()
+    readonly property bool _hot: chMouse.containsMouse || ch.activeFocus
     height: Style.space(24)
     width: Math.min(ch.maxWidth, chText.implicitWidth + Style.space(18))
-    radius: Style.space(7)
-    color: Util.alpha(ch.warn ? root.pendingColor : root.foreground, chMouse.containsMouse || ch.activeFocus ? 0.22 : 0.12)
+    radius: height / 2
+    color: ch.selected ? Util.alpha(Color.accent, ch._hot ? 0.40 : 0.32)
+      : ch.warn ? Util.alpha(root.pendingColor, ch._hot ? 0.34 : 0.24)
+      : ch.tint.a > 0 ? Util.alpha(ch.tint, ch._hot ? 0.80 : 0.62)
+      : Util.alpha(root.foreground, ch._hot ? 0.18 : 0.10)
     activeFocusOnTab: ch.visible
     Keys.onReturnPressed: ch.clicked()
     Keys.onEnterPressed: ch.clicked()
@@ -7243,8 +7310,54 @@ Panel {
       color: root.foreground
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
+      font.bold: ch.selected
     }
     MouseArea { id: chMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: ch.clicked() }
+  }
+
+  // Round category icon: a flat colour with the emoji on it.
+  component CashewIcon: Rectangle {
+    id: ci
+    property string icon: ""
+    property color fill: "#37474F"
+    property bool warn: false
+    property bool transfer: false
+    width: Style.space(44)
+    height: width
+    radius: width / 2
+    color: ci.fill
+    Text {
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: ci.icon
+      font.family: "Noto Color Emoji"
+      font.pixelSize: Math.round(ci.width * 0.48)
+    }
+    Rectangle {
+      visible: ci.transfer
+      anchors { right: parent.right; bottom: parent.bottom }
+      width: Math.round(ci.width * 0.38)
+      height: width
+      radius: width / 2
+      color: Qt.darker(Color.popups.background, 1.1)
+      Text {
+        anchors.centerIn: parent
+        textFormat: Text.PlainText
+        text: "⇄"
+        color: root.foreground
+        font.pixelSize: Math.round(parent.width * 0.72)
+      }
+    }
+    Rectangle {
+      visible: ci.warn
+      anchors { right: parent.right; top: parent.top }
+      width: Math.round(ci.width * 0.26)
+      height: width
+      radius: width / 2
+      color: root.pendingColor
+      border.width: 2
+      border.color: Color.popups.background
+    }
   }
 
   component CashewPickRow: Rectangle {
@@ -7252,16 +7365,26 @@ Panel {
     property string text: ""
     property bool selected: false
     property bool dim: false
+    property string icon: ""
+    property color iconFill: "#37474F"
     signal picked()
-    height: Style.space(28)
-    radius: Style.space(6)
-    color: pr.selected ? Util.alpha(Color.accent, 0.24) : Util.alpha(root.foreground, prMouse.containsMouse || pr.activeFocus ? 0.12 : 0.0)
+    height: pr.icon !== "" ? Style.space(34) : Style.space(28)
+    radius: Style.space(8)
+    color: pr.selected ? Util.alpha(pr.icon !== "" ? pr.iconFill : Color.accent, pr.icon !== "" ? 0.50 : 0.24) : Util.alpha(root.foreground, prMouse.containsMouse || pr.activeFocus ? 0.12 : 0.0)
     activeFocusOnTab: pr.visible
     Keys.onReturnPressed: pr.picked()
     Keys.onEnterPressed: pr.picked()
     Keys.onSpacePressed: pr.picked()
+    CashewIcon {
+      id: prIcon
+      visible: pr.icon !== ""
+      anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: Style.space(6) }
+      width: Style.space(26)
+      icon: pr.icon
+      fill: pr.iconFill
+    }
     Text {
-      anchors { verticalCenter: parent.verticalCenter; left: parent.left; right: parent.right; leftMargin: Style.space(10); rightMargin: Style.space(10) }
+      anchors { verticalCenter: parent.verticalCenter; left: pr.icon !== "" ? prIcon.right : parent.left; right: parent.right; leftMargin: Style.space(pr.icon !== "" ? 8 : 10); rightMargin: Style.space(10) }
       elide: Text.ElideRight
       textFormat: Text.PlainText
       text: pr.text
@@ -7283,6 +7406,8 @@ Panel {
     property string placeholder: ""
     property bool alignRight: false
     property bool bold: false
+    property int pixelSize: Style.font.caption
+    property string display: ""           // shown instead of value when not editing
     property color color: root.foreground
     property bool editing: false
     property bool bad: false
@@ -7325,10 +7450,10 @@ Panel {
       horizontalAlignment: cell.alignRight ? Text.AlignRight : Text.AlignLeft
       elide: Text.ElideRight
       textFormat: Text.PlainText
-      text: cell.value !== "" ? cell.value : cell.placeholder
+      text: cell.value !== "" ? (cell.display !== "" ? cell.display : cell.value) : cell.placeholder
       color: cell.value !== "" ? cell.color : Qt.darker(root.foreground, 1.6)
       font.family: Style.font.family
-      font.pixelSize: Style.font.caption
+      font.pixelSize: cell.pixelSize
       font.bold: cell.bold
     }
     MouseArea {
@@ -7348,7 +7473,7 @@ Panel {
         horizontalAlignment: cell.alignRight ? TextInput.AlignRight : TextInput.AlignLeft
         color: cell.bad ? root.debitColor : root.foreground
         font.family: Style.font.family
-        font.pixelSize: Style.font.caption
+        font.pixelSize: cell.pixelSize
         topPadding: 0
         bottomPadding: 0
         background: Rectangle {

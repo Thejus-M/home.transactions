@@ -230,7 +230,10 @@ class CliTests(Base):
         self.assertEqual(set(out["drafts"][0]), {
             "id", "include", "date", "title", "amount", "category", "subcategory", "account", "notes", "kind",
             "bank", "last4", "accountId", "groupKey", "pairId", "warn"})
-        self.assertEqual(set(out["categories"][0]), {"name", "type", "subcategories"})
+        self.assertEqual(set(out["categories"][0]), {"name", "type", "subcategories", "icon", "color"})
+        for c in out["categories"]:
+            self.assertRegex(c["color"], r"^#[0-9A-Fa-f]{6}$")
+            self.assertTrue(c["icon"])
 
     def test_cashew_draft_state_file(self):
         self.add(self.hdfc, row(1, "2026-10-02", -250.0, "Plain Shop"))

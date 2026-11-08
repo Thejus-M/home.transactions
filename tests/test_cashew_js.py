@@ -105,6 +105,27 @@ class CashewJs(unittest.TestCase):
         self.assertEqual(self.js("cashewPrettyJson('{\"a\":1}')"), '{\n "a": 1\n}')
         self.assertEqual(self.js("cashewPrettyJson('nope')"), "nope")
 
+    def test_grouped_list_helpers(self):
+        self.assertEqual(self.js("cashewDayLabel('2026-11-08')"), "Sunday, November 8")
+        self.assertEqual(self.js("cashewDayLabel('oops')"), "oops")
+        self.assertEqual(self.js("cashewMoney('-1234567.5')"), "₹1,234,567.50")
+        self.assertEqual(self.js("cashewMoney('9.78')"), "₹9.78")
+        ds = [draft("a", date="2026-11-01"), draft("b", date="2026-11-03"), draft("c", date="2026-11-03"),
+              draft("d", date="2026-11-02")]
+        rows = lambda newest: [r["idx"] for r in self.js(
+            "cashewRowOrder(input.d, input.s, input.n)", d=ds, s=[0, 1, 2, 3, 9], n=newest)]
+        self.assertEqual(rows(True), [2, 1, 3, 0])
+        self.assertEqual(rows(False), [0, 3, 1, 2])
+        ds[1]["amount"], ds[2]["amount"] = "-9.78", "5.00"
+        tot = self.js("cashewDayTotals(input.d, input.s)", d=ds, s=[0, 1, 2])
+        self.assertEqual(tot["2026-11-03"], "-₹4.78")
+        self.assertEqual(tot["2026-11-01"], "-₹100.00")
+
+    def test_category_map(self):
+        out = self.js("cashewCategoryMap(input.c)", c=[{"name": "A", "icon": "x", "color": "#111111"}, {"name": "B"}])
+        self.assertEqual(out["A"], {"icon": "x", "color": "#111111"})
+        self.assertEqual(out["B"]["icon"], "❓")
+
 
 if __name__ == "__main__":
     unittest.main()

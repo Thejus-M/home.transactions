@@ -1792,6 +1792,67 @@ function cashewIncluded(drafts, shown) {
   return shown.map(function (i) { return drafts[i] }).filter(function (d) { return d && d.include })
 }
 
+// ---- left list (grouped by day, Cashew style)
+
+var _CASHEW_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+var _CASHEW_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
+  "September", "October", "November", "December"]
+
+// "2026-11-08" -> "Sunday, November 8"; the text itself when it is not a date.
+function cashewDayLabel(date) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || "").trim())
+  if (!m) return String(date || "")
+  var wd = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).getUTCDay()
+  return _CASHEW_DAYS[wd] + ", " + (_CASHEW_MONTHS[Number(m[2]) - 1] || m[2]) + " " + Number(m[3])
+}
+
+// "-1234.5" -> "₹1,234.50" (no sign; the caller adds the arrow).
+function cashewMoney(amount) {
+  var n = Math.abs(Number(String(amount || "0").replace(/,/g, "")))
+  if (!isFinite(n)) return "₹0.00"
+  return "₹" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d)\.)/g, ",")
+}
+
+// Rows for the grouped list: [{idx, day}] for the shown drafts, sorted by
+// date (newest first by default), ties kept in draft order.
+function cashewRowOrder(drafts, shown, newestFirst) {
+  var rows = []
+  for (var k = 0; k < shown.length; k++) {
+    var d = drafts[shown[k]]
+    if (d) rows.push({ idx: shown[k], day: String(d.date || "") })
+  }
+  rows.sort(function (a, b) {
+    if (a.day !== b.day) return a.day < b.day ? -1 : 1
+    return a.idx - b.idx
+  })
+  if (newestFirst !== false) rows.reverse()
+  return rows
+}
+
+// Net total per day of the shown drafts: { "2026-11-08": "-₹9.78" }.
+function cashewDayTotals(drafts, shown) {
+  var paise = {}
+  for (var k = 0; k < shown.length; k++) {
+    var d = drafts[shown[k]]
+    if (!d) continue
+    var day = String(d.date || "")
+    paise[day] = (paise[day] || 0) + Math.round(Number(d.amount || 0) * 100)
+  }
+  var out = {}
+  Object.keys(paise).forEach(function (day) {
+    var v = paise[day]
+    out[day] = (v < 0 ? "-" : (v > 0 ? "+" : "")) + cashewMoney(v / 100)
+  })
+  return out
+}
+
+// {name: {icon, color}} from the `categories` of cashew-draft.
+function cashewCategoryMap(categories) {
+  var out = {}
+  ;(categories || []).forEach(function (c) { out[c.name] = { icon: c.icon || "❓", color: c.color || "#37474F" } })
+  return out
+}
+
 function cashewValidDate(text) {
   var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(text).trim())
   if (!m) return false

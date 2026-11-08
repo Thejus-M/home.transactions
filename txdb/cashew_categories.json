@@ -2,7 +2,9 @@
  {
   "name": "Balance Correction",
   "type": "balance",
-  "subcategories": []
+  "subcategories": [],
+  "icon": "📊",
+  "color": "#37474F"
  },
  {
   "name": "Salary",
@@ -10,7 +12,9 @@
   "subcategories": [
    "Bonus",
    "Monthly"
-  ]
+  ],
+  "icon": "💰",
+  "color": "#8A7A1E"
  },
  {
   "name": "Rent Received",
@@ -18,7 +22,9 @@
   "subcategories": [
    "Other",
    "Rent"
-  ]
+  ],
+  "icon": "🔑",
+  "color": "#2E5E2B"
  },
  {
   "name": "Returns & Interest",
@@ -27,7 +33,9 @@
    "Dividends",
    "Interest",
    "Maturity"
-  ]
+  ],
+  "icon": "📈",
+  "color": "#1F5A33"
  },
  {
   "name": "Cashback & Rewards",
@@ -37,14 +45,18 @@
    "ATM Card",
    "Refund",
    "UPI"
-  ]
+  ],
+  "icon": "💳",
+  "color": "#5C6B1F"
  },
  {
   "name": "Housing",
   "type": "expense",
   "subcategories": [
    "Rent"
-  ]
+  ],
+  "icon": "🏠",
+  "color": "#3F6B2D"
  },
  {
   "name": "Bills & Utilities",
@@ -52,7 +64,9 @@
   "subcategories": [
    "Electricity",
    "Mobile"
-  ]
+  ],
+  "icon": "📰",
+  "color": "#3D5A80"
  },
  {
   "name": "Subscriptions",
@@ -61,14 +75,18 @@
    "Apps",
    "Claude Pro",
    "Dating App"
-  ]
+  ],
+  "icon": "📅",
+  "color": "#34527A"
  },
  {
   "name": "Groceries",
   "type": "expense",
   "subcategories": [
    "Provisions"
-  ]
+  ],
+  "icon": "🛒",
+  "color": "#2E6B34"
  },
  {
   "name": "Transport",
@@ -77,7 +95,9 @@
    "Parking",
    "Petrol",
    "Transit"
-  ]
+  ],
+  "icon": "🚗",
+  "color": "#2F6A38"
  },
  {
   "name": "Vehicle",
@@ -87,7 +107,9 @@
    "Insurance",
    "Parts",
    "Servicing"
-  ]
+  ],
+  "icon": "🛵",
+  "color": "#3C6B2A"
  },
  {
   "name": "Health",
@@ -95,7 +117,9 @@
   "subcategories": [
    "Doctor",
    "Medicine"
-  ]
+  ],
+  "icon": "🩺",
+  "color": "#2A6B4A"
  },
  {
   "name": "Food Out",
@@ -108,7 +132,9 @@
    "Lunch",
    "Others",
    "Sweets"
-  ]
+  ],
+  "icon": "🍴",
+  "color": "#7A5A2E"
  },
  {
   "name": "Personal Care",
@@ -118,14 +144,18 @@
    "Haircut",
    "Self Care Product",
    "Teeth"
-  ]
+  ],
+  "icon": "🤍",
+  "color": "#7A5A2E"
  },
  {
   "name": "Fitness",
   "type": "expense",
   "subcategories": [
    "Gym"
-  ]
+  ],
+  "icon": "🏋️",
+  "color": "#3F6B2D"
  },
  {
   "name": "Shopping",
@@ -135,7 +165,9 @@
    "Footwear",
    "Luxury",
    "Others"
-  ]
+  ],
+  "icon": "🛍️",
+  "color": "#A3154F"
  },
  {
   "name": "Entertainment",
@@ -144,7 +176,9 @@
    "Items",
    "Activities",
    "Movies"
-  ]
+  ],
+  "icon": "🎬",
+  "color": "#3A3A3F"
  },
  {
   "name": "Gifts & Giving",
@@ -152,7 +186,9 @@
   "subcategories": [
    "Family Support",
    "Gifts"
-  ]
+  ],
+  "icon": "🎁",
+  "color": "#6B1F2A"
  },
  {
   "name": "Travel",
@@ -163,7 +199,9 @@
    "Stay",
    "Travel Food",
    "Travel Shopping"
-  ]
+  ],
+  "icon": "✈️",
+  "color": "#2F4B6E"
  },
  {
   "name": "Education",
@@ -171,7 +209,9 @@
   "subcategories": [
    "Courses",
    "Finance"
-  ]
+  ],
+  "icon": "📚",
+  "color": "#2F4B6E"
  },
  {
   "name": "Investments",
@@ -183,7 +223,9 @@
    "FD",
    "Mutual Funds",
    "Dividend"
-  ]
+  ],
+  "icon": "🥧",
+  "color": "#4A3A8A"
  },
  {
   "name": "Friend Settlement",
@@ -193,7 +235,9 @@
    "Received",
    "Settle",
    "Split Paid"
-  ]
+  ],
+  "icon": "🤝",
+  "color": "#6B5A1E"
  },
  {
   "name": "Flatmates",
@@ -202,13 +246,17 @@
    "Bills Share",
    "Groceries Share",
    "Settle"
-  ]
+  ],
+  "icon": "🛋️",
+  "color": "#28406B"
  },
  {
   "name": "Uncategorized",
   "type": "balance",
   "subcategories": [
    "Unknown"
-  ]
+  ],
+  "icon": "❓",
+  "color": "#5A2A2E"
  }
 ]
