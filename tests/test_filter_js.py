@@ -249,5 +249,110 @@ class Saving(Harness):
         self.assertEqual(self.js("restoreFilter(input.s, input.o)", s=junk, o=OPTIONS), default)
 
 
+class BugHunt(Harness):
+    """Regressions found in the 2026-11-08 bug hunt (see Docs/Notes/filter-bugs-2026-11-08.md)."""
+
+    def test_search_ignores_accents_and_extra_spaces(self):
+        rows = [row("a", merchant="Café Du Monde"), row("b", merchant="Other")]
+        self.assertEqual(self.run_filter(rows, q="cafe"), ["a"])
+        self.assertEqual(self.run_filter(rows, q="CAFÉ"), ["a"])
+        self.assertEqual(self.run_filter(rows, q="  du   monde "), ["a"])
+        self.assertEqual(self.run_filter(rows, q="monde cafe"), ["a"])   # every word, any order
+
+    def test_search_treats_regex_characters_as_text(self):
+        rows = [row("a", merchant="A+B (x) [y] .*"), row("b", merchant="AAB")]
+        for q in ["a+b", "(x)", "[y]", ".*"]:
+            self.assertEqual(self.run_filter(rows, q=q), ["a"], q)
+
+    def test_search_does_not_throw_on_a_row_without_merchant(self):
+        self.assertEqual(self.run_filter([{"id": "z", "amount": 1, "bank": "SBI", "accountType": "checking",
+                                           "last4": "1"}], q="x"), [])
+
+    def test_search_cache_follows_a_changed_row_and_a_new_rename_map(self):
+        out = self.js("(function(){ var f = defaultFilter(); f.q = 'old'; var r = [input.r];"
+                      " var a = filterTransactions(r, f, {}).length;"
+                      " r[0].merchant = 'NEW'; var b = filterTransactions(r, f, {}).length;"
+                      " f.q = 'zzz'; var c = filterTransactions(r, f, {nameOverrides: {}}).length;"
+                      " return [a, b, c] })()", r=row("a", merchant="old"))
+        self.assertEqual(out, [1, 0, 0])
+
+    def test_range_bounds_reject_unreadable_amounts(self):
+        rows = [row("ok", amount=-200), row("nan", amount=None)]
+        rows[1]["amount"] = "n/a"
+        self.assertEqual(self.run_filter(rows, min=1), ["ok"])
+        self.assertEqual(self.run_filter(rows, max=500), ["ok"])
+
+    def test_min_equal_to_max_and_inclusive_zero_bounds(self):
+        rows = [row("a", amount=-500), row("b", amount=500), row("c", amount=-501)]
+        self.assertEqual(self.run_filter(rows, min=500, max=500), ["a", "b"])
+
+    def test_min_zero_is_not_an_active_filter(self):
+        f = "(function(){ var f = defaultFilter(); f.min = 0; return %s })()"
+        self.assertEqual(self.js(f % "activeFilterChips(f, [])"), [])
+        self.assertEqual(self.js(f % "countActive(f)"), 0)
+        self.assertIsNone(self.js("restoreFilter(JSON.stringify({min: 0}), []).min"))
+
+    def test_restore_rejects_absurd_amounts(self):
+        self.assertIsNone(self.js("restoreFilter(JSON.stringify({max: 1e30}), []).max"))
+        self.assertIsNone(self.js("parseAmountInput('99999999999999999999')"))
+
+    def test_parse_accepts_a_trailing_dot(self):
+        self.assertEqual(self.js("parseAmountInput('5.')"), 5)
+
+    def test_shift_month_and_label_reject_non_months(self):
+        for bad in ["", "30d", "garbage", "2026-13", "2026-00"]:
+            self.assertEqual(self.js("shiftMonth(input.s, 1)", s=bad), "", bad)
+            self.assertEqual(self.js("monthLabel(input.s)", s=bad), "", bad)
+        self.assertEqual(self.js("shiftMonth('2026-01', -1)"), "2025-12")
+        self.assertEqual(self.js("shiftMonth('2026-12', 1)"), "2027-01")
+
+    def test_bounds_ignore_malformed_dates(self):
+        out = self.js("filterBounds(input.r)", r=[row("a", date="x"), row("b", date="2026-03-04"),
+                                                   row("c", date="2025-12-31")])
+        self.assertEqual((out["firstMonth"], out["lastMonth"]), ("2025-12", "2026-03"))
+
+    def test_last_30_days_is_30_calendar_days_including_today(self):
+        rows = [row("edge", date="2026-10-09"), row("out", date="2026-10-08"), row("today", date=TODAY)]
+        self.assertEqual(self.run_filter(rows, month="30d"), ["edge", "today"])
+
+    def test_30_days_across_a_leap_day(self):
+        rows = [row("in", date="2028-02-01"), row("out", date="2028-01-31")]
+        out = self.run_filter(rows, month="30d", ctx={"today": "2028-03-01"})
+        self.assertEqual(out, ["in"])   # 2028-03-01 minus 29 days = 2028-02-01 (leap year)
+
+    def test_peer_rule_for_a_transfer_whose_second_leg_is_listed_first(self):
+        a = row("s1", amount=500, transferId="x1>s1")
+        b = row("x1", amount=-500, bank="AXIS", last4="2934", transferId="x1>s1")
+        self.assertEqual(self.run_filter([a, b], accounts=[AXIS]), ["s1", "x1"])
+
+    def test_peer_rule_does_not_leak_to_a_third_account(self):
+        third = row("h1", bank="HDFC", accountType="credit", last4="0220", transferId="h1>gone")
+        self.assertEqual(self.run_filter([third], accounts=[AXIS]), [])
+
+    def test_all_tri_states_combine(self):
+        rows = [row("a", tracked=True, transferId="a>b"), row("b", tracked=True, transferId="a>b"),
+                row("c", tracked=True), row("d")]
+        self.assertEqual(self.run_filter(rows, tracked="tracked", transfers="hide"), ["c"])
+        self.assertEqual(self.run_filter(rows, tracked="untracked", transfers="hide"), ["d"])
+        self.assertEqual(self.run_filter(rows, transfers="only"), ["a", "b"])
+        self.assertEqual(self.run_filter(rows, ctx={"linkedIds": {"c": True}}, bill="has"), ["c"])
+        self.assertEqual(self.run_filter(rows, ctx={"linkedIds": {"c": True}}, bill="none"), ["a", "b", "d"])
+
+    def test_id_map_cache_follows_a_new_rows_array(self):
+        out = self.js("(function(){ var f = defaultFilter(); f.accounts = [input.k];"
+                      " var a = filterTransactions([input.x, input.s], f, {}).map(function(t){return t.id});"
+                      " var b = filterTransactions([input.x], f, {}).map(function(t){return t.id});"
+                      " return [a, b] })()", k=SBI,
+                      x=row("x1", bank="AXIS", last4="2934", transferId="x1>s1"), s=row("s1", transferId="x1>s1"))
+        self.assertEqual(out, [["x1", "s1"], []])   # peer gone from the second array: no stale match
+
+    def test_filter_does_not_change_the_input_rows(self):
+        out = self.js("(function(){ var before = JSON.stringify(input.r);"
+                      " var f = defaultFilter(); f.q = 'shop'; f.dir = 'out'; f.accounts = [input.k];"
+                      " filterTransactions(input.r, f, {}); return before === JSON.stringify(input.r) })()",
+                      r=[row("a"), row("b", amount=5)], k=SBI)
+        self.assertTrue(out)
+
+
 if __name__ == "__main__":
     unittest.main()

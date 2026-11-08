@@ -176,7 +176,9 @@ Panel {
   // Checkboxes and the selection controls show only in selection mode, which
   // the check button beside search turns on.
   property bool selectionMode: false
-  readonly property var selectedRows: transactions.filter(function (t) { return !!root.selectedIds[t.id] })
+  // Only rows that are shown: a row hidden by a filter after it was ticked
+  // must not be tracked by "Track (N)" behind the user's back.
+  readonly property var selectedRows: filteredTransactions.filter(function (t) { return !!root.selectedIds[t.id] })
   readonly property int selectedCount: selectedRows.length
   readonly property bool allVisibleSelected: filteredTransactions.length > 0
     && filteredTransactions.every(function (t) { return !!root.selectedIds[t.id] })
@@ -211,8 +213,12 @@ Panel {
   // search text, accounts, direction, tracked, transfers, bill, amount, month.
   // Always replace it, never mutate it, so bindings re-evaluate.
   property var filter: Model.defaultFilter()
-  // The search text, kept as its own name because PortfolioSection reads it.
-  readonly property string searchQuery: root.filter.q
+  // The PORTFOLIO tab has its own search text. It used to share filter.q, so
+  // a holdings search silently filtered RECENT (and the other way round).
+  property string searchQuery: ""
+  // Today (local ISO date). Refreshed when the popup opens, so "30d" and
+  // "This month" do not go stale in a shell that runs for days.
+  property string todayIso: Model.todayIso()
   // The inline filter panel under the RECENT header is open.
   property bool filterOpen: false
   function setFilterPart(part, value) {
@@ -235,16 +241,12 @@ Panel {
     root.setFilterPart(part, order[(at + 1) % order.length])
   }
   readonly property var accountOptions: Model.accountOptions(store.transactions, store.cardOverviews, store.accountNameOverrides)
-  // Same accounts, grouped by bank (bank accounts before cards) for the chips.
-  readonly property var accountChipOptions: root.accountOptions.slice().sort(function (a, b) {
-    if (a.bank !== b.bank) return a.bank < b.bank ? -1 : 1
-    if (a.accountType !== b.accountType) return a.accountType === "checking" ? -1 : 1
-    return a.label < b.label ? -1 : (a.label > b.label ? 1 : 0)
-  })
+  // accountChipOptions (below): the same accounts grouped by bank, bank
+  // accounts before cards.
   readonly property var filterChips: Model.activeFilterChips(root.filter, root.accountOptions)
   readonly property var filterBounds: Model.filterBounds(root.transactions)
   readonly property var filteredTransactions: Model.filterTransactions(root.transactions, root.filter,
-    { nameOverrides: store.transactionNameOverrides, linkedIds: root.linkedTransactionIds })
+    { nameOverrides: store.transactionNameOverrides, linkedIds: root.linkedTransactionIds, today: root.todayIso })
 
   // The filter is saved between restarts (never the search text or the
   // month). Restored once, after the accounts are known, so a saved account
@@ -255,13 +257,29 @@ Panel {
   property string filterFileText: ""
   function restoreSavedFilter() {
     if (root.filterRestored || root.filterFileText === "") return
-    if (root.accountOptions.length === 0) return
+    // Wait for the transactions themselves: card overviews alone can fill
+    // accountOptions first, and the bank accounts would be dropped as unknown.
+    if (root.transactions.length === 0) return
     root.filterRestored = true
     var restored = Model.restoreFilter(root.filterFileText, root.accountOptions)
     root.filterSavedJson = Model.serializeFilter(restored)
+    // Keep what the user typed or picked while the file was loading.
+    restored.q = root.filter.q
+    restored.month = root.filter.month
     root.filter = restored
   }
-  onAccountOptionsChanged: root.restoreSavedFilter()
+  // The chips are rebuilt only when the account list really changed, not on
+  // every data refresh: a rebuilt Repeater drops keyboard focus.
+  property var accountChipOptions: []
+  function syncAccountChipOptions() {
+    var next = root.accountOptions.slice().sort(function (a, b) {
+      if (a.bank !== b.bank) return a.bank < b.bank ? -1 : 1
+      if (a.accountType !== b.accountType) return a.accountType === "checking" ? -1 : 1
+      return a.label < b.label ? -1 : (a.label > b.label ? 1 : 0)
+    })
+    if (JSON.stringify(next) !== JSON.stringify(root.accountChipOptions)) root.accountChipOptions = next
+  }
+  onAccountOptionsChanged: { root.syncAccountChipOptions(); root.restoreSavedFilter() }
   onFilterChanged: if (root.filterRestored) filterSaveTimer.restart()
   Timer {
     id: filterSaveTimer
@@ -412,6 +430,7 @@ Panel {
     // The "new" marks stay while the popup is open; closing it means they were seen.
     if (store.transfers.some(function (t) { return t.isNew })) root.txdb(["transfers-mark-seen"])
   } else {
+    root.todayIso = Model.todayIso()
     root.refreshData()
     // Reopening deep inside a list hides the summary the panel exists to
     // show, so every open starts at the top. The popup's content may not
@@ -516,7 +535,7 @@ Panel {
     }
   }
 
-  Component.onCompleted: refreshData()
+  Component.onCompleted: { root.syncAccountChipOptions(); refreshData() }
 
   QtObject {
     id: store
@@ -2363,19 +2382,18 @@ Panel {
         }
 
         // PORTFOLIO keeps a plain holdings search; PortfolioSection reads
-        // root.searchQuery (the same filter.q).
+        // root.searchQuery (its own text, not the RECENT filter's).
         TextField {
           id: portfolioSearch
           visible: root.tab === "portfolio"
           width: parent.width
           placeholderText: "Search holdings…  (/)"
-          text: root.searchQuery
+          onTextChanged: root.searchQuery = text
           font.family: Style.font.family
           font.pixelSize: Style.font.body
-          onTextChanged: root.setFilterPart("q", text)
           Keys.onEscapePressed: function (event) {
             if (portfolioSearch.text !== "") {
-              root.setFilterPart("q", "")
+              portfolioSearch.text = ""
               event.accepted = true
             } else {
               event.accepted = false
@@ -5062,6 +5080,13 @@ Panel {
     signal cleared()
 
     readonly property bool _hot: chipMouse.containsMouse || chip.activeFocus
+    // Active label colour: the accent pulled toward the foreground. Plain
+    // accent on its own 20% tint is under 4.5:1 in 16 of 23 shipped themes
+    // (2.6:1 in rose-pine); this mix is 4.0:1 or better in all of them.
+    readonly property color _activeText: Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75))
+    // A label wider than this is cut with an ellipsis (a long account name
+    // must not push the chip past the widget).
+    property real maxLabelWidth: Style.space(190)
 
     // Quiet by default: no border, a faint tonal fill. Active = accent tint.
     // Only keyboard focus draws a ring.
@@ -5070,7 +5095,7 @@ Panel {
     radius: Style.space(13)
     opacity: chipMouse.pressed ? 0.7 : 1
     color: chip.active
-      ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, chip._hot ? 0.28 : 0.20)
+      ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, chip._hot ? 0.24 : 0.20)
       : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, chip._hot ? 0.13 : 0.06)
     borderSpec: chip.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
 
@@ -5121,7 +5146,9 @@ Panel {
       Text {
         textFormat: Text.PlainText
         text: chip.label
-        color: chip.active ? Color.accent : root.foreground
+        width: Math.min(implicitWidth, chip.maxLabelWidth)
+        elide: Text.ElideRight
+        color: chip.active ? chip._activeText : root.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
         font.bold: chip.active
@@ -5131,7 +5158,7 @@ Panel {
         visible: chip.closable
         textFormat: Text.PlainText
         text: "×"
-        color: Color.accent
+        color: chip._activeText
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
         anchors.verticalCenter: parent.verticalCenter
@@ -5180,13 +5207,23 @@ Panel {
       border.color: Color.accent
     }
 
+    // The value this field last showed. A change from outside (the x on a
+    // summary chip, Clear all) must reach the text even while the field has
+    // focus; plain typing does not change the filter, so it is left alone.
+    property var shown: null
     function syncFromFilter() {
       var v = root.filter[field.which]
-      var want = (v === null || v === undefined) ? "" : Model.formatGrouped(v)
-      if (!field.activeFocus && field.text !== want) field.text = want
+      if (v === undefined) v = null
+      var want = v === null ? "" : Model.formatGrouped(v)
+      if (v !== field.shown) field.shown = v
+      else if (field.activeFocus) return
+      if (field.text !== want && (!field.activeFocus || v !== field._lastSynced)) field.text = want
+      field._lastSynced = v
     }
+    property var _lastSynced: null
     function commit() {
       var parsed = Model.parseAmountInput(field.text)
+      if (parsed === 0 && field.which === "min") parsed = null   // "0" = no lower bound
       root.setFilterPart(field.which, parsed)
       field.text = parsed === null ? "" : Model.formatGrouped(parsed)
     }
@@ -5229,10 +5266,21 @@ Panel {
 
     // The summary strip lists every active part except the search text,
     // which is already visible in the search field.
-    readonly property var summary: root.filterChips.filter(function (c) { return c.id !== "q" })
-    readonly property int activeCount: Model.countActive(root.filter)
+    // Reassigned only when the list really changes, so typing in the search
+    // box does not rebuild the summary chips on every pause.
+    property var summary: []
+    readonly property int activeCount: bar.summary.length
     readonly property bool anyActive: root.filterChips.length > 0
-    readonly property string thisMonth: Qt.formatDate(new Date(), "yyyy-MM")
+    readonly property string thisMonth: root.todayIso.slice(0, 7)
+    function syncSummary() {
+      var next = root.filterChips.filter(function (c) { return c.id !== "q" })
+      if (JSON.stringify(next) !== JSON.stringify(bar.summary)) bar.summary = next
+    }
+    Component.onCompleted: bar.syncSummary()
+    Connections {
+      target: root
+      function onFilterChipsChanged() { bar.syncSummary() }
+    }
 
     function focusSearch() {
       searchInput.forceActiveFocus()
@@ -5247,7 +5295,8 @@ Panel {
       if (cur === "" || cur === "30d") next = dir < 0 ? b.lastMonth : ""
       else {
         next = Model.shiftMonth(cur, dir)
-        if (next > b.lastMonth) next = ""
+        if (next === "") next = dir < 0 ? b.lastMonth : ""
+        else if (next > b.lastMonth) next = dir < 0 ? b.lastMonth : ""
         else if (next < b.firstMonth) next = b.firstMonth
       }
       root.setFilterPart("month", next)
@@ -5263,13 +5312,23 @@ Panel {
     // amount field or the month stepper and must not scroll the list.
     function handleWheel(source, event) {
       if (!bar.visible || !root.filterOpen) return false
-      var up = (event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y) > 0
+      var target = bar._inside(source, minField, event) ? minField
+        : (bar._inside(source, maxField, event) ? maxField
+        : (bar._inside(source, monthStepper, event) ? monthStepper : null))
+      if (!target) { bar._wheelAcc = 0; return false }
+      // One step per 120 units (a mouse notch). A touchpad sends many small
+      // deltas, and phase-end events with a delta of 0, which must not step.
+      var delta = event.angleDelta.y !== 0 ? event.angleDelta.y : event.pixelDelta.y * 2
+      bar._wheelAcc += delta
+      if (Math.abs(bar._wheelAcc) < 120) return true
+      var up = bar._wheelAcc > 0
+      bar._wheelAcc = 0
       var big = (event.modifiers & Qt.ShiftModifier) !== 0
-      if (bar._inside(source, minField, event)) { minField.step(up, big); return true }
-      if (bar._inside(source, maxField, event)) { maxField.step(up, big); return true }
-      if (bar._inside(source, monthStepper, event)) { bar.stepMonth(up ? 1 : -1); return true }
-      return false
+      if (target === monthStepper) bar.stepMonth(up ? 1 : -1)
+      else target.step(up, big)
+      return true
     }
+    property real _wheelAcc: 0
 
     // Row 1: search + the Filter toggle.
     Item {
@@ -5283,9 +5342,10 @@ Panel {
         width: toggleRow.implicitWidth + Style.space(22)
         radius: Style.space(8)
         readonly property bool _hot: toggleMouse.containsMouse || toggle.activeFocus
+        readonly property color _activeText: Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75))
         opacity: toggleMouse.pressed ? 0.7 : 1
         color: root.filterOpen || bar.activeCount > 0
-          ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, toggle._hot ? 0.28 : 0.20)
+          ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, toggle._hot ? 0.24 : 0.20)
           : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, toggle._hot ? 0.13 : 0.06)
         borderSpec: toggle.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
 
@@ -5295,6 +5355,12 @@ Panel {
         Keys.onSpacePressed: root.filterOpen = !root.filterOpen
         Keys.onDownPressed: root.focusNext(toggle, true)
         Keys.onUpPressed: root.focusNext(toggle, false)
+        // Esc collapses an open panel first (it used to close the popup).
+        Keys.onEscapePressed: function (event) {
+          if (!root.filterOpen) { event.accepted = false; return }
+          root.filterOpen = false
+          event.accepted = true
+        }
 
         Row {
           id: toggleRow
@@ -5304,14 +5370,14 @@ Panel {
           Text {
             textFormat: Text.PlainText
             text: "󰈳"
-            color: bar.activeCount > 0 ? Color.accent : root.foreground
+            color: bar.activeCount > 0 ? toggle._activeText : root.foreground
             font.pixelSize: Style.font.caption
             anchors.verticalCenter: parent.verticalCenter
           }
           Text {
             textFormat: Text.PlainText
             text: "Filter"
-            color: bar.activeCount > 0 ? Color.accent : root.foreground
+            color: bar.activeCount > 0 ? toggle._activeText : root.foreground
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             font.bold: bar.activeCount > 0
@@ -5321,7 +5387,7 @@ Panel {
             visible: bar.activeCount > 0
             textFormat: Text.PlainText
             text: String(bar.activeCount)
-            color: Color.accent
+            color: toggle._activeText
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             font.bold: true
@@ -5437,7 +5503,7 @@ Panel {
         verticalAlignment: Text.AlignVCenter
         textFormat: Text.PlainText
         text: root.filteredTransactions.length + " of " + root.transactions.length
-        color: Qt.darker(root.foreground, 1.4)
+        color: Qt.darker(root.foreground, 1.2)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
       }
@@ -5470,7 +5536,7 @@ Panel {
           verticalAlignment: Text.AlignVCenter
           textFormat: Text.PlainText
           text: "Account"
-          color: Qt.darker(root.foreground, 1.5)
+          color: Qt.darker(root.foreground, 1.2)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }
@@ -5507,7 +5573,7 @@ Panel {
           verticalAlignment: Text.AlignVCenter
           textFormat: Text.PlainText
           text: "Show"
-          color: Qt.darker(root.foreground, 1.5)
+          color: Qt.darker(root.foreground, 1.2)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }
@@ -5561,7 +5627,7 @@ Panel {
           verticalAlignment: Text.AlignVCenter
           textFormat: Text.PlainText
           text: "Amount"
-          color: Qt.darker(root.foreground, 1.5)
+          color: Qt.darker(root.foreground, 1.2)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }
@@ -5573,7 +5639,7 @@ Panel {
             verticalAlignment: Text.AlignVCenter
             textFormat: Text.PlainText
             text: "to"
-            color: Qt.darker(root.foreground, 1.5)
+            color: Qt.darker(root.foreground, 1.2)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
@@ -5594,7 +5660,7 @@ Panel {
           verticalAlignment: Text.AlignVCenter
           textFormat: Text.PlainText
           text: "Date"
-          color: Qt.darker(root.foreground, 1.5)
+          color: Qt.darker(root.foreground, 1.2)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }
@@ -5618,7 +5684,7 @@ Panel {
               verticalAlignment: Text.AlignVCenter
               textFormat: Text.PlainText
               text: root.filter.month === "" ? "All months" : (root.filter.month === "30d" ? "Last 30 days" : Model.monthLabel(root.filter.month))
-              color: root.filter.month === "" ? Qt.darker(root.foreground, 1.5) : Color.accent
+              color: root.filter.month === "" ? Qt.darker(root.foreground, 1.2) : root.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
               font.bold: root.filter.month !== ""
@@ -5655,7 +5721,7 @@ Panel {
           anchors.verticalCenter: parent.verticalCenter
           textFormat: Text.PlainText
           text: root.filteredTransactions.length + " of " + root.transactions.length + " shown"
-          color: Qt.darker(root.foreground, 1.6)
+          color: Qt.darker(root.foreground, 1.2)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }
@@ -5664,7 +5730,7 @@ Panel {
           anchors.verticalCenter: parent.verticalCenter
           textFormat: Text.PlainText
           text: "Esc to close"
-          color: Qt.darker(root.foreground, 1.6)
+          color: Qt.darker(root.foreground, 1.2)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }

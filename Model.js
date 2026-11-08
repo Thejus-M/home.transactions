@@ -1441,7 +1441,8 @@ function defaultFilter() {
 
 function _pad2(n) { return (n < 10 ? "0" : "") + n }
 
-function _todayIso() {
+// Today as local "YYYY-MM-DD" (bank dates are local dates, so local time).
+function todayIso() {
   var d = new Date()
   return d.getFullYear() + "-" + _pad2(d.getMonth() + 1) + "-" + _pad2(d.getDate())
 }
@@ -1454,76 +1455,147 @@ function _isoMinusDays(iso, days) {
   return d.getUTCFullYear() + "-" + _pad2(d.getUTCMonth() + 1) + "-" + _pad2(d.getUTCDate())
 }
 
-// "2026-11" moved by `delta` months.
+var _YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/
+
+// "2026-11" moved by `delta` months. "" for anything that is not "YYYY-MM"
+// (for example "30d"), so a bad value never becomes "NaN-NaN".
 function shiftMonth(ym, delta) {
+  if (!_YM_RE.test(ym || "")) return ""
   var p = ym.split("-")
   var idx = Number(p[0]) * 12 + (Number(p[1]) - 1) + delta
   return Math.floor(idx / 12) + "-" + _pad2((idx % 12) + 1)
 }
 
 function monthLabel(ym) {
-  var p = (ym || "").split("-")
-  if (p.length !== 2) return ""
+  if (!_YM_RE.test(ym || "")) return ""
+  var p = ym.split("-")
   return _MONTH_NAMES[Number(p[1]) - 1] + " " + p[0]
 }
 
 function _isTransferRow(t) { return !!(t.transferId || t.transferSelf) }
 
+// Lower-case and strip accents, so "cafe" finds "Café".
+function _fold(s) {
+  s = String(s === null || s === undefined ? "" : s).toLowerCase()
+  if (typeof s.normalize === "function") s = s.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  return s
+}
+
+// Search text per row, built once and kept between calls: typing a search
+// re-runs the filter on every pause, and the display name / note parsing is
+// regex work. Entry = { m, c, n, hay }; rebuilt when the raw fields change,
+// and the whole cache is dropped when the rename map is replaced.
+var _hayCache = {}
+var _hayCount = 0
+var _hayOverrides = null
+
+function _haystack(t, overrides) {
+  if (overrides !== _hayOverrides || _hayCount > 60000) {
+    _hayCache = {}
+    _hayCount = 0
+    _hayOverrides = overrides
+  }
+  var e = _hayCache[t.id]
+  if (e && e.m === t.merchant && e.c === t.counterparty && e.n === t.note) return e.hay
+  var name = "", note = ""
+  try { name = transactionDisplayName(t, overrides) } catch (x) { name = t.counterparty || "" }
+  try { note = transactionNote(t) } catch (y) { note = "" }
+  var hay = _fold([name, t.merchant, t.counterparty, note].join("\n"))
+  if (!e) _hayCount++
+  _hayCache[t.id] = { m: t.merchant, c: t.counterparty, n: t.note, hay: hay }
+  return hay
+}
+
+// id -> row, kept for the last `rows` array: the panel passes the same array
+// on every filter change, so the map is built once per data refresh.
+var _idRows = null
+var _idMapCache = null
+function _idMap(rows) {
+  if (rows === _idRows && _idMapCache && _idCount === rows.length) return _idMapCache
+  var map = {}
+  for (var r = 0; r < rows.length; r++) map[rows[r].id] = rows[r]
+  _idRows = rows
+  _idMapCache = map
+  _idCount = rows.length
+  return map
+}
+var _idCount = 0
+
+// ctx: { nameOverrides, linkedIds (txn id -> true), today (ISO, for tests) }
 // A transfer belongs to BOTH accounts it moved money between: filtering to
 // Axis keeps the HDFC side of an HDFC -> Axis transfer too, so the pair
 // still folds into one card instead of leaving a lone half that looks like
-// income. `byId` maps transaction id -> row.
-function _accountPasses(t, f, byId) {
-  var key = accountKey(t)
-  if (f.accounts.indexOf(key) !== -1) return true
-  if (!t.transferId) return false
-  var ids = t.transferId.split(">")
-  var peer = byId[ids[0] === t.id ? ids[1] : ids[0]]
-  return !!peer && f.accounts.indexOf(accountKey(peer)) !== -1
-}
-
-// ctx: { nameOverrides, linkedIds (txn id -> true), today (ISO, for tests) }
+// income. Its peer is found through the transferId "a>b" (ids of the two
+// legs) in a lookup map that is built only when an account is selected.
 function filterTransactions(rows, f, ctx) {
   ctx = ctx || {}
-  var byId = {}
-  rows.forEach(function (t) { byId[t.id] = t })
-  var q = (f.q || "").toLowerCase()
-  var today = ctx.today || _todayIso()
+  var nAcc = f.accounts.length
+  var acct = null, byId = null
+  if (nAcc) {
+    acct = {}
+    for (var a = 0; a < nAcc; a++) acct[f.accounts[a]] = true
+    byId = _idMap(rows)
+  }
+  var tokens = _fold((f.q || "")).split(/\s+/).filter(function (w) { return w !== "" })
+  var nTok = tokens.length
+  var today = ctx.today || todayIso()
   var since = f.month === "30d" ? _isoMinusDays(today, 29) : ""
-  var thisMonth = f.month === "30d" ? "" : (f.month || "")
+  var ym = f.month === "30d" ? "" : (f.month || "")
   var linked = ctx.linkedIds || {}
-  return rows.filter(function (t) {
-    if (f.accounts.length && !_accountPasses(t, f, byId)) return false
-    if (f.dir === "in" && !(t.amount > 0)) return false
-    if (f.dir === "out" && !(t.amount < 0)) return false
-    if (f.tracked !== "any" && (f.tracked === "tracked") !== !!t.tracked) return false
-    if (f.transfers !== "any" && (f.transfers === "only") !== _isTransferRow(t)) return false
-    if (f.bill !== "any" && (f.bill === "has") !== !!linked[t.id]) return false
-    var abs = Math.abs(Number(t.amount))
-    if (f.min !== null && f.min !== undefined && abs < f.min) return false
-    if (f.max !== null && f.max !== undefined && abs > f.max) return false
-    if (since && (t.date || "") < since) return false
-    if (thisMonth && (t.date || "").slice(0, 7) !== thisMonth) return false
-    if (q) {
-      var hay = [transactionDisplayName(t, ctx.nameOverrides), t.merchant, t.counterparty, transactionNote(t)]
-        .join("\n").toLowerCase()
-      if (hay.indexOf(q) === -1) return false
+  var hasMin = f.min !== null && f.min !== undefined
+  var hasMax = f.max !== null && f.max !== undefined
+  var dirIn = f.dir === "in", dirOut = f.dir === "out"
+  var trackedWant = f.tracked === "any" ? null : f.tracked === "tracked"
+  var transfersWant = f.transfers === "any" ? null : f.transfers === "only"
+  var billWant = f.bill === "any" ? null : f.bill === "has"
+  var out = []
+  for (var i = 0; i < rows.length; i++) {
+    var t = rows[i]
+    if (nAcc && !acct[t.bank + "|" + t.accountType + "|" + t.last4]) {
+      if (!t.transferId) continue
+      var ids = t.transferId.split(">")
+      var peer = byId[ids[0] === t.id ? ids[1] : ids[0]]
+      if (!peer || !acct[peer.bank + "|" + peer.accountType + "|" + peer.last4]) continue
     }
-    return true
-  })
+    if (dirIn && !(t.amount > 0)) continue
+    if (dirOut && !(t.amount < 0)) continue
+    if (trackedWant !== null && trackedWant !== !!t.tracked) continue
+    if (transfersWant !== null && transfersWant !== _isTransferRow(t)) continue
+    if (billWant !== null && billWant !== !!linked[t.id]) continue
+    if (hasMin || hasMax) {
+      var abs = Math.abs(Number(t.amount))
+      if (abs !== abs) continue               // NaN amount: never inside a range
+      if (hasMin && abs < f.min) continue
+      if (hasMax && abs > f.max) continue
+    }
+    var date = t.date || ""
+    if (since && date < since) continue
+    if (ym && date.slice(0, 7) !== ym) continue
+    if (nTok) {
+      var hay = _haystack(t, ctx.nameOverrides)
+      var ok = true
+      for (var k = 0; k < nTok; k++) if (hay.indexOf(tokens[k]) === -1) { ok = false; break }
+      if (!ok) continue
+    }
+    out.push(t)
+  }
+  return out
 }
 
 // Sensible limits for the amount fields and month stepper, from the data.
 // max rounds UP to the next 1,000 (57,614 -> 58,000).
 function filterBounds(rows) {
   var max = 0, first = "", last = ""
-  rows.forEach(function (t) {
+  for (var i = 0; i < rows.length; i++) {
+    var t = rows[i]
     var a = Math.abs(Number(t.amount))
     if (a > max) max = a
     var m = (t.date || "").slice(0, 7)
-    if (m && (!first || m < first)) first = m
-    if (m && m > last) last = m
-  })
+    if (m && (!first || m < first || m > last) && _YM_RE.test(m)) {
+      if (!first || m < first) first = m
+      if (m > last) last = m
+    }
+  }
   return { min: 0, max: Math.ceil(max / 1000) * 1000, firstMonth: first, lastMonth: last }
 }
 
@@ -1548,7 +1620,7 @@ function activeFilterChips(f, options) {
   if (f.tracked !== "any") chips.push({ id: "tracked", label: f.tracked === "tracked" ? "Tracked" : "Not tracked" })
   if (f.transfers !== "any") chips.push({ id: "transfers", label: f.transfers === "only" ? "Transfers only" : "No transfers" })
   if (f.bill !== "any") chips.push({ id: "bill", label: f.bill === "has" ? "Has bill" : "No bill" })
-  if (f.min !== null && f.min !== undefined) chips.push({ id: "min", label: "≥ " + _amountText(f.min) })
+  if (f.min !== null && f.min !== undefined && f.min > 0) chips.push({ id: "min", label: "≥ " + _amountText(f.min) })
   if (f.max !== null && f.max !== undefined) chips.push({ id: "max", label: "≤ " + _amountText(f.max) })
   if (f.month === "30d") chips.push({ id: "month", label: "Last 30 days" })
   else if (f.month) chips.push({ id: "month", label: monthLabel(f.month) })
@@ -1578,15 +1650,18 @@ function countActive(f) {
   return activeFilterChips(f, []).filter(function (c) { return c.id !== "q" }).length
 }
 
+var _MAX_AMOUNT = 1e12
+
 // "5k" -> 5000, "1.2L" -> 120000, "2cr" -> 20000000, "1,200" -> 1200.
 // null for empty, negative or unreadable text.
 function parseAmountInput(s) {
   var text = String(s === null || s === undefined ? "" : s).replace(/[,\s₹]/g, "").toLowerCase()
   if (text === "") return null
-  var m = /^(\d+(?:\.\d+)?|\.\d+)(k|l|lac|lakh|cr|crore)?$/.exec(text)
+  var m = /^(\d+(?:\.\d*)?|\.\d+)(k|l|lac|lakh|cr|crore)?$/.exec(text)
   if (!m) return null
   var mult = { k: 1e3, l: 1e5, lac: 1e5, lakh: 1e5, cr: 1e7, crore: 1e7 }[m[2] || ""] || 1
-  return Math.round(Number(m[1]) * mult * 100) / 100
+  var value = Math.round(Number(m[1]) * mult * 100) / 100
+  return value <= _MAX_AMOUNT ? value : null
 }
 
 // What is saved between restarts: never the search text or the month.
@@ -1613,7 +1688,7 @@ function restoreFilter(json, options) {
   if (["has", "none"].indexOf(data.bill) !== -1) f.bill = data.bill
   ;["min", "max"].forEach(function (k) {
     var v = data[k]
-    if (typeof v === "number" && isFinite(v) && v >= 0) f[k] = v
+    if (typeof v === "number" && isFinite(v) && v > 0 && v <= _MAX_AMOUNT) f[k] = v
   })
   return f
 }
