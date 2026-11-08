@@ -66,6 +66,8 @@ class Parity(unittest.TestCase):
             d(10, title="nopair", category="Balance Correction", kind="transfer", pairId=""),
             d(11, title="a'b", category="Nope"),
             d(12, title="\U0001F333" * 260, notes="\U0001F333" * 510),
+            d(13, notes="MF and RD\n\u2022 1 \u00d7 Tea \u2014 \u20b910\nTotal \u20b910.50 100%\n"),
+            d(14, notes=""),
         ]
         py = self.both(drafts)
         self.assertTrue(py["warnings"])

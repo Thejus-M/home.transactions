@@ -1813,13 +1813,36 @@ function cashewMoney(amount) {
   return "₹" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d)\.)/g, ",")
 }
 
-// Rows for the grouped list: [{idx, day}] for the shown drafts, sorted by
-// date (newest first by default), ties kept in draft order.
+// A transfer pair is one card: {out: idx of the debit leg, inn: idx of the
+// credit leg}. Only legs that are both shown and share a pairId pair up.
+function cashewPairLegs(drafts, shown) {
+  var byPair = {}, pairs = []
+  for (var k = 0; k < shown.length; k++) {
+    var d = drafts[shown[k]]
+    if (!d || d.kind !== "transfer" || !d.pairId) continue
+    ;(byPair[d.pairId] = byPair[d.pairId] || []).push(shown[k])
+  }
+  Object.keys(byPair).forEach(function (id) {
+    var l = byPair[id]
+    if (l.length !== 2) return
+    var a = cashewIsDebit(drafts[l[0]]), b = cashewIsDebit(drafts[l[1]])
+    if (a === b) return
+    pairs.push(a ? { out: l[0], inn: l[1] } : { out: l[1], inn: l[0] })
+  })
+  return pairs
+}
+
+// Rows for the grouped list: [{idx, day, partner}] for the shown drafts, sorted
+// by date (newest first by default), ties kept in draft order. A transfer pair
+// is ONE row under the out leg's day: idx = out leg, partner = in leg (else -1).
 function cashewRowOrder(drafts, shown, newestFirst) {
+  var partner = {}, hidden = {}
+  cashewPairLegs(drafts, shown).forEach(function (p) { partner[p.out] = p.inn; hidden[p.inn] = true })
   var rows = []
   for (var k = 0; k < shown.length; k++) {
     var d = drafts[shown[k]]
-    if (d) rows.push({ idx: shown[k], day: String(d.date || "") })
+    if (!d || hidden[shown[k]]) continue
+    rows.push({ idx: shown[k], day: String(d.date || ""), partner: partner[shown[k]] === undefined ? -1 : partner[shown[k]] })
   }
   rows.sort(function (a, b) {
     if (a.day !== b.day) return a.day < b.day ? -1 : 1
@@ -1829,13 +1852,21 @@ function cashewRowOrder(drafts, shown, newestFirst) {
   return rows
 }
 
+// New array with every draft in `idxs` merged with `patch`.
+function cashewPatchMany(drafts, idxs, patch) {
+  var out = drafts
+  for (var i = 0; i < idxs.length; i++) if (idxs[i] >= 0) out = cashewPatch(out, idxs[i], patch)
+  return out
+}
+
 // Net total per day of the shown drafts: { "2026-11-08": "-₹9.78" }.
 function cashewDayTotals(drafts, shown) {
-  var paise = {}
+  var paise = {}, dayOf = {}
+  cashewPairLegs(drafts, shown).forEach(function (p) { dayOf[p.inn] = drafts[p.out].date })   // the card sits under the out leg
   for (var k = 0; k < shown.length; k++) {
     var d = drafts[shown[k]]
     if (!d) continue
-    var day = String(d.date || "")
+    var day = String(dayOf[shown[k]] !== undefined ? dayOf[shown[k]] : (d.date || ""))
     paise[day] = (paise[day] || 0) + Math.round(Number(d.amount || 0) * 100)
   }
   var out = {}

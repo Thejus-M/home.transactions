@@ -6550,6 +6550,13 @@ Panel {
       cashewWin.pickMain = d.category || ""
       cashewWin.pickKind = kind
     }
+    // Reads the text first: closing the picker destroys the editor.
+    function saveNote(text) {
+      var idx = cashewWin.pickIdx
+      var next = Model.cashewPatch(root.cashewDrafts, idx, { notes: String(text).replace(/\r/g, "").trim() })
+      cashewWin.closePicker()
+      root.cashewEdit(next, true)
+    }
     function closePicker() {
       cashewWin.pickKind = ""
       cashewCard.forceActiveFocus()
@@ -6958,104 +6965,176 @@ Panel {
           delegate: Rectangle {
             id: crow
             required property int idx
+            required property int partner      // the in leg of a transfer pair shown as one card, else -1
             readonly property var d: root.cashewDrafts[crow.idx] || ({})
-            readonly property bool warn: (crow.d.warn || "") !== "" || crow.d.category === "Uncategorized"
+            readonly property var d2: crow.partner >= 0 ? (root.cashewDrafts[crow.partner] || ({})) : ({})
             readonly property bool isTransfer: crow.d.kind === "transfer"
+            readonly property bool paired: crow.isTransfer && crow.partner >= 0
+            readonly property bool warn: (crow.d.warn || "") !== "" || crow.d.category === "Uncategorized"
             readonly property bool isCredit: String(crow.d.amount || "").charAt(0) !== "-"
             readonly property var cat: cashewWin.catMap[crow.d.category] || ({ icon: "❓", color: "#5A2A2E" })
-            readonly property color kindColor: crow.isTransfer ? Qt.darker(root.foreground, 1.15)
-              : (crow.isCredit ? root.creditColor : root.debitColor)
+            readonly property color kindColor: crow.isCredit ? root.creditColor : root.debitColor
             width: cwList.width
-            height: Style.space(68)
+            height: crow.isTransfer ? (crow.paired ? Style.space(112) : Style.space(80)) : Style.space(68)
             radius: Style.space(12)
             color: Util.alpha(root.foreground, crowHover.hovered ? 0.06 : 0)
             HoverHandler { id: crowHover }
 
-            Item {
-              id: crowBody
-              anchors { fill: parent; leftMargin: Style.space(8); rightMargin: Style.space(10) }
-              opacity: crow.d.include ? 1 : 0.5
+            Loader {
+              anchors.fill: parent
+              sourceComponent: crow.isTransfer ? cardBody : rowBody
+            }
 
-              CashewCheck {
-                id: crowCheck
-                anchors { left: parent.left; verticalCenter: parent.verticalCenter }
-                checked: !!crow.d.include
-                onToggled: root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { include: !crow.d.include }))
-              }
-              CashewIcon {
-                id: crowIcon
-                anchors { left: crowCheck.right; leftMargin: Style.space(10); verticalCenter: parent.verticalCenter }
-                icon: crow.cat.icon
-                fill: crow.cat.color
-                warn: crow.warn
-                transfer: crow.isTransfer
-                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: cashewWin.openPicker("category", crow.idx) }
-              }
+            // A plain transaction: icon, title, chips and the note at the left, amount and date at the right.
+            Component {
+              id: rowBody
+              Item {
+                anchors { fill: parent; leftMargin: Style.space(8); rightMargin: Style.space(10) }
+                opacity: crow.d.include ? 1 : 0.5
 
-              // right column: amount, then the date
-              CashewCell {
-                id: cAmount
-                anchors { right: parent.right; top: parent.top; topMargin: Style.space(9) }
-                width: Style.space(170)
-                implicitHeight: Style.space(26)
-                kind: "amount"
-                alignRight: true
-                bold: true
-                pixelSize: Style.font.body + 2
-                value: crow.d.amount || ""
-                display: (crow.isTransfer ? "⇄ " : (crow.isCredit ? "▴ " : "▾ ")) + Model.cashewMoney(crow.d.amount)
-                color: crow.kindColor
-                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { amount: v }), true) }
-              }
-              CashewCell {
-                id: cDate
-                anchors { right: parent.right; top: cAmount.bottom; topMargin: Style.space(5) }
-                width: Style.space(110)
-                alignRight: true
-                kind: "date"
-                value: crow.d.date || ""
-                color: cashewWin.muted
-                onCommit: function (v) {
-                  root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { date: v }), true)
-                  Qt.callLater(cashewWin.syncRows)
+                CashewCheck {
+                  id: crowCheck
+                  anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+                  checked: !!crow.d.include
+                  onToggled: root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { include: !crow.d.include }))
+                }
+                CashewIcon {
+                  id: crowIcon
+                  anchors { left: crowCheck.right; leftMargin: Style.space(10); verticalCenter: parent.verticalCenter }
+                  icon: crow.cat.icon
+                  fill: crow.cat.color
+                  warn: crow.warn
+                  MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: cashewWin.openPicker("category", crow.idx) }
+                }
+
+                // right column: amount, then the date
+                CashewCell {
+                  id: cAmount
+                  anchors { right: parent.right; top: parent.top; topMargin: Style.space(9) }
+                  width: Style.space(170)
+                  implicitHeight: Style.space(26)
+                  kind: "amount"
+                  alignRight: true
+                  bold: true
+                  pixelSize: Style.font.body + 2
+                  value: crow.d.amount || ""
+                  display: (crow.isCredit ? "▴ " : "▾ ") + Model.cashewMoney(crow.d.amount)
+                  color: crow.kindColor
+                  onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { amount: v }), true) }
+                }
+                CashewCell {
+                  id: cDate
+                  anchors { right: parent.right; top: cAmount.bottom; topMargin: Style.space(5) }
+                  width: Style.space(110)
+                  alignRight: true
+                  kind: "date"
+                  value: crow.d.date || ""
+                  color: cashewWin.muted
+                  onCommit: function (v) {
+                    root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { date: v }), true)
+                    Qt.callLater(cashewWin.syncRows)
+                  }
+                }
+
+                // title, then the chips and the note
+                CashewCell {
+                  id: cTitle
+                  anchors { left: crowIcon.right; leftMargin: Style.space(14); right: cAmount.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(9) }
+                  implicitHeight: Style.space(26)
+                  pixelSize: Style.font.body + 1
+                  value: crow.d.title || ""
+                  color: root.foreground
+                  onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { title: v }), true) }
+                }
+                CashewChip {
+                  id: cAcct
+                  anchors { left: cTitle.left; top: cTitle.bottom; topMargin: Style.space(5) }
+                  maxWidth: Style.space(120)
+                  tint: "#455A64"
+                  text: (crow.d.account || "") !== "" ? crow.d.account : "No account"
+                  warn: (crow.d.account || "") === ""
+                  onClicked: cashewWin.openPicker("account", crow.idx)
+                }
+                CashewChip {
+                  id: cCat
+                  anchors { left: cAcct.right; leftMargin: Style.space(6); verticalCenter: cAcct.verticalCenter }
+                  maxWidth: Style.space(220)
+                  tint: crow.cat.color
+                  text: (crow.d.category || "—") + ((crow.d.subcategory || "") !== "" ? "  ›  " + crow.d.subcategory : "")
+                  warn: crow.warn
+                  onClicked: cashewWin.openPicker("category", crow.idx)
+                }
+                CashewNote {
+                  id: cNotes
+                  anchors { left: cCat.right; leftMargin: Style.space(8); right: cDate.left; rightMargin: Style.space(8); verticalCenter: cAcct.verticalCenter }
+                  text: crow.d.notes || ""
+                  hot: crowHover.hovered
+                  onClicked: cashewWin.openPicker("note", crow.idx)
                 }
               }
+            }
 
-              // title, then the chips
-              CashewCell {
-                id: cTitle
-                anchors { left: crowIcon.right; leftMargin: Style.space(14); right: cAmount.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(9) }
-                implicitHeight: Style.space(26)
-                pixelSize: Style.font.body + 1
-                value: crow.d.title || ""
-                color: root.foreground
-                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { title: v }), true) }
-              }
-              CashewChip {
-                id: cAcct
-                anchors { left: cTitle.left; top: cTitle.bottom; topMargin: Style.space(5) }
-                maxWidth: Style.space(120)
-                tint: "#455A64"
-                text: (crow.d.account || "") !== "" ? crow.d.account : "No account"
-                warn: (crow.d.account || "") === ""
-                onClicked: cashewWin.openPicker("account", crow.idx)
-              }
-              CashewChip {
-                id: cCat
-                anchors { left: cAcct.right; leftMargin: Style.space(6); verticalCenter: cAcct.verticalCenter }
-                maxWidth: Style.space(220)
-                tint: crow.cat.color
-                text: (crow.d.category || "—") + ((crow.d.subcategory || "") !== "" ? "  ›  " + crow.d.subcategory : "")
-                warn: crow.warn
-                onClicked: cashewWin.openPicker("category", crow.idx)
-              }
-              CashewCell {
-                id: cNotes
-                anchors { left: cCat.right; leftMargin: Style.space(8); right: cDate.left; rightMargin: Style.space(8); verticalCenter: cAcct.verticalCenter }
-                value: crow.d.notes || ""
-                placeholder: "Add a note"
-                color: cashewWin.muted
-                onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { notes: v }), true) }
+            // A transfer pair as one card, like Cashew: the title once, then a line per leg.
+            Component {
+              id: cardBody
+              Item {
+                anchors { fill: parent; leftMargin: Style.space(8); rightMargin: Style.space(10) }
+                opacity: crow.d.include ? 1 : 0.5
+
+                CashewCheck {
+                  id: cardCheck
+                  anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+                  checked: !!crow.d.include
+                  onToggled: root.cashewEdit(Model.cashewPatchMany(root.cashewDrafts, [crow.idx, crow.partner], { include: !crow.d.include }))
+                }
+                CashewIcon {
+                  id: cardIcon
+                  anchors { left: cardCheck.right; leftMargin: Style.space(10); verticalCenter: parent.verticalCenter }
+                  icon: crow.cat.icon
+                  fill: crow.cat.color
+                  warn: crow.warn
+                }
+                CashewCell {
+                  id: cardDate
+                  anchors { right: parent.right; top: parent.top; topMargin: Style.space(7) }
+                  width: Style.space(110)
+                  alignRight: true
+                  kind: "date"
+                  value: crow.d.date || ""
+                  color: cashewWin.muted
+                  onCommit: function (v) {
+                    // the in leg follows unless it has a date of its own
+                    var legs = (crow.paired && crow.d2.date === crow.d.date) ? [crow.idx, crow.partner] : [crow.idx]
+                    root.cashewEdit(Model.cashewPatchMany(root.cashewDrafts, legs, { date: v }), true)
+                    Qt.callLater(cashewWin.syncRows)
+                  }
+                }
+                CashewCell {
+                  id: cardTitle
+                  anchors { left: cardIcon.right; leftMargin: Style.space(14); right: cardDate.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(7) }
+                  implicitHeight: Style.space(26)
+                  pixelSize: Style.font.body + 1
+                  value: crow.d.title || ""
+                  color: root.foreground
+                  onCommit: function (v) { root.cashewEdit(Model.cashewPatchMany(root.cashewDrafts, [crow.idx, crow.partner], { title: v }), true) }
+                }
+                Column {
+                  anchors { left: cardTitle.left; right: parent.right; top: cardTitle.bottom; topMargin: Style.space(4) }
+                  spacing: Style.space(4)
+                  CashewLeg {
+                    width: parent.width
+                    idx: crow.idx
+                    cardDate: crow.d.date || ""
+                    hot: crowHover.hovered
+                  }
+                  CashewLeg {
+                    visible: crow.paired
+                    width: parent.width
+                    idx: crow.partner
+                    cardDate: crow.d.date || ""
+                    hot: crowHover.hovered
+                  }
+                }
               }
             }
           }
@@ -7091,7 +7170,7 @@ Panel {
             anchors { top: parent.top; left: parent.left; right: parent.right; margins: Style.space(14) }
             elide: Text.ElideRight
             textFormat: Text.PlainText
-            text: (cashewWin.pickKind === "category" ? "Category for " : "Account for ") + (cashewWin.pickDraft.title || "")
+            text: (cashewWin.pickKind === "category" ? "Category for " : (cashewWin.pickKind === "note" ? "Note for " : "Account for ")) + (cashewWin.pickDraft.title || "")
             color: root.foreground
             font.family: Style.font.family
             font.pixelSize: Style.font.body
@@ -7184,9 +7263,42 @@ Panel {
             ScrollWheelArea { anchors.fill: parent; target: cwAcctList }
           }
 
+          // note: multi-line editor, saved with the button or Ctrl+Enter
+          Item {
+            id: cwNoteBox
+            visible: cashewWin.pickKind === "note"
+            anchors { top: cwPickTitle.bottom; bottom: parent.bottom; left: parent.left; right: parent.right; margins: Style.space(14) }
+            Rectangle {
+              anchors { top: parent.top; bottom: cwNoteBtns.top; bottomMargin: Style.space(8); left: parent.left; right: parent.right }
+              radius: Style.space(8)
+              color: Util.alpha(root.foreground, 0.08)
+              Loader {
+                id: cwNoteLoader
+                anchors { fill: parent; margins: Style.space(8) }
+                active: cashewWin.pickKind === "note"
+                sourceComponent: CashewNoteEditor {}
+              }
+            }
+            Row {
+              id: cwNoteBtns
+              anchors { bottom: parent.bottom; left: parent.left }
+              spacing: Style.space(8)
+              CashewBtn { label: "Save"; primary: true; onClicked: cashewWin.saveNote(cwNoteLoader.item ? cwNoteLoader.item.text : "") }
+              CashewBtn { label: "Cancel"; onClicked: cashewWin.closePicker() }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: cwNoteLoader.item ? cwNoteLoader.item.count + " / 500" : ""
+                color: cwNoteLoader.item && cwNoteLoader.item.count > 500 ? root.debitColor : cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+
           Row {
             id: cwPickFoot
-            visible: cashewWin.pickKind === "account" || cashewWin.pickDraft.kind !== "transfer"
+            visible: cashewWin.pickKind === "account" || (cashewWin.pickKind === "category" && cashewWin.pickDraft.kind !== "transfer")
             anchors { bottom: parent.bottom; left: parent.left; margins: Style.space(14) }
             height: Style.space(30)
             spacing: Style.space(8)
@@ -7321,7 +7433,6 @@ Panel {
     property string icon: ""
     property color fill: "#37474F"
     property bool warn: false
-    property bool transfer: false
     width: Style.space(44)
     height: width
     radius: width / 2
@@ -7334,21 +7445,6 @@ Panel {
       font.pixelSize: Math.round(ci.width * 0.48)
     }
     Rectangle {
-      visible: ci.transfer
-      anchors { right: parent.right; bottom: parent.bottom }
-      width: Math.round(ci.width * 0.38)
-      height: width
-      radius: width / 2
-      color: Qt.darker(Color.popups.background, 1.1)
-      Text {
-        anchors.centerIn: parent
-        textFormat: Text.PlainText
-        text: "⇄"
-        color: root.foreground
-        font.pixelSize: Math.round(parent.width * 0.72)
-      }
-    }
-    Rectangle {
       visible: ci.warn
       anchors { right: parent.right; top: parent.top }
       width: Math.round(ci.width * 0.26)
@@ -7357,6 +7453,158 @@ Panel {
       color: root.pendingColor
       border.width: 2
       border.color: Color.popups.background
+    }
+  }
+
+  // One leg of a transfer card: [account chip] ---- [date] [note] ▾/▴ amount.
+  component CashewLeg: Item {
+    id: lg
+    property int idx: -1
+    property string cardDate: ""
+    property bool hot: false
+    readonly property var d: root.cashewDrafts[lg.idx] || ({})
+    readonly property bool credit: String(lg.d.amount || "").charAt(0) !== "-"
+    height: Style.space(26)
+
+    CashewChip {
+      id: lgAcct
+      anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+      maxWidth: Style.space(150)
+      tint: "#455A64"
+      text: (lg.d.account || "") !== "" ? lg.d.account : "No account"
+      warn: (lg.d.account || "") === ""
+      onClicked: cashewWin.openPicker("account", lg.idx)
+    }
+    CashewCell {
+      id: lgAmount
+      anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+      width: Style.space(150)
+      implicitHeight: Style.space(26)
+      kind: "amount"
+      alignRight: true
+      bold: true
+      pixelSize: Style.font.body + 1
+      value: lg.d.amount || ""
+      display: (lg.credit ? "▴ " : "▾ ") + Model.cashewMoney(lg.d.amount)
+      color: lg.credit ? root.creditColor : root.debitColor
+      onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, lg.idx, { amount: v }), true) }
+    }
+    CashewNote {
+      id: lgNote
+      compact: true
+      anchors { right: lgAmount.left; rightMargin: Style.space(4); verticalCenter: parent.verticalCenter }
+      text: lg.d.notes || ""
+      hot: lg.hot
+      onClicked: cashewWin.openPicker("note", lg.idx)
+    }
+    CashewCell {
+      id: lgDate
+      visible: (lg.d.date || "") !== lg.cardDate        // only a leg dated differently shows its date
+      anchors { right: lgNote.left; rightMargin: Style.space(6); verticalCenter: parent.verticalCenter }
+      width: Style.space(96)
+      alignRight: true
+      kind: "date"
+      value: lg.d.date || ""
+      color: cashewWin.muted
+      onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, lg.idx, { date: v }), true) }
+    }
+    Rectangle {
+      anchors { left: lgAcct.right; leftMargin: Style.space(8); right: lgDate.visible ? lgDate.left : lgNote.left; rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
+      height: 1
+      color: Util.alpha(root.foreground, 0.16)
+    }
+  }
+
+  // The note of a draft: a small note icon (plus the first line when there is room)
+  // only when a note exists; a muted "+ note" while the row is hovered otherwise.
+  component CashewNote: Item {
+    id: cn
+    property string text: ""
+    property bool hot: false
+    property bool compact: false          // icon only
+    signal clicked()
+    readonly property bool has: cn.text !== ""
+    implicitHeight: Style.space(24)
+    implicitWidth: cn.has ? Style.space(26) : (cn.hot ? Style.space(52) : 0)
+    width: cn.compact ? cn.implicitWidth : implicitWidth
+    height: implicitHeight
+    Rectangle {
+      id: cnIcon
+      visible: cn.has
+      anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+      width: Style.space(22)
+      height: Style.space(20)
+      radius: Style.space(6)
+      color: Util.alpha("#5C7C9C", cnMouse.containsMouse ? 0.95 : 0.8)
+      Text {
+        anchors.centerIn: parent
+        textFormat: Text.PlainText
+        text: "≡"
+        color: "#EAF1F8"
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption + 2
+        font.bold: true
+      }
+    }
+    Text {
+      visible: cn.has && !cn.compact
+      anchors { left: cnIcon.right; leftMargin: Style.space(8); right: parent.right; verticalCenter: parent.verticalCenter }
+      elide: Text.ElideRight
+      textFormat: Text.PlainText
+      text: cn.text.split("\n")[0]
+      color: cashewWin.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    Text {
+      visible: !cn.has && cn.hot
+      anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+      textFormat: Text.PlainText
+      text: "+ note"
+      color: Qt.darker(root.foreground, cnMouse.containsMouse ? 1.1 : 1.5)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    MouseArea {
+      id: cnMouse
+      anchors.fill: parent
+      enabled: cn.has || cn.hot
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: cn.clicked()
+    }
+  }
+
+  // Multi-line note editor, created only while the note picker is open.
+  component CashewNoteEditor: Flickable {
+    id: ne
+    readonly property alias text: neArea.text
+    readonly property int count: neArea.length
+    clip: true
+    contentWidth: width
+    contentHeight: Math.max(height, neArea.implicitHeight)
+    boundsBehavior: Flickable.StopAtBounds
+    TextArea.flickable: TextArea {
+      id: neArea
+      wrapMode: TextEdit.Wrap
+      selectByMouse: true
+      color: root.foreground
+      selectionColor: Util.alpha(Color.accent, 0.4)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.body
+      background: null
+      Component.onCompleted: {
+        neArea.text = cashewWin.pickDraft.notes || ""
+        neArea.forceActiveFocus()
+        neArea.cursorPosition = neArea.length
+      }
+      Keys.onEscapePressed: function (event) { event.accepted = true; cashewWin.closePicker() }
+      Keys.onPressed: function (event) {
+        if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
+          event.accepted = true
+          cashewWin.saveNote(neArea.text)
+        }
+      }
     }
   }
 

@@ -25,6 +25,7 @@ BASE_URL = "https://cashewapp.web.app/addTransaction?JSON="
 HERE = Path(__file__).resolve().parent
 TITLE_MAX = 250
 NOTES_MAX = 500
+BILL_ITEMS = 12
 DEFAULT_MAX_CHARS = 6000
 UNCATEGORIZED = ("Uncategorized", "Unknown")
 BALANCE = "Balance Correction"
@@ -152,14 +153,127 @@ def display_title(bank: str, merchant: str, group_key: str, counterparty: str | 
     return _squash(name)[:TITLE_MAX]
 
 
-def _notes(bank: str, last4: str, merchant: str, widget_note: str | None) -> str:
-    parts = [f"{bank} ••{last4}", merchant]
-    ref = transfers.upi_ref(merchant)
-    if ref and ref not in merchant:
-        parts.append(ref)
-    if widget_note and widget_note not in merchant:
-        parts.append(widget_note)
-    return " | ".join(p for p in parts if p)[:NOTES_MAX]
+_JUNK_REMARKS = (
+    "na", "none", "nil", "note", "upi", "no remarks", "no remark", "noremarks", "payment", "payment from phonepe",
+    "paid via cred", "sent from paytm", "paying", "pay", "paid", "sent", "to pay", "request", "account", "gpay",
+    "google pay", "bhim", "phonepe", "paytm", "cred", "upi autopay", "upi mandate", "indian clearing corporation",
+    "payment for", "upi payment", "money transfer", "transfer", "p2v", "p2m", "p2a",
+)
+_BANK_WORDS = re.compile(r"\b(bank|ltd|limited)\b", re.I)
+_BANK_CODES = {"hdfc", "sbi", "sbin", "axis", "utib", "icic", "icici", "kkbk", "yesb", "fdrl", "barb", "canara",
+               "hdfc bank", "ybs"}
+REMARK_MIN = 3
+
+
+def _alnum(s: str) -> str:
+    return re.sub(r"[^0-9a-z]", "", (s or "").lower())
+
+
+def _clean_remark(remark: str, name: str) -> str:
+    """The remark if a person typed it, else "". Truncated remarks stay as they are."""
+    r = _squash(remark)
+    n = _alnum(r)
+    if len(r) < REMARK_MIN or "@" in r or not re.search(r"[A-Za-z]", r):
+        return ""                                    # too short, a VPA, or only digits and signs
+    if _BANK_WORDS.search(r) or _alnum(r) in {_alnum(c) for c in _BANK_CODES}:
+        return ""                                    # a bank name sits in the remark field
+    if any(j == n or j.startswith(n) for j in map(_alnum, _JUNK_REMARKS)):
+        return ""                                    # boilerplate, also when the bank cut it short
+    nm = _alnum(name)
+    if nm and (n == nm or nm.startswith(n)):
+        return ""                                    # the merchant name again
+    return r
+
+
+def upi_remark(merchant: str, bank: str) -> str:
+    """The free text a payer typed in a UPI payment ("MF and RD"), or "".
+
+    SBI: UPI- TRANSFER TO <acct> UPI/DR/<ref>/<name>/<bank>/<vpa>/<remark>, cut at 80
+    characters (remarks come out cut short). HDFC: UPI-<name>-<vpa>-<ifsc>-<ref>-<remark>.
+    Axis writes UPI/P2A/<ref>/<name>/<bank>/<remark>/ or UPI/P2A/<ref>/<name>/<remark>/<bank name>;
+    in a merchant payment (P2M) the field is a mandate label ("UPI Auto") and drops out as junk."""
+    merchant = merchant or ""
+    if bank == "AXIS":
+        m = re.match(r"^UPI/P2[AMV]/\d+/([^/]*)/([^/]*)(?:/([^/]*))?", merchant)
+        if not m:
+            return ""
+        name, f2, f3 = _squash(m.group(1)), _squash(m.group(2)), _squash(m.group(3))
+        return _clean_remark(f2 if _BANK_WORDS.search(f3) else f3, name)
+    parsed = keys.parsed_counterparty(bank, merchant)
+    if not parsed or bank not in ("SBI", "HDFC"):
+        return ""
+    return _clean_remark(parsed["remark"], parsed["name"])
+
+
+def _money(paise: int | None) -> str:
+    p = paise or 0
+    return "₹" + (str(p // 100) if p % 100 == 0 and p >= 0 else format_amount(p))
+
+
+def _qty(qty_e4: int | None, unit: str | None) -> str:
+    if qty_e4 is None:
+        return "1"
+    q = f"{qty_e4 / 10000:.3f}".rstrip("0").rstrip(".")
+    return f"{q} {unit}" if unit else q
+
+
+def bill_note(conn, txn_id: str, title: str) -> str:
+    """The concise itemised bill of the receipt linked to a transaction, or ""."""
+    try:
+        r = conn.execute("SELECT r.id, r.merchant, r.date, r.total_paise, r.tax_paise FROM receipt_links l "
+                         "JOIN receipts r ON r.id = l.receipt_id WHERE l.transaction_id = ? AND l.state = 'linked'",
+                         (txn_id,)).fetchone()
+        if not r:
+            return ""
+        items = conn.execute("SELECT description, qty_e4, unit, amount_paise FROM receipt_items "
+                             "WHERE receipt_id = ? ORDER BY line_no", (r["id"],)).fetchall()
+    except sqlite3.Error:
+        return ""
+    if not items:
+        return ""                                    # a bare total says nothing the amount does not
+    merchant = _squash(r["merchant"])
+    head = ""
+    if merchant and _alnum(merchant) != _alnum(title):
+        head = f"{merchant} · {r['date']}" if r["date"] else merchant
+    lines = [f"• {_qty(i['qty_e4'], i['unit'])} × {_squash(i['description'])} — {_money(i['amount_paise'])}"
+             for i in items]
+    tail = []
+    if r["total_paise"] is not None:
+        tail.append(f"Total {_money(r['total_paise'])}")
+    if r["tax_paise"]:
+        tail.append(f"GST {_money(r['tax_paise'])}")
+    shown = lines[:BILL_ITEMS]
+
+    def build(n: int) -> list[str]:
+        body = lines[:n]
+        if len(lines) > n:
+            body.append(f"• +{len(lines) - n} more items")
+        return ([head] if head else []) + body + tail
+
+    n = len(shown)
+    while n > 0 and len("\n".join(build(n))) > NOTES_MAX:
+        n -= 1
+    out = build(n)
+    while out and len("\n".join(out)) > NOTES_MAX:
+        out.pop()
+    return "\n".join(out)
+
+
+def build_notes(bank: str, merchant: str, widget_note: str | None, bill: str) -> str:
+    """Empty unless something means something: the UPI remark, the user's own note, the bill."""
+    parts = []
+    remark = upi_remark(merchant, bank)
+    if remark:
+        parts.append(remark)
+    own = _squash(widget_note)
+    if own and own != _squash(keys.note(bank, merchant)) and _alnum(own) != _alnum(remark):
+        parts.append(own)                            # a note the user wrote, not the one read from the row
+    if bill:
+        parts.append(bill)
+    lines = "\n".join(parts).split("\n")
+    while len(lines) > 1 and len("\n".join(lines)) > NOTES_MAX:
+        lines.pop()                                  # cut on a line boundary
+    return "\n".join(lines)[:NOTES_MAX]
 
 
 def open_readonly(path) -> sqlite3.Connection:
@@ -220,7 +334,8 @@ def drafts(conn, state: dict | None = None) -> list[dict]:
         out.append({
             "id": r["id"], "include": True, "date": r["date"], "title": title,
             "amount": format_amount(r["amount_paise"]), "category": cat, "subcategory": sub,
-            "account": account or "", "notes": _notes(r["bank"], r["last4"], r["merchant"], r["note"]),
+            "account": account or "",
+            "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title)),
             "kind": kind, "bank": r["bank"], "last4": r["last4"], "accountId": aid,
             "groupKey": r["group_key"], "pairId": leg["pairId"] if leg else "", "warn": warn,
         })

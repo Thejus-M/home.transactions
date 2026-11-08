@@ -140,8 +140,7 @@ class DraftTests(Base):
         d = ds["t-1"]
         self.assertEqual((d["amount"], d["date"], d["kind"], d["include"]), ("-250.00", "2026-10-02", "spend", True))
         self.assertEqual((d["category"], d["subcategory"], d["account"]), ("Food Out", "Delivery", "HDFC"))
-        self.assertTrue(d["notes"].startswith("HDFC ••67".replace("•67", "••7367")[:0] + "HDFC "))
-        self.assertIn("••7367", d["notes"])
+        self.assertEqual(d["notes"], "")                          # no remark, no bill: no note
         self.assertEqual(ds["t-5"]["account"], "HDFC ₹")
         self.assertEqual(ds["t-2"]["kind"], "income")
         self.assertEqual((ds["t-2"]["amount"], ds["t-2"]["category"], ds["t-2"]["subcategory"]),
@@ -185,6 +184,7 @@ class DraftTests(Base):
 
     def test_notes_cut_at_500(self):
         self.add(self.hdfc, row(1, "2026-10-02", -3.0, "M" * 700))
+        self.conn.execute("UPDATE transactions SET note = ?", ("x" * 700,))
         self.assertEqual(len(self.drafts()[0]["notes"]), 500)
 
     def test_transfer_pair_and_one_sided(self):
@@ -275,3 +275,69 @@ class CliTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoteTests(Base):
+    def test_upi_remark_per_bank(self):
+        r = cashew.upi_remark
+        self.assertEqual(r("UPI/P2A/111/THEJUS M /HDFC/MF and F/", "AXIS"), "MF and F")       # cut short, kept
+        self.assertEqual(r("UPI/P2A/153/THEJUS M MANOJ /For Cc/HDFC BANK LTD", "AXIS"), "For Cc")
+        self.assertEqual(r("UPI/P2A/174/LAKSHMI MOHAN /NO REM/State Bank Of India", "AXIS"), "")
+        self.assertEqual(r("UPI/P2M/103/ICCL GROW/HDFC BANK/Indian C//P2V/", "AXIS"), "")
+        self.assertEqual(r("UPI/P2M/101/ICCL GROW/HDFC BANK/UPI Auto//P2V/", "AXIS"), "")
+        self.assertEqual(r("UPI/P2A/533/THEJUS M /HDFC/MF/", "AXIS"), "")                   # under 3 characters
+        self.assertEqual(r("UPI- TRANSFER FROM 4897735162098 UPI/CR/184/THEJUSMM/HDFC/8921768575/Savin", "SBI"), "Savin")
+        for junk in ("NA", "NO R", "UPI", "Paid", "Sent", "paym", "Payin", "Pay", "183", "Gpay"):
+            self.assertEqual(r(f"UPI- TRANSFER TO 4897690162095 UPI/DR/519/CRED/UTIB/cred.club@/{junk}", "SBI"), "", junk)
+        self.assertEqual(r("UPI-THEJUS M-8921768575@UPI-SBIN0001000-125045259403-FOR CC BILLS", "HDFC"), "FOR CC BILLS")
+        for junk in ("NO REMARK", "NO REMARKS", "UPI", "PAY", "1139", "Payment from PhonePe", "Paid via CRED", "Sent from Paytm",
+                     "x@oksbi", "ab"):
+            self.assertEqual(r(f"UPI-RAHUL A R-*******7306@OKHDFCBANK-FDRL0001401-132316904164-{junk}", "HDFC"), "", junk)
+        self.assertEqual(r("UPI-SAVINGS-x@oksbi-SBIN0001000-125045259403-Savings", "HDFC"), "")   # same as the name
+        self.assertEqual(r("Upi-swiggy", "HDFC"), "")                                         # card row
+
+    def test_notes_are_empty_by_default_and_hold_the_remark(self):
+        self.add(self.hdfc, row(1, "2026-10-02", -250.0, "UPI-SHOP A-a@oksbi-SBIN0001000-125045259403-MF and RD"),
+                 row(2, "2026-10-03", -50.0, "UPI-SHOP B-b@oksbi-SBIN0001000-125045259404-NO REMARKS"))
+        ds = {d["id"]: d for d in self.drafts()}
+        self.assertEqual(ds["t-1"]["notes"], "MF and RD")
+        self.assertEqual(ds["t-2"]["notes"], "")
+
+    def test_widget_note_is_kept_and_not_doubled(self):
+        self.add(self.hdfc, row(1, "2026-10-02", -250.0, "UPI-SHOP A-a@oksbi-SBIN0001000-125045259403-MF and RD"))
+        self.assertEqual(self.drafts()[0]["notes"], "MF and RD")
+        self.conn.execute("UPDATE transactions SET note = 'lunch with Sam' WHERE id = 't-1'")
+        self.assertEqual(self.drafts()[0]["notes"], "MF and RD\nlunch with Sam")
+
+    def link_bill(self, txn, merchant="Cake World", items=3, total=14900, tax=1500):
+        from txdb import receipts
+        rid = receipts.save_parse(self.conn, {
+            "image_sha256": "a" * 64, "stored_path": "x.jpg", "merchant": merchant, "date": "2026-09-15",
+            "total_paise": total, "tax_paise": tax,
+            "items": [{"description": f"Item {i}", "qty": 1 + i, "amount": 10 + i} for i in range(items)]})
+        receipts.set_link(self.conn, rid, txn)
+
+    def test_linked_bill_note(self):
+        self.add(self.hdfc, row(1, "2026-10-02", -149.0, "UPI-SHOP A-a@oksbi-SBIN0001000-125045259403-CC BILL"))
+        self.link_bill("t-1")
+        n = self.drafts()[0]["notes"]
+        lines = n.split("\n")
+        self.assertEqual(lines[0], "CC BILL")                                  # remark first
+        self.assertEqual(lines[1], "Cake World · 2026-09-15")
+        self.assertEqual(lines[2], "• 1 × Item 0 — ₹10")
+        self.assertEqual(lines[-2:], ["Total ₹149", "GST ₹15"])
+
+    def test_bill_with_many_items_is_cut(self):
+        self.add(self.hdfc, row(1, "2026-10-02", -149.0, "SHOP"))
+        self.link_bill("t-1", merchant="SHOP", items=20)
+        n = self.drafts()[0]["notes"]
+        lines = n.split("\n")
+        self.assertEqual(len([x for x in lines if x.startswith("• ")]), 13)    # 12 items and the "more" line
+        self.assertIn("• +8 more items", lines)
+        self.assertTrue(lines[0].startswith("• 1 × Item 0"))                    # merchant equals title: no header
+        self.assertLessEqual(len(n), 500)
+
+    def test_bill_without_items_gives_no_note(self):
+        self.add(self.hdfc, row(1, "2026-10-02", -149.0, "SHOP"))
+        self.link_bill("t-1", items=0)
+        self.assertEqual(self.drafts()[0]["notes"], "")

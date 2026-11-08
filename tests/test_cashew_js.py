@@ -121,6 +121,22 @@ class CashewJs(unittest.TestCase):
         self.assertEqual(tot["2026-11-03"], "-₹4.78")
         self.assertEqual(tot["2026-11-01"], "-₹100.00")
 
+    def test_transfer_pair_is_one_row_under_the_out_day(self):
+        ds = [draft("o", amount="-50.00", kind="transfer", pairId="p", date="2026-11-03"),
+              draft("x", date="2026-11-03"),
+              draft("i", amount="50.00", kind="transfer", pairId="p", date="2026-11-05"),
+              draft("l", amount="-7.00", kind="transfer", pairId="")]
+        rows = self.js("cashewRowOrder(input.d, input.s, true)", d=ds, s=[0, 1, 2, 3])
+        self.assertEqual([(r["idx"], r["partner"], r["day"]) for r in rows],
+                         [(1, -1, "2026-11-03"), (0, 2, "2026-11-03"), (3, -1, "2026-11-01")])
+        self.assertEqual({r["idx"]: r["partner"] for r in rows}[0], 2)
+        alone = self.js("cashewRowOrder(input.d, input.s, true)", d=ds, s=[0])
+        self.assertEqual(alone[0]["partner"], -1)                                           # partner not shown
+        tot = self.js("cashewDayTotals(input.d, input.s)", d=ds, s=[0, 2])
+        self.assertEqual(tot, {"2026-11-03": "₹0.00"})
+        both = self.js("cashewPatchMany(input.d, [0, 2], {title: 'X'})", d=ds)
+        self.assertEqual([both[0]["title"], both[2]["title"], both[1]["title"]], ["X", "X", "T"])
+
     def test_category_map(self):
         out = self.js("cashewCategoryMap(input.c)", c=[{"name": "A", "icon": "x", "color": "#111111"}, {"name": "B"}])
         self.assertEqual(out["A"], {"icon": "x", "color": "#111111"})
