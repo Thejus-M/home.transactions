@@ -1779,18 +1779,47 @@ function cashewApplyCategory(drafts, idx, category, subcategory, spread) {
   })
 }
 
-// The rows `cashew-guess` reads. Transfers and rows the user already edited
-// are never sent; `onlyUncat` keeps the ones still without a category.
-function cashewGuessRows(drafts, shown, onlyUncat) {
+// A row that still has no category: not a transfer, and the category is
+// Uncategorized (or empty) or the draft carries a warning.
+function cashewNeedsCategory(d) {
+  if (!d || d.kind === "transfer") return false
+  return !d.category || d.category === "Uncategorized" || (d.warn || "") !== ""
+}
+
+// Indexes (into drafts) of the shown rows that still need a category.
+function cashewNeedIdxs(drafts, shown) {
+  var out = []
+  for (var k = 0; k < shown.length; k++) if (cashewNeedsCategory(drafts[shown[k]])) out.push(shown[k])
+  return out
+}
+
+// The rows `cashew-guess` reads: a non-empty note AND no category yet. A row
+// with a category from any source, a transfer, a row edited by hand and a row
+// already guessed are never sent. The rest is asked from the user.
+function cashewGuessRows(drafts, shown) {
   var out = []
   for (var k = 0; k < shown.length; k++) {
     var d = drafts[shown[k]]
-    if (!d || d.kind === "transfer" || d.touched) continue
-    if (onlyUncat && !(d.category === "Uncategorized" || (d.warn || "") !== "")) continue
-    out.push({ id: d.id, title: d.title || "", merchant: d.merchant || "", notes: d.notes || "",
+    if (!d || d.touched || d.guessed || !cashewNeedsCategory(d)) continue
+    var note = String(d.notes || "").trim()
+    if (note === "") continue
+    out.push({ id: d.id, title: d.title || "", merchant: d.merchant || "", notes: note,
                amount: d.amount || "", kind: d.kind || "", bank: d.bank || "", accountType: d.accountId ? String(d.accountId).split("|")[1] || "" : "" })
   }
   return out
+}
+
+// The ask-me flow: the first row index after `from` (draft index, -1 = start)
+// in list order that needs a category, wrapping once. `order` is the list rows
+// [{idx, partner}] as shown; returns the draft index or -1.
+function cashewNextNeed(drafts, order, from) {
+  var start = -1, i
+  if (from >= 0) for (i = 0; i < order.length; i++) if (order[i].idx === from || order[i].partner === from) { start = i; break }
+  for (var n = 1; n <= order.length; n++) {
+    var r = order[(start + n + order.length) % order.length]
+    if (r && cashewNeedsCategory(drafts[r.idx])) return r.idx
+  }
+  return -1
 }
 
 // A few confirmed merchants as examples for the model (at most 20).
@@ -2001,10 +2030,13 @@ function cashewRememberAccount(state, accountId, name) {
 
 // Indexes of the drafts the table shows. With `onlyFilter`, only drafts whose
 // id is a key of `idSet` (the ids the RECENT filter lets through).
-function cashewShownIndexes(drafts, onlyFilter, idSet) {
+// `closedSet` ({id: true}): rows of a closed account are skipped silently.
+function cashewShownIndexes(drafts, onlyFilter, idSet, closedSet) {
   var out = []
-  for (var i = 0; i < drafts.length; i++)
+  for (var i = 0; i < drafts.length; i++) {
+    if (closedSet && closedSet[drafts[i].id]) continue
     if (!onlyFilter || (idSet && idSet[drafts[i].id])) out.push(i)
+  }
   return out
 }
 

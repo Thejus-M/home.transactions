@@ -116,7 +116,7 @@ Panel {
   readonly property bool portfolioStale: !!store.portfolio.stale
     && (store.holdings.length > 0 || (store.portfolio.lastOutcome || "") === "error")
   readonly property var transactions: store.transactions
-  readonly property int untrackedCount: transactions.filter(function (t) { return !t.tracked }).length
+  readonly property int untrackedCount: transactions.filter(function (t) { return !t.tracked && !t.accountClosed }).length
   readonly property int pendingTrackedCount: transactions.filter(function (t) { return t.tracked }).length
 
   // Photographed bills, unmatched ones first. receiptsToLink drives the
@@ -331,9 +331,15 @@ Panel {
   property var cashewWarnings: []
   property string cashewLinksError: ""
   // Same set the Python side drafts: untracked and settled.
-  readonly property int cashewCount: transactions.filter(function (t) { return !t.tracked && t.status === "settled" }).length
+  readonly property int cashewCount: transactions.filter(function (t) { return !t.tracked && !t.accountClosed && t.status === "settled" }).length
   readonly property string cashewBase: root.cashewState.base === "web" ? "web" : "app"
   readonly property int cashewIncludedCount: Model.cashewIncluded(root.cashewDrafts, root.cashewShown).length
+  // Rows of a closed account never reach the window's counts or links.
+  readonly property var cashewClosedIds: {
+    var set = ({})
+    transactions.forEach(function (t) { if (t.accountClosed) set[t.id] = true })
+    return set
+  }
   readonly property var cashewFilterIds: {
     var set = ({})
     root.filteredTransactions.forEach(function (t) { set[t.id] = true })
@@ -380,7 +386,7 @@ Panel {
   // Recomputes which drafts the table shows; skipped when nothing changed so
   // the list keeps its scroll position.
   function cashewReshow() {
-    var next = Model.cashewShownIndexes(root.cashewDrafts, root.cashewOnlyFilter, root.cashewFilterIds)
+    var next = Model.cashewShownIndexes(root.cashewDrafts, root.cashewOnlyFilter, root.cashewFilterIds, root.cashewClosedIds)
     if (JSON.stringify(next) !== JSON.stringify(root.cashewShown)) root.cashewShown = next
     root.cashewRebuildLinks()
   }
@@ -421,15 +427,19 @@ Panel {
   readonly property var cashewGuessCounts: Model.cashewGuessLogCounts(root.cashewGuessLog)
   readonly property var cashewGuessPrefs: root.cashewState.guess || ({})
   readonly property int cashewGuessWorkers: Math.max(1, Math.min(4, Math.round(Number(root.cashewGuessPrefs.workers) || 3)))
-  readonly property bool cashewGuessOnlyUncat: root.cashewGuessPrefs.onlyUncategorized !== false
-  readonly property int cashewGuessCount: Model.cashewGuessRows(root.cashewDrafts, root.cashewShown, root.cashewGuessOnlyUncat).length
+  // Rows with no category (notes or not); the ask-me flow walks them.
+  readonly property int cashewNeedCount: Model.cashewNeedIdxs(root.cashewDrafts, root.cashewShown).length
+  // Rows with a note and no category: the only ones the model reads.
+  readonly property int cashewGuessCount: Model.cashewGuessRows(root.cashewDrafts, root.cashewShown).length
   readonly property int cashewGuessedCount: Model.cashewGuessedCount(root.cashewDrafts)
   function cashewSetGuessPref(patch) {
-    root.cashewSetState(Object.assign({}, root.cashewState, { guess: Object.assign({}, root.cashewGuessPrefs, patch) }))
+    var prefs = Object.assign({}, root.cashewGuessPrefs, patch)
+    delete prefs.onlyUncategorized   // old state files: the "All rows" mode is gone
+    root.cashewSetState(Object.assign({}, root.cashewState, { guess: prefs }))
   }
   function cashewGuessStart() {
     if (root.cashewGuessing || cashewGuessProc.running) return
-    var rows = Model.cashewGuessRows(root.cashewDrafts, root.cashewShown, root.cashewGuessOnlyUncat)
+    var rows = Model.cashewGuessRows(root.cashewDrafts, root.cashewShown)
     if (rows.length === 0) return
     root.cashewGuessError = ""
     root.cashewGuessDone = 0
@@ -2815,6 +2825,17 @@ Panel {
                       id: slotLoader
                       width: parent.width
                       sourceComponent: rowSlot.modelData.isTransfer ? transferCardC : txnCardC
+                      opacity: rowSlot.modelData.accountClosed === true ? 0.55 : 1
+                    }
+                    Text {
+                      visible: rowSlot.modelData.accountClosed === true
+                      z: 2
+                      anchors { right: parent.right; bottom: parent.bottom; rightMargin: Style.space(10); bottomMargin: Style.space(4) }
+                      textFormat: Text.PlainText
+                      text: "closed card"
+                      color: Qt.darker(root.foreground, 1.3)
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
                     }
                     Component { id: txnCardC; TransactionCard { txn: rowSlot.modelData; selectable: true } }
                     Component { id: transferCardC; TransferCard { transfer: rowSlot.modelData } }
@@ -6877,6 +6898,9 @@ Panel {
     property bool linksCollapsed: false
     property bool confirmMark: false
     property bool oldestFirst: false
+    property bool optionsOpen: false          // the Options row; not persisted
+    property bool needOnly: false             // the list shows only rows with no category
+    property bool askActive: false            // the ask-me sequence is running
     // The guess results panel (an in-card overlay).
     property bool resultsOpen: false
     property bool resultsRaw: false
@@ -6899,6 +6923,9 @@ Panel {
       cashewWin.confirmMark = false
       cashewWin.resultsOpen = false
       cashewWin.resultsRaw = false
+      cashewWin.optionsOpen = false
+      cashewWin.needOnly = false
+      cashewWin.askActive = false
       if (cashewWin.visible) {
         root.cashewLoad()
         cashewCard.forceActiveFocus()
@@ -6912,6 +6939,9 @@ Panel {
     ListModel { id: cwRows }
     function syncRows() {
       var rows = Model.cashewRowOrder(root.cashewDrafts, root.cashewShown, !cashewWin.oldestFirst)
+      if (cashewWin.needOnly) rows = rows.filter(function (r) {
+        return Model.cashewNeedsCategory(root.cashewDrafts[r.idx])
+      })
       if (root.cashewGuessedOnly) rows = rows.filter(function (r) {
         var a = root.cashewDrafts[r.idx], b = r.partner >= 0 ? root.cashewDrafts[r.partner] : null
         return !!((a && a.guessed) || (b && b.guessed))
@@ -6920,6 +6950,7 @@ Panel {
       for (var i = 0; i < rows.length; i++) cwRows.append(rows[i])
     }
     onOldestFirstChanged: cashewWin.syncRows()
+    onNeedOnlyChanged: cashewWin.syncRows()
     Connections {
       target: root
       function onCashewShownChanged() { cashewWin.syncRows() }
@@ -6927,6 +6958,11 @@ Panel {
       function onCashewGuessLogChanged() { if (cashewWin.resultsOpen) cashewWin.syncGuessRows() }
       function onCashewDraftsChanged() { if (cashewWin.resultsOpen) cashewWin.syncGuessRows() }
       function onCashewGuessedCountChanged() { if (root.cashewGuessedOnly) cashewWin.syncRows() }
+      function onCashewNeedCountChanged() {
+        if (!cashewWin.needOnly) return
+        if (root.cashewNeedCount === 0) cashewWin.needOnly = false   // its change handler syncs
+        else cashewWin.syncRows()
+      }
     }
 
     onResultsOpenChanged: if (cashewWin.resultsOpen) cashewWin.syncGuessRows()
@@ -6947,8 +6983,7 @@ Panel {
       for (var k = n; k < view.length; k++) cgRows.append(view[k])
     }
     // Scrolls the list to draft `idx` and marks it for a moment.
-    function revealRow(idx) {
-      cashewWin.resultsOpen = false
+    function scrollToRow(idx) {
       for (var i = 0; i < cwRows.count; i++) {
         var r = cwRows.get(i)
         if (r.idx === idx || r.partner === idx) {
@@ -6958,6 +6993,27 @@ Panel {
           return
         }
       }
+    }
+    function revealRow(idx) {
+      cashewWin.resultsOpen = false
+      cashewWin.scrollToRow(idx)
+    }
+    // Ask-me flow: jump to the next row that has no category and open its picker.
+    // `from` is the draft index just done (-1 = from the top). Ends when none is left.
+    function askNext(from) {
+      var order = []
+      for (var i = 0; i < cwRows.count; i++) { var r = cwRows.get(i); order.push({ idx: r.idx, partner: r.partner }) }
+      var idx = Model.cashewNextNeed(root.cashewDrafts, order, from)
+      if (idx < 0 || idx === from) { cashewWin.askActive = false; return }
+      cashewWin.resultsOpen = false
+      cashewWin.scrollToRow(idx)
+      cashewWin.openPicker("category", idx)
+      cashewWin.askActive = true
+    }
+    function askStart() {
+      if (root.cashewNeedCount === 0 || root.cashewLoading) return
+      if (root.cashewGuessedOnly) root.cashewGuessedOnly = false   // would hide the rows to ask
+      cashewWin.askNext(-1)
     }
     function openPicker(kind, idx) {
       var d = root.cashewDrafts[idx]
@@ -6975,6 +7031,7 @@ Panel {
       root.cashewEdit(next, true)
     }
     function closePicker() {
+      cashewWin.askActive = false
       cashewWin.pickKind = ""
       cashewCard.forceActiveFocus()
     }
@@ -6987,9 +7044,11 @@ Panel {
       var remember = cashewWin.pickRemember && d.kind !== "transfer" && category !== "Uncategorized"
       var next = Model.cashewApplyCategory(root.cashewDrafts, idx, category, sub, remember)
       var st = remember ? Model.cashewRememberCategory(root.cashewState, key, category, sub) : null
+      var again = cashewWin.askActive
       cashewWin.closePicker()
       root.cashewEdit(next)
       if (st) root.cashewSetState(st)
+      if (again) Qt.callLater(function () { cashewWin.askNext(idx) })
     }
     function pickAccount(name) {
       var idx = cashewWin.pickIdx
@@ -7023,7 +7082,16 @@ Panel {
       width: Math.min(parent.width - Style.space(80), Style.space(1280))
       height: Math.min(parent.height - Style.space(80), Style.space(680))
       focus: true
+      Keys.onPressed: function (event) {
+        // N: categorise the next row. A text field takes the key first, so this
+        // only runs when no field has the focus.
+        if (event.key === Qt.Key_N && event.modifiers === Qt.NoModifier && cashewWin.pickKind === "") {
+          cashewWin.askStart()
+          event.accepted = true
+        }
+      }
       Keys.onEscapePressed: function (event) {
+        cashewWin.askActive = false
         if (cashewWin.pickKind !== "") cashewWin.closePicker()
         else if (cashewWin.resultsOpen) cashewWin.resultsOpen = false
         else root.closeCashew()
@@ -7060,9 +7128,10 @@ Panel {
           Text {
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
-            text: root.cashewIncludedCount + " of " + root.cashewShown.length + " included"
-              + (root.cashewGuessedCount > 0 ? "  ·  " + root.cashewGuessedCount + " guessed" : "")
-            color: cashewWin.muted
+            text: root.cashewGuessError !== "" ? root.cashewGuessError
+              : root.cashewGuessing ? "Guessing " + root.cashewGuessDone + " / " + root.cashewGuessTotal
+              : root.cashewShown.length + " rows  ·  " + (root.cashewNeedCount > 0 ? root.cashewNeedCount + " need a category" : "all categorised")
+            color: root.cashewGuessError !== "" ? root.debitColor : cashewWin.muted
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
@@ -7072,6 +7141,48 @@ Panel {
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
           spacing: Style.space(6)
+          CashewBtn {
+            label: root.cashewNeedCount > 0 ? "Needs category  ·  " + root.cashewNeedCount : "All categorised"
+            primary: root.cashewNeedCount > 0
+            active: cashewWin.needOnly
+            tint: root.cashewNeedCount > 0 ? "transparent" : root.creditColor
+            enabled: root.cashewNeedCount > 0 || cashewWin.needOnly
+            onClicked: cashewWin.needOnly = !cashewWin.needOnly
+          }
+          CashewBtn {
+            label: root.cashewGuessing ? "Stop" : "✦ Guess" + (root.cashewGuessCount > 0 ? "  ·  " + root.cashewGuessCount : "")
+            primary: !root.cashewGuessing
+            active: root.cashewGuessing
+            enabled: root.cashewGuessing || (root.cashewGuessCount > 0 && !root.cashewLoading)
+            onClicked: root.cashewGuessing ? root.cashewGuessStop() : root.cashewGuessStart()
+          }
+          CashewBtn {
+            visible: root.cashewGuessLog.length > 0
+            label: root.cashewGuessCounts.guessed + " / " + root.cashewGuessCounts.sent
+            active: cashewWin.resultsOpen
+            onClicked: cashewWin.resultsOpen = !cashewWin.resultsOpen
+          }
+          CashewBtn { label: cashewWin.optionsOpen ? "Options ▴" : "Options ▾"; active: cashewWin.optionsOpen; onClicked: cashewWin.optionsOpen = !cashewWin.optionsOpen }
+          CashewBtn { label: "Close"; onClicked: root.closeCashew() }
+        }
+      }
+
+      // ---- options (collapsed by default)
+      Item {
+        id: cwOptions
+        visible: cashewWin.optionsOpen
+        anchors { top: cwHeader.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors.topMargin: cashewWin.optionsOpen ? Style.space(10) : 0
+        anchors.rightMargin: Style.space(12)
+        height: cashewWin.optionsOpen ? cwOptionsRow.implicitHeight : 0
+
+        Flow {
+          id: cwOptionsRow
+          width: parent.width
+          spacing: Style.space(6)
+          CashewBtn { label: "Oldest first"; active: cashewWin.oldestFirst; onClicked: cashewWin.oldestFirst = !cashewWin.oldestFirst }
+          CashewBtn { label: "Include all"; onClicked: root.cashewSetAll(true) }
+          CashewBtn { label: "Exclude all"; onClicked: root.cashewSetAll(false) }
           CashewBtn {
             label: "Only the current filter"
             active: root.cashewOnlyFilter
@@ -7083,18 +7194,51 @@ Panel {
             enabled: root.cashewGuessedOnly || root.cashewGuessedCount > 0
             onClicked: root.cashewGuessedOnly = !root.cashewGuessedOnly
           }
-          CashewBtn { label: "Oldest first"; active: cashewWin.oldestFirst; onClicked: cashewWin.oldestFirst = !cashewWin.oldestFirst }
-          CashewBtn { label: "Include all"; onClicked: root.cashewSetAll(true) }
-          CashewBtn { label: "Exclude all"; onClicked: root.cashewSetAll(false) }
-          CashewBtn { label: "Close"; onClicked: root.closeCashew() }
+          CashewBtn {
+            label: "Parallel: " + root.cashewGuessWorkers
+            onClicked: root.cashewSetGuessPref({ workers: root.cashewGuessWorkers % 4 + 1 })
+          }
+          CashewBtn {
+            visible: root.cashewGuessedCount > 0
+            label: "Accept guesses  ·  " + root.cashewGuessedCount
+            onClicked: root.cashewAcceptGuesses()
+          }
+          CashewBtn {
+            visible: root.cashewGuessLog.length > 0
+            label: "Results  ·  " + root.cashewGuessCounts.guessed + " guessed / " + root.cashewGuessCounts.sent + " sent"
+            active: cashewWin.resultsOpen
+            onClicked: cashewWin.resultsOpen = !cashewWin.resultsOpen
+          }
+        }
+      }
+
+      // ---- three-step hint above the right pane (visual only)
+      Row {
+        id: cwHint
+        visible: !cashewWin.linksCollapsed
+        anchors { top: cwHeader.bottom; right: parent.right; rightMargin: Style.space(16); topMargin: Style.space(10) }
+        height: cashewWin.linksCollapsed ? 0 : Style.space(18)
+        spacing: Style.space(6)
+        Repeater {
+          model: ["1 Categorise", "›", "2 Copy the links", "›", "3 Mark as tracked"]
+          delegate: Text {
+            required property string modelData
+            required property int index
+            textFormat: Text.PlainText
+            text: modelData
+            color: index === 0 && root.cashewNeedCount === 0 ? root.creditColor : cashewWin.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: index === 0 && root.cashewNeedCount === 0
+          }
         }
       }
 
       // ---- right pane: links
       Rectangle {
         id: cwRight
-        anchors { top: cwHeader.bottom; bottom: parent.bottom; right: parent.right; margins: Style.space(16) }
-        anchors.topMargin: Style.space(10)
+        anchors { top: cwHint.bottom; bottom: parent.bottom; right: parent.right; margins: Style.space(16) }
+        anchors.topMargin: Style.space(8)
         width: cashewWin.linksCollapsed ? Style.space(40) : Math.round((cashewCard.width - Style.space(48)) * 0.4)
         radius: Style.space(10)
         color: Util.alpha(root.foreground, 0.05)
@@ -7420,67 +7564,12 @@ Panel {
         }
       }
 
-      // ---- guess bar: ask the local model for categories, several batches at once
-      Item {
-        id: cwGuessBar
-        anchors { top: cwHeader.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
-        anchors.topMargin: Style.space(10)
-        anchors.rightMargin: Style.space(12)
-        height: cwGuessRow.implicitHeight
-
-        Flow {
-          id: cwGuessRow
-          width: parent.width
-          spacing: Style.space(6)
-          CashewBtn {
-            label: root.cashewGuessing ? "Stop" : "✦ Guess categories" + (root.cashewGuessCount > 0 ? "  ·  " + root.cashewGuessCount : "")
-            primary: !root.cashewGuessing
-            active: root.cashewGuessing
-            enabled: root.cashewGuessing || (root.cashewGuessCount > 0 && !root.cashewLoading)
-            onClicked: root.cashewGuessing ? root.cashewGuessStop() : root.cashewGuessStart()
-          }
-          CashewBtn {
-            label: root.cashewGuessOnlyUncat ? "Only uncategorized" : "All rows"
-            onClicked: root.cashewSetGuessPref({ onlyUncategorized: !root.cashewGuessOnlyUncat })
-          }
-          CashewBtn {
-            label: "Parallel: " + root.cashewGuessWorkers
-            onClicked: root.cashewSetGuessPref({ workers: root.cashewGuessWorkers % 4 + 1 })
-          }
-          CashewBtn {
-            visible: root.cashewGuessedCount > 0
-            label: "Accept guesses  ·  " + root.cashewGuessedCount
-            onClicked: root.cashewAcceptGuesses()
-          }
-          CashewBtn {
-            visible: root.cashewGuessLog.length > 0
-            label: "Results  ·  " + root.cashewGuessCounts.guessed + " guessed / " + root.cashewGuessCounts.sent + " sent"
-            active: cashewWin.resultsOpen
-            onClicked: cashewWin.resultsOpen = !cashewWin.resultsOpen
-          }
-          Text {
-            height: Style.space(28)
-            width: Math.min(implicitWidth, cwGuessRow.width)
-            verticalAlignment: Text.AlignVCenter
-            leftPadding: Style.space(6)
-            elide: Text.ElideRight
-            textFormat: Text.PlainText
-            text: root.cashewGuessError !== "" ? root.cashewGuessError
-              : root.cashewGuessing ? "Guessing " + root.cashewGuessDone + " / " + root.cashewGuessTotal
-              : root.cashewGuessedCount > 0 ? "✦ = guessed by the local model: check it" : ""
-            color: root.cashewGuessError !== "" ? root.debitColor : cashewWin.muted
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-        }
-      }
-
       // ---- guess results: what the model returned for each row sent
       Rectangle {
         id: cwResults
         visible: cashewWin.resultsOpen
         z: 20
-        anchors { top: cwGuessBar.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors { top: cwOptions.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
         anchors.topMargin: Style.space(10)
         anchors.rightMargin: Style.space(12)
         radius: Style.space(12)
@@ -7715,18 +7804,29 @@ Panel {
       // ---- left pane: the drafts
       Item {
         id: cwLeft
-        anchors { top: cwGuessBar.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors { top: cwOptions.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
         anchors.topMargin: Style.space(10)
         anchors.rightMargin: Style.space(12)
 
-        Text {
+        Item {
           id: cwLeftTitle
-          textFormat: Text.PlainText
-          text: "TRANSACTIONS"
-          color: cashewWin.muted
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-          font.bold: true
+          width: parent.width
+          height: Style.space(28)
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: cashewWin.needOnly ? "ROWS WITH NO CATEGORY" : "TRANSACTIONS"
+            color: cashewWin.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+          CashewBtn {
+            visible: root.cashewNeedCount > 0
+            anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+            label: "Categorise next  (N)"
+            onClicked: cashewWin.askStart()
+          }
         }
 
         Text {
@@ -7786,6 +7886,7 @@ Panel {
             readonly property bool isTransfer: crow.d.kind === "transfer"
             readonly property bool paired: crow.isTransfer && crow.partner >= 0
             readonly property bool warn: (crow.d.warn || "") !== "" || crow.d.category === "Uncategorized"
+            readonly property bool needs: Model.cashewNeedsCategory(crow.d)
             readonly property bool isCredit: String(crow.d.amount || "").charAt(0) !== "-"
             readonly property var cat: cashewWin.catMap[crow.d.category] || ({ icon: "❓", color: "#5A2A2E" })
             readonly property color kindColor: crow.isCredit ? root.creditColor : root.debitColor
@@ -7875,12 +7976,21 @@ Panel {
                   anchors { left: cAcct.right; leftMargin: Style.space(6); verticalCenter: cAcct.verticalCenter }
                   maxWidth: Style.space(220)
                   tint: crow.cat.color
-                  text: (crow.d.guessed ? "✦ " : "") + (crow.d.category || "—") + ((crow.d.subcategory || "") !== "" ? "  ›  " + crow.d.subcategory : "")
-                  warn: crow.warn
+                  text: crow.needs ? "Choose category" : (crow.d.guessed ? "✦ " : "") + (crow.d.category || "—") + ((crow.d.subcategory || "") !== "" ? "  ›  " + crow.d.subcategory : "")
+                  selected: crow.needs
+                  warn: crow.warn && !crow.needs
                   onClicked: cashewWin.openPicker("category", crow.idx)
                 }
+                Item {
+                  id: cStar
+                  visible: crow.d.guessed === true
+                  anchors { left: cCat.left; verticalCenter: cCat.verticalCenter }
+                  width: Style.space(22)
+                  height: cCat.height
+                  HoverHandler { id: starHover }
+                }
                 Rectangle {
-                  visible: crow.d.guessed === true && cCat.hovered
+                  visible: crow.d.guessed === true && starHover.hovered
                   z: 5
                   anchors { left: cCat.left; bottom: cCat.top; bottomMargin: Style.space(2) }
                   width: guessTipText.implicitWidth + Style.space(16)
@@ -8164,13 +8274,15 @@ Panel {
     property string label: ""
     property bool primary: false
     property bool active: false
+    property color tint: "transparent"      // a set colour (e.g. green for "All categorised")
     signal clicked()
     readonly property bool _hot: cbMouse.containsMouse || cb.activeFocus
     height: Style.space(28)
     width: cbText.implicitWidth + Style.space(22)
     radius: Style.space(8)
     opacity: !cb.enabled ? 0.4 : (cbMouse.pressed ? 0.7 : 1)
-    color: (cb.primary || cb.active) ? Util.alpha(Color.accent, cb._hot ? 0.28 : 0.20)
+    color: cb.tint.a > 0 ? Util.alpha(cb.tint, cb._hot ? 0.34 : 0.26)
+      : (cb.primary || cb.active) ? Util.alpha(Color.accent, cb._hot ? 0.28 : 0.20)
       : Util.alpha(root.foreground, cb._hot ? 0.13 : 0.06)
     borderSpec: cb.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
     activeFocusOnTab: cb.visible && cb.enabled
@@ -8182,10 +8294,11 @@ Panel {
       anchors.centerIn: parent
       textFormat: Text.PlainText
       text: cb.label
-      color: (cb.primary || cb.active) ? Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75)) : root.foreground
+      color: cb.tint.a > 0 ? cb.tint
+        : (cb.primary || cb.active) ? Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75)) : root.foreground
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
-      font.bold: cb.primary || cb.active
+      font.bold: cb.primary || cb.active || cb.tint.a > 0
     }
     MouseArea {
       id: cbMouse

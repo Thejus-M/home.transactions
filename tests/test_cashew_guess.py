@@ -208,3 +208,11 @@ class Cli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotesInPrompt(unittest.TestCase):
+    def test_every_note_reaches_the_prompt(self):
+        rows = [{"id": str(i), "title": "T", "merchant": "M", "notes": f"remark number {i}", "amount": "-5.00"} for i in range(3)]
+        p = g.build_prompt(rows, [{"name": "Food Out", "type": "expense", "subcategories": []}])
+        for i in range(3):
+            self.assertIn(f'notes: "remark number {i}"', p)

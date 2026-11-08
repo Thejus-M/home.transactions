@@ -104,3 +104,48 @@ class GuessLogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _d(id, **kw):
+    d = {"id": id, "title": "T" + id, "amount": "-10.00", "category": "Uncategorized", "subcategory": "Unknown",
+         "warn": "", "kind": "spend", "notes": "", "touched": False, "guessed": False}
+    d.update(kw)
+    return d
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class GuessScopeTests(unittest.TestCase):
+    def ids(self, drafts):
+        rows = run("cashewGuessRows(input, input.map((d, i) => i))", drafts)
+        return [r["id"] for r in rows]
+
+    def test_only_noted_uncategorised_rows_are_sent(self):
+        drafts = [
+            _d("a", notes="dinner with Ravi"),                       # sent
+            _d("b", notes="   "),                                    # blank note: asked, not sent
+            _d("c", category="Food Out", subcategory="", notes="x"),  # has a category: never sent
+            _d("d", category="Food Out", notes="x", warn="no category"),  # warn: sent
+            _d("e", notes="x", kind="transfer"),
+            _d("f", notes="x", touched=True),
+            _d("g", notes="x", guessed=True, category="Food Out"),
+            _d("h", category="Friend Settlement", subcategory="Friend", notes="rent"),
+        ]
+        self.assertEqual(self.ids(drafts), ["a", "d"])
+
+    def test_note_is_trimmed_in_the_row(self):
+        rows = run("cashewGuessRows(input, [0])", [_d("a", notes="  hi  ")])
+        self.assertEqual(rows[0]["notes"], "hi")
+
+    def test_need_category_and_next(self):
+        drafts = [_d("a"), _d("b", category="Food Out", warn=""), _d("c", kind="transfer"), _d("d", warn="x")]
+        self.assertEqual(run("cashewNeedIdxs(input, [0,1,2,3])", drafts), [0, 3])
+        order = [{"idx": i, "partner": -1} for i in range(4)]
+        nxt = lambda frm: run("cashewNextNeed(input.d, input.o, %d)" % frm, {"d": drafts, "o": order})
+        self.assertEqual(nxt(-1), 0)
+        self.assertEqual(nxt(0), 3)
+        self.assertEqual(nxt(3), 0)   # wraps
+        self.assertEqual(run("cashewNextNeed(input.d, input.o, 0)", {"d": [_d("a", category="Food Out")], "o": order[:1]}), -1)
+
+    def test_closed_account_rows_are_not_shown(self):
+        drafts = [_d("a"), _d("b")]
+        self.assertEqual(run("cashewShownIndexes(input, false, null, {b: true})", drafts), [0])
