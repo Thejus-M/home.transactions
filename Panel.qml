@@ -326,10 +326,12 @@ Panel {
   property bool cashewStateLoaded: false
   property bool cashewOnlyFilter: false
   property var cashewLinks: []
+  property var cashewTransfers: []    // paired transfers: one addTransferRoute page each
   property var cashewWarnings: []
   property string cashewLinksError: ""
   // Same set the Python side drafts: untracked and settled.
   readonly property int cashewCount: transactions.filter(function (t) { return !t.tracked && t.status === "settled" }).length
+  readonly property string cashewBase: root.cashewState.base === "web" ? "web" : "app"
   readonly property int cashewIncludedCount: Model.cashewIncluded(root.cashewDrafts, root.cashewShown).length
   readonly property var cashewFilterIds: {
     var set = ({})
@@ -347,6 +349,7 @@ Panel {
     root.cashewDrafts = []
     root.cashewShown = []
     root.cashewLinks = []
+    root.cashewTransfers = []
     root.cashewWarnings = []
     root.cashewLinksError = ""
     if (!cashewDraftProc.running) cashewDraftProc.running = true
@@ -439,9 +442,10 @@ Panel {
     cashewLinksTimer.stop()
     if (!root.cashewOpen) return
     try {
-      var out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories)
+      var out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, root.cashewBase)
       root.cashewLinksError = ""
       root.cashewLinks = out.links
+      root.cashewTransfers = out.transfers
       root.cashewWarnings = out.warnings
     } catch (e) {
       root.cashewLinksError = "Could not build the links: " + e
@@ -6694,6 +6698,19 @@ Panel {
           font.bold: true
         }
 
+        CashewBtn {
+          id: cwBaseBtn
+          visible: !cashewWin.linksCollapsed
+          anchors { top: parent.top; right: cwChevron.left; topMargin: Style.space(6); rightMargin: Style.space(6) }
+          label: root.cashewBase === "web" ? "Cashew: Web app" : "Cashew: App"
+          active: root.cashewBase === "web"
+          onClicked: {
+            var next = Object.assign({}, root.cashewState, { base: root.cashewBase === "web" ? "app" : "web" })
+            root.cashewSetState(next)
+            root.cashewRebuildLinks()
+          }
+        }
+
         Flickable {
           id: cwLinksFlick
           visible: !cashewWin.linksCollapsed
@@ -6859,6 +6876,86 @@ Panel {
                 }
               }
             }
+
+            // Paired transfers: one Cashew transfer page each; Cashew cannot save them from a link.
+            Column {
+              visible: root.cashewTransfers.length > 0
+              width: parent.width
+              spacing: Style.space(8)
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: "Transfers · " + root.cashewTransfers.length
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+                text: "Cashew opens each transfer page; tap Save once per transfer."
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+              Repeater {
+                model: root.cashewTransfers
+                delegate: Rectangle {
+                  id: tf
+                  required property var modelData
+                  property bool copied: false
+                  width: cwLinksCol.width
+                  height: tfCol.implicitHeight + Style.space(20)
+                  radius: Style.space(8)
+                  color: Util.alpha(root.foreground, 0.06)
+                  Timer { id: tfCopiedTimer; interval: 1500; onTriggered: tf.copied = false }
+
+                  Column {
+                    id: tfCol
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(10) }
+                    spacing: Style.space(6)
+                    Text {
+                      width: parent.width
+                      elide: Text.ElideRight
+                      textFormat: Text.PlainText
+                      text: tf.modelData.title
+                      color: root.foreground
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                    }
+                    Text {
+                      width: parent.width
+                      elide: Text.ElideRight
+                      textFormat: Text.PlainText
+                      text: Model.cashewTransferLine(tf.modelData)
+                      color: cashewWin.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                    }
+                    Row {
+                      spacing: Style.space(6)
+                      CashewBtn {
+                        label: tf.copied ? "Copied" : "Copy"
+                        primary: true
+                        onClicked: {
+                          var url = tf.modelData.url
+                          Quickshell.execDetached(["wl-copy", url])
+                          tf.copied = true
+                          tfCopiedTimer.restart()
+                        }
+                      }
+                      CashewBtn {
+                        label: "Open"
+                        onClicked: Quickshell.execDetached(["xdg-open", tf.modelData.url])
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
           ScrollWheelArea { anchors.fill: parent; target: cwLinksFlick }
         }
@@ -6868,7 +6965,7 @@ Panel {
           id: cwMarkRow
           visible: !cashewWin.linksCollapsed
           anchors { left: parent.left; right: parent.right; bottom: parent.bottom; margins: Style.space(12) }
-          height: Style.space(30)
+          height: cashewWin.confirmMark ? cwConfirmCol.implicitHeight : Style.space(30)
           Timer { id: cwConfirmTimer; interval: 8000; running: cashewWin.confirmMark; onTriggered: cashewWin.confirmMark = false }
 
           CashewBtn {
@@ -6878,21 +6975,26 @@ Panel {
             enabled: root.cashewIncludedCount > 0
             onClicked: cashewWin.confirmMark = true
           }
-          Row {
+          Column {
+            id: cwConfirmCol
             visible: cashewWin.confirmMark
-            spacing: Style.space(8)
-            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width
+            spacing: Style.space(6)
             Text {
-              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width
+              wrapMode: Text.Wrap
               textFormat: Text.PlainText
-              text: "Mark " + root.cashewIncludedCount + " as tracked?"
+              text: Model.cashewMarkQuestion(root.cashewIncludedCount, root.cashewTransfers.length)
               color: root.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
               font.bold: true
             }
-            CashewBtn { label: "Yes"; primary: true; onClicked: cashewWin.markTracked() }
-            CashewBtn { label: "No"; onClicked: cashewWin.confirmMark = false }
+            Row {
+              spacing: Style.space(8)
+              CashewBtn { label: "Yes"; primary: true; onClicked: cashewWin.markTracked() }
+              CashewBtn { label: "No"; onClicked: cashewWin.confirmMark = false }
+            }
           }
         }
       }

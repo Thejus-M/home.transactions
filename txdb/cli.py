@@ -41,10 +41,11 @@
   txdb portfolio-ingest <file.json>      load a saved snapshot payload (offline / debug)
   txdb cashew-draft [--state PATH]       JSON: Cashew categories, account names, one editable draft per
                                          untracked settled transaction, and the saved state (read only)
-  txdb cashew-links [FILE|-]             read {"drafts":[...],"maxChars":n} from FILE or stdin, print
-                                         {"links":[{url,count,chars,ids,json}],"warnings":[...]}
-  txdb cashew-links --untracked [--state PATH]   one Cashew link per line on stdout for every untracked
-                                         transaction, a summary on stderr (read only)
+  txdb cashew-links [FILE|-]             read {"drafts":[...],"maxChars":n,"base":"app"|"web"} from FILE or
+                                         stdin, print {"links":[...],"transfers":[{url,pairId,title,date,amount,
+                                         accountFrom,accountTo,ids}],"warnings":[...]}
+  txdb cashew-links --untracked [--state PATH]   bulk links, then "# transfer pages" and one transfer link per
+                                         line, on stdout; a summary on stderr (read only)
 
 Arguments come as separate argv entries (no shell), so names and ids need
 no quoting."""
@@ -105,7 +106,8 @@ def _cashew(cmd: str, args: list[str]) -> int:
     if cmd == "cashew-links" and "--untracked" not in args:
         src = args[0] if args else "-"
         payload = json.loads(sys.stdin.read() if src == "-" else Path(src).read_text(encoding="utf-8"))
-        out(cashew.build_links(payload.get("drafts") or [], int(payload.get("maxChars") or cashew.DEFAULT_MAX_CHARS)))
+        out(cashew.build_links(payload.get("drafts") or [], int(payload.get("maxChars") or cashew.DEFAULT_MAX_CHARS),
+                               payload.get("base") or "app"))
         return 0
     if not Path(DB_PATH).exists():
         print(f"No database at {DB_PATH}", file=sys.stderr)
@@ -117,11 +119,16 @@ def _cashew(cmd: str, args: list[str]) -> int:
         out({"categories": cashew.load_categories(), "accountNames": cashew.account_names(state),
              "drafts": items, "state": state})
         return 0
-    result = cashew.build_links(items)
+    result = cashew.build_links(items, base=state.get("base") or "app")
     for link in result["links"]:
         print(link["url"])
+    if result["transfers"]:
+        print("# transfer pages (tap Save in Cashew for each):")
+        for t in result["transfers"]:
+            print(t["url"])
     need = sum(1 for d in items if d["category"] == cashew.UNCATEGORIZED[0])
-    print(f"{len(items)} transactions in {len(result['links'])} links; {need} need a category", file=sys.stderr)
+    print(f"{len(items)} transactions in {len(result['links'])} links and {len(result['transfers'])} transfer pages; "
+          f"{need} need a category", file=sys.stderr)
     return 0
 
 

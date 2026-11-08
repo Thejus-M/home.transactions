@@ -103,14 +103,59 @@ class LinkTests(unittest.TestCase):
             dates = [t["date"] for t in decode(l["url"])["transactions"]]
             self.assertEqual(dates, sorted(dates))
 
-    def test_pair_stays_together(self):
+    def test_pair_leaves_the_bulk_links(self):
         ds = [draft(i, date="2026-10-01") for i in range(6)]
         ds += [draft(10, pairId="p", kind="transfer", amount="-5.00"),
                draft(11, pairId="p", kind="transfer", amount="5.00")]
         for limit in range(500, 1500, 37):
             res = cashew.build_links(ds, max_chars=limit)
-            homes = [i for i, l in enumerate(res["links"]) if "d10" in l["ids"] or "d11" in l["ids"]]
-            self.assertEqual(len(set(homes)), 1, limit)
+            self.assertFalse([l for l in res["links"] if "d10" in l["ids"] or "d11" in l["ids"]], limit)
+            self.assertEqual(sum(l["count"] for l in res["links"]), 6)
+            self.assertEqual([t["ids"] for t in res["transfers"]], [["d10", "d11"]])
+
+    def test_every_bulk_entry_has_a_fallback_category(self):
+        res = cashew.build_links([draft(1), draft(2, category="Uncategorized", subcategory="", account="")])
+        for e in decode(res["links"][0]["url"])["transactions"]:
+            self.assertEqual(e["fallbackCategory"], "Uncategorized")
+
+    def test_transfer_link(self):
+        out = draft(1, pairId="p", kind="transfer", amount="-1.00", account="HDFC", title="Transfer to SBI 100%",
+                    date="2026-11-07", category="Balance Correction")
+        inn = draft(2, pairId="p", kind="transfer", amount="1.50", account="SBI \u20b9", title="Transfer from HDFC",
+                    date="2026-11-08", category="Balance Correction")
+        res = cashew.build_links([inn, out])
+        self.assertEqual(res["links"], [])
+        self.assertEqual(res["warnings"], [])
+        t = res["transfers"][0]
+        self.assertEqual((t["pairId"], t["title"], t["date"], t["amount"], t["accountFrom"], t["accountTo"], t["ids"]),
+                         ("p", "Transfer to SBI 100%", "2026-11-07", "1.00", "HDFC", "SBI \u20b9", ["d1", "d2"]))
+        self.assertTrue(t["url"].startswith("https://cashewapp.web.app/addTransferRoute?"))
+        q = t["url"].split("?", 1)[1]
+        self.assertEqual(q, "amountFrom=1.00&amountTo=1.50&accountFrom=HDFC&accountTo=SBI%20%E2%82%B9"
+                            "&title=Transfer%20to%20SBI%20100%2525&date=2026-11-07")
+        self.assertEqual(cashew.build_links([inn, out], base="web")["transfers"][0]["url"][:48],
+                         "https://budget-track.web.app/addTransferRoute?am")
+
+    def test_base_option(self):
+        web = cashew.build_links([draft(1)], base="web")
+        self.assertTrue(web["links"][0]["url"].startswith("https://budget-track.web.app/addTransaction?JSON="))
+        self.assertTrue(cashew.build_links([draft(1)], base="app")["links"][0]["url"].startswith(BASE))
+        self.assertTrue(cashew.build_links([draft(1)], base="junk")["links"][0]["url"].startswith(BASE))
+
+    def test_pair_with_one_leg_included_is_a_lone_leg(self):
+        ds = [draft(10, pairId="p", kind="transfer", amount="-5.00", category="Balance Correction"),
+              draft(11, pairId="p", kind="transfer", amount="5.00", include=False, category="Balance Correction")]
+        res = cashew.build_links(ds)
+        self.assertEqual(res["transfers"], [])
+        self.assertEqual(res["links"][0]["ids"], ["d10"])
+        self.assertTrue(any("without partner" in w for w in res["warnings"]))
+
+    def test_pair_with_two_debits_is_not_a_transfer_page(self):
+        ds = [draft(10, pairId="p", kind="transfer", amount="-5.00"), draft(11, pairId="p", kind="transfer",
+                                                                            amount="-5.00")]
+        res = cashew.build_links(ds)
+        self.assertEqual(res["transfers"], [])
+        self.assertEqual(res["links"][0]["count"], 2)
 
     def test_oversize_single_warns(self):
         res = cashew.build_links([draft(1)], max_chars=50)
@@ -196,15 +241,18 @@ class DraftTests(Base):
         self.assertEqual((out["title"], inn["title"]), ("Transfer to HDFC", "Transfer from SBI"))
         self.assertTrue(out["pairId"] and out["pairId"] == inn["pairId"])
         res = cashew.build_links(list(ds.values()), max_chars=800)
-        homes = {i for i, l in enumerate(res["links"]) for x in l["ids"] if x in ("t-1", "t-2")}
-        self.assertEqual(len(homes), 1)
+        self.assertEqual(res["links"], [])
+        self.assertEqual([t["ids"] for t in res["transfers"]], [["t-1", "t-2"]])
+        self.assertEqual((res["transfers"][0]["accountFrom"], res["transfers"][0]["accountTo"]), ("SBI", "HDFC"))
         self.assertEqual(res["warnings"], [])
         # a tracked partner leaves a lone leg that is still a transfer but warns
         self.conn.execute("INSERT INTO tracked VALUES ('t-2', 'now')")
         lone = self.drafts()
         self.assertEqual([d["id"] for d in lone], ["t-1"])
         self.assertEqual(lone[0]["kind"], "transfer")
-        self.assertTrue(any("without partner" in w for w in cashew.build_links(lone)["warnings"]))
+        lone_res = cashew.build_links(lone)
+        self.assertTrue(any("without partner" in w for w in lone_res["warnings"]))
+        self.assertEqual((lone_res["transfers"], lone_res["links"][0]["ids"]), ([], ["t-1"]))
 
     def test_one_sided_own_name_leg(self):
         # the pair teaches the own name; a second row with that name and no partner is one-sided
@@ -248,13 +296,30 @@ class CliTests(Base):
     def test_links_stdin_and_file(self):
         payload = json.dumps({"drafts": [draft(i) for i in range(5)], "maxChars": 700}, ensure_ascii=False)
         res = json.loads(self.cli("cashew-links", "-", stdin=payload).stdout)
-        self.assertEqual(set(res), {"links", "warnings"})
+        self.assertEqual(set(res), {"links", "transfers", "warnings"})
         self.assertGreater(len(res["links"]), 1)
         self.assertEqual(sum(l["count"] for l in res["links"]), 5)
         f = Path(self.dir.name) / "d.json"
         f.write_text(payload, encoding="utf-8")
         self.assertEqual(json.loads(self.cli("cashew-links", str(f)).stdout), res)
         self.assertEqual(set(res["links"][0]), {"url", "count", "chars", "ids", "json"})
+        web = json.loads(self.cli("cashew-links", "-", stdin=json.dumps({"drafts": [draft(1)], "base": "web"})).stdout)
+        self.assertTrue(web["links"][0]["url"].startswith("https://budget-track.web.app/addTransaction?JSON="))
+
+    def test_untracked_prints_transfer_pages_after_bulk(self):
+        self.add(self.sbi, row(1, "2026-10-02", -500.0, SBI_OUT))
+        self.add(self.hdfc, row(2, "2026-10-02", 500.0, HDFC_IN), row(3, "2026-10-03", -10.0, "Tea shop"))
+        p = self.cli("cashew-links", "--untracked")
+        lines = p.stdout.splitlines()
+        i = lines.index("# transfer pages (tap Save in Cashew for each):")
+        self.assertTrue(all(l.startswith(BASE) for l in lines[:i]))
+        self.assertEqual(len(lines) - i - 1, 1)
+        self.assertTrue(lines[i + 1].startswith("https://cashewapp.web.app/addTransferRoute?amountFrom=500.00&"))
+        self.assertIn("1 transfer pages", p.stderr)
+        self.state_path.write_text(json.dumps({"version": 1, "categories": {}, "accounts": {}, "base": "web"}))
+        lines = self.cli("cashew-links", "--untracked").stdout.splitlines()
+        self.assertTrue(lines[0].startswith("https://budget-track.web.app/addTransaction?JSON="))
+        self.assertTrue(lines[-1].startswith("https://budget-track.web.app/addTransferRoute?"))
 
     def test_untracked_lines(self):
         self.add(self.hdfc, *[row(i, "2026-10-02", -10.0 - i, f"Shop {i}" + "y" * 80) for i in range(60)])
@@ -262,7 +327,7 @@ class CliTests(Base):
         lines = p.stdout.splitlines()
         self.assertGreater(len(lines), 1)
         self.assertTrue(all(l.startswith(BASE) for l in lines))
-        self.assertIn(f"60 transactions in {len(lines)} links; 60 need a category", p.stderr)
+        self.assertIn(f"60 transactions in {len(lines)} links and 0 transfer pages; 60 need a category", p.stderr)
 
     def test_read_only(self):
         self.add(self.hdfc, row(1, "2026-10-02", -10.0))

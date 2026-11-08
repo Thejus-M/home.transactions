@@ -3,8 +3,10 @@
 Cashew (cashewapp.web.app) saves a transaction straight from a link:
   https://cashewapp.web.app/addTransaction?JSON=<url-encoded {"transactions":[...]}>
 Cashew decodes every value twice, so a literal "%" is written "%25" inside the
-JSON text before the one URL-encoding (see `escape_percent`). A transfer has no
-parameter of its own: it is two "Balance Correction" entries, one per account.
+JSON text before the one URL-encoding (see `escape_percent`). The bulk link has
+no transfer: a lone transfer leg is a "Balance Correction" entry. A paired
+transfer (both legs) gets its own `addTransferRoute` link instead: one real
+transfer per link, opened prefilled in Cashew, saved by a tap (no bulk form).
 
 `drafts()` is the editable list the widget shows; `build_links()` turns the
 (possibly edited) drafts into links. Pure functions over plain data, plus a
@@ -21,7 +23,10 @@ from pathlib import Path
 
 from . import keys, transfers
 
-BASE_URL = "https://cashewapp.web.app/addTransaction?JSON="
+APP_BASE = "https://cashewapp.web.app/"            # the Android / iOS app
+WEB_BASE = "https://budget-track.web.app/"          # the Cashew web app
+BASE_URL = APP_BASE + "addTransaction?JSON="
+FALLBACK_CATEGORY = "Uncategorized"
 HERE = Path(__file__).resolve().parent
 TITLE_MAX = 250
 NOTES_MAX = 500
@@ -365,30 +370,69 @@ def _entry(d: dict, warnings: list[str], types: dict[str, str]) -> dict:
         e["subcategory"] = escape_percent(sub)
     if acct:
         e["account"] = escape_percent(acct)
+    e["fallbackCategory"] = FALLBACK_CATEGORY      # never the forced "Select Category" prompt
     return e
 
 
-def _url(entries: list[dict]) -> tuple[str, str]:
+def normalize_base(base) -> str:
+    """"web" -> the Cashew web app, anything else -> the app."""
+    return WEB_BASE if base == "web" else APP_BASE
+
+
+def _url(entries: list[dict], base: str = APP_BASE) -> tuple[str, str]:
     text = json.dumps({"transactions": entries}, ensure_ascii=False, separators=(",", ":"))
-    return BASE_URL + urllib.parse.quote(text, safe=""), text
+    return base + "addTransaction?JSON=" + urllib.parse.quote(text, safe=""), text
 
 
-def build_links(draft_list: list[dict], max_chars: int = DEFAULT_MAX_CHARS) -> dict:
-    """{"links": [{url, count, chars, ids, json}], "warnings": [..]}."""
-    types, warnings = _types(), []
-    inc = [d for d in draft_list if d.get("include", True)]
-    inc.sort(key=lambda d: (str(d.get("date") or ""), str(d.get("id") or "")))
-    entries = {id(d): _entry(d, warnings, types) for d in inc}
-    present_pairs: dict[str, int] = {}
+def _abs_amount(amount) -> str:
+    return str(amount or "").lstrip("+-")
+
+
+def _pair_legs(inc: list[dict]) -> dict[str, tuple[dict, dict]]:
+    """pairId -> (out leg, in leg) for each pair with exactly one debit and one credit included."""
+    groups: dict[str, list[dict]] = {}
     for d in inc:
         if d.get("pairId"):
-            present_pairs[d["pairId"]] = present_pairs.get(d["pairId"], 0) + 1
+            groups.setdefault(d["pairId"], []).append(d)
+    out = {}
+    for pid, legs in groups.items():
+        outs = [d for d in legs if str(d.get("amount") or "").startswith("-")]
+        ins = [d for d in legs if not str(d.get("amount") or "").startswith("-")]
+        if len(legs) == 2 and len(outs) == 1 and len(ins) == 1:
+            out[pid] = (outs[0], ins[0])
+    return out
+
+
+def _transfer(out_leg: dict, in_leg: dict, base: str) -> dict:
+    title, date = str(out_leg.get("title") or ""), str(out_leg.get("date") or "")
+    a_from, a_to = str(out_leg.get("account") or ""), str(in_leg.get("account") or "")
+    parts = [("amountFrom", _abs_amount(out_leg.get("amount"))), ("amountTo", _abs_amount(in_leg.get("amount"))),
+             ("accountFrom", a_from), ("accountTo", a_to), ("title", title), ("date", date)]
+    query = "&".join(f"{k}={urllib.parse.quote(escape_percent(v), safe='')}" for k, v in parts if v)
+    return {"url": base + "addTransferRoute?" + query, "pairId": out_leg["pairId"], "title": title, "date": date,
+            "amount": _abs_amount(out_leg.get("amount")), "accountFrom": a_from, "accountTo": a_to,
+            "ids": [out_leg.get("id"), in_leg.get("id")]}
+
+
+def build_links(draft_list: list[dict], max_chars: int = DEFAULT_MAX_CHARS, base: str = "app") -> dict:
+    """{"links": [{url, count, chars, ids, json}], "transfers": [{url, pairId, title, date, amount,
+    accountFrom, accountTo, ids}], "warnings": [..]}. `base` is "app" or "web"."""
+    types, warnings = _types(), []
+    root = normalize_base(base)
+    inc = [d for d in draft_list if d.get("include", True)]
+    inc.sort(key=lambda d: (str(d.get("date") or ""), str(d.get("id") or "")))
+    paired = _pair_legs(inc)
+    leg_ids = {id(x) for pair in paired.values() for x in pair}
+    bulk = [d for d in inc if id(d) not in leg_ids]
+    entries = {id(d): _entry(d, warnings, types) for d in bulk}
     for d in inc:
-        if d.get("kind") == "transfer" and (not d.get("pairId") or present_pairs.get(d["pairId"], 0) < 2):
+        if d.get("kind") == "transfer" and id(d) not in leg_ids:
             warnings.append(f"transfer leg without partner: {d.get('title')} ({d.get('date')})")
+    transfer_list = [_transfer(o, i, root) for o, i in sorted(
+        paired.values(), key=lambda p: (str(p[0].get("date") or ""), str(p[0].get("id") or "")))]
     units: list[list[dict]] = []
     by_pair: dict[str, list[dict]] = {}
-    for d in inc:
+    for d in bulk:
         pid = d.get("pairId")
         if pid:
             if pid not in by_pair:
@@ -401,7 +445,7 @@ def build_links(draft_list: list[dict], max_chars: int = DEFAULT_MAX_CHARS) -> d
     cur: list[dict] = []
     for unit in units:
         trial = cur + unit
-        if cur and len(_url([entries[id(d)] for d in trial])[0]) > max_chars:
+        if cur and len(_url([entries[id(d)] for d in trial], root)[0]) > max_chars:
             batches.append(cur)
             cur = list(unit)
         else:
@@ -411,8 +455,8 @@ def build_links(draft_list: list[dict], max_chars: int = DEFAULT_MAX_CHARS) -> d
     links = []
     for b in batches:
         b.sort(key=lambda d: (str(d.get("date") or ""), str(d.get("id") or "")))
-        url, text = _url([entries[id(d)] for d in b])
+        url, text = _url([entries[id(d)] for d in b], root)
         if len(url) > max_chars:
             warnings.append(f"one link is {len(url)} characters, over the {max_chars} limit: {b[0].get('title')}")
         links.append({"url": url, "count": len(b), "chars": len(url), "ids": [d.get("id") for d in b], "json": text})
-    return {"links": links, "warnings": warnings}
+    return {"links": links, "transfers": transfer_list, "warnings": warnings}

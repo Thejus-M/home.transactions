@@ -137,6 +137,26 @@ class CashewJs(unittest.TestCase):
         both = self.js("cashewPatchMany(input.d, [0, 2], {title: 'X'})", d=ds)
         self.assertEqual([both[0]["title"], both[2]["title"], both[1]["title"]], ["X", "X", "T"])
 
+    def test_transfer_links_and_labels(self):
+        ds = [draft("o", amount="-1.00", kind="transfer", pairId="p", account="HDFC", title="Transfer to SBI",
+                    date="2026-11-07", category="Balance Correction"),
+              draft("i", amount="1.00", kind="transfer", pairId="p", account="SBI", date="2026-11-07",
+                    category="Balance Correction"),
+              draft("x", category="Food Out")]
+        res = self.js("cashewBuildLinks(input.d, [0, 1, 2], 6000, input.c, 'web')", d=ds, c=CATS)
+        self.assertEqual(res["links"][0]["ids"], ["x"])
+        t = res["transfers"][0]
+        self.assertEqual(t["url"], "https://budget-track.web.app/addTransferRoute?amountFrom=1.00&amountTo=1.00"
+                                   "&accountFrom=HDFC&accountTo=SBI&title=Transfer%20to%20SBI&date=2026-11-07")
+        self.assertEqual(self.js("cashewTransferLine(input.t)", t=t), "HDFC → SBI ₹1.00 · 2026-11-07")
+        # leg "i" not shown: "o" becomes a lone leg with a warning
+        one = self.js("cashewBuildLinks(input.d, [0, 2], 6000, input.c)", d=ds, c=CATS)
+        self.assertEqual((one["transfers"], one["links"][0]["ids"]), ([], ["x", "o"]))
+        self.assertTrue(one["warnings"][0].startswith("transfer leg without partner"))
+        self.assertEqual(self.js("cashewMarkQuestion(81, 8)"), "Mark 81 as tracked (8 transfers need a tap on Save in Cashew)?")
+        self.assertEqual(self.js("cashewMarkQuestion(3, 1)"), "Mark 3 as tracked (1 transfer needs a tap on Save in Cashew)?")
+        self.assertEqual(self.js("cashewMarkQuestion(3, 0)"), "Mark 3 as tracked?")
+
     def test_category_map(self):
         out = self.js("cashewCategoryMap(input.c)", c=[{"name": "A", "icon": "x", "color": "#111111"}, {"name": "B"}])
         self.assertEqual(out["A"], {"icon": "x", "color": "#111111"})

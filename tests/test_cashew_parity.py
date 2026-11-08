@@ -22,7 +22,7 @@ const ctx = {}; vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), ctx);
 const i = JSON.parse(fs.readFileSync(0, "utf8"));
 ctx.i = i;
-console.log(JSON.stringify(vm.runInContext("cashewBuildLinks(i.drafts, i.shown, i.max, i.cats)", ctx)));
+console.log(JSON.stringify(vm.runInContext("cashewBuildLinks(i.drafts, i.shown, i.max, i.cats, i.base)", ctx)));
 """
 
 
@@ -36,11 +36,11 @@ def d(i, **kw):
 
 @unittest.skipUnless(NODE, "node is not installed")
 class Parity(unittest.TestCase):
-    def both(self, drafts, max_chars=6000):
+    def both(self, drafts, max_chars=6000, base="app"):
         cats = cashew.load_categories()
-        py = cashew.build_links(drafts, max_chars)
+        py = cashew.build_links(drafts, max_chars, base)
         out = subprocess.run([NODE, "-e", SCRIPT, str(ROOT / "Model.js")],
-                             input=json.dumps({"drafts": drafts, "shown": None, "max": max_chars, "cats": cats}),
+                             input=json.dumps({"drafts": drafts, "shown": None, "max": max_chars, "cats": cats, "base": base}),
                              capture_output=True, text=True, check=True).stdout
         js = json.loads(out)
         self.assertEqual(len(js["links"]), len(py["links"]))
@@ -48,6 +48,7 @@ class Parity(unittest.TestCase):
             for k in ("url", "count", "chars", "ids", "json"):
                 self.assertEqual(a[k], b[k], k)
         self.assertEqual(js["warnings"], py["warnings"])
+        self.assertEqual(js["transfers"], py["transfers"])
         return py
 
     def test_special_characters_and_exclusion(self):
@@ -72,16 +73,49 @@ class Parity(unittest.TestCase):
         py = self.both(drafts)
         self.assertTrue(py["warnings"])
 
+    def test_transfer_pages_and_bases(self):
+        def leg(i, out, **kw):
+            kw.setdefault("amount", "-1.00" if out else "1.00")
+            return d(i, kind="transfer", category="Balance Correction", subcategory="", **kw)
+        drafts = [
+            leg(1, True, pairId="p1", title="Transfer to SBI", account="HDFC", date="2026-11-07"),
+            leg(2, False, pairId="p1", title="Transfer from HDFC", account="SBI", date="2026-11-07"),
+            leg(3, True, pairId="p2", title="50% & more ₹ \U0001F333 (x)*!'", account="HDFC \u20b9", amount="-12.50"),
+            leg(4, False, pairId="p2", account="SBI \U0001F333", amount="12.00", date="2026-10-02"),
+            leg(5, True, pairId="p3", title="half pair", account="Axis"),
+            leg(6, False, pairId="p3", include=False),                   # one leg excluded: lone leg
+            leg(7, True, pairId="", title="lone"),
+            leg(8, True, pairId="p4", account=""), leg(9, False, pairId="p4", account=""),   # no account names
+            d(20), d(21, title="100%"),
+        ]
+        for base in ("app", "web", "bogus"):
+            py = self.both(drafts, base=base)
+            self.assertEqual(len(py["transfers"]), 3)
+            root = "https://budget-track.web.app/" if base == "web" else "https://cashewapp.web.app/"
+            self.assertTrue(all(t["url"].startswith(root + "addTransferRoute?") for t in py["transfers"]))
+            self.assertTrue(all(l["url"].startswith(root + "addTransaction?JSON=") for l in py["links"]))
+        self.both(drafts, 700, "web")
+        self.both(drafts, 50)
+
+    def test_pairs_with_odd_signs_and_three_legs(self):
+        def leg(i, amount, pid):
+            return d(i, kind="transfer", category="Balance Correction", pairId=pid, amount=amount)
+        self.both([leg(1, "-5.00", "a"), leg(2, "-5.00", "a"), leg(3, "5.00", "b"), leg(4, "5.00", "b"),
+                   leg(5, "-1.00", "c"), leg(6, "1.00", "c"), leg(7, "1.00", "c")])
+
     def test_chunking_keeps_pairs_together(self):
         drafts = [d(i, date=f"2026-10-{(i % 9) + 1:02d}") for i in range(30)]
         drafts += [d(100, kind="transfer", pairId="pp", category="Balance Correction", title="A"),
                    d(101, kind="transfer", pairId="pp", category="Balance Correction", title="B", amount="10.00")]
+        drafts += [d(200, pairId="q", title="C"), d(201, pairId="q", title="D")]        # a bulk "pair": two debits
         for mx in (300, 800, 1500, 2500, 6000, 50):
-            py = self.both(drafts, mx)
+            for base in ("app", "web"):
+                self.both(drafts, mx, base)
         small = cashew.build_links(drafts, 800)
         self.assertGreater(len(small["links"]), 3)
+        self.assertEqual(len(small["transfers"]), 1)
         for lk in small["links"]:
-            self.assertEqual(("d0100" in lk["ids"]), ("d0101" in lk["ids"]))
+            self.assertEqual(("d0200" in lk["ids"]), ("d0201" in lk["ids"]))
 
     def test_shown_filter_equals_exclusion(self):
         drafts = [d(i) for i in range(6)]
@@ -89,7 +123,7 @@ class Parity(unittest.TestCase):
         shown = [1, 3, 4]
         expect = cashew.build_links([x if i in shown else {**x, "include": False} for i, x in enumerate(drafts)])
         out = subprocess.run([NODE, "-e", SCRIPT, str(ROOT / "Model.js")],
-                             input=json.dumps({"drafts": drafts, "shown": shown, "max": 6000, "cats": cats}),
+                             input=json.dumps({"drafts": drafts, "shown": shown, "max": 6000, "cats": cats, "base": "app"}),
                              capture_output=True, text=True, check=True).stdout
         self.assertEqual(json.loads(out)["links"][0]["url"], expect["links"][0]["url"])
 
