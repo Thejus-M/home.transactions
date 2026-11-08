@@ -424,6 +424,76 @@ class CliTests(Base):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM tracked").fetchone()[0], 40)
 
 
+class ClosedAccountTests(Base):
+    def cli(self, *args, check=True):
+        env = {**os.environ, "TXDB_DB": str(self.path)}
+        return subprocess.run([sys.executable, str(ROOT / "bin/txdb"), *args], env=env,
+                              capture_output=True, text=True, check=check)
+
+    def setUp(self):
+        super().setUp()
+        self.old = ingest.ensure_account(self.conn, "ICICI", "credit", "2004", "RuPay")
+        self.new = ingest.ensure_account(self.conn, "ICICI", "credit", "4002")
+        ingest.upsert_rows(self.conn, self.old, [row(1, "2026-09-01", -10.0, "OLD SHOP")])
+        ingest.upsert_rows(self.conn, self.new, [row(2, "2026-10-01", -20.0, "NEW SHOP")])
+        for aid in (self.old, self.new):
+            ingest.set_balance(self.conn, aid, -5.0)
+            ingest.set_card_cycle(self.conn, aid, {"name": "Coral", "total_outstanding": "\u20b95"})
+
+    def test_v21_migration_on_a_v20_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.db"
+            with unittest.mock.patch.object(db, "MIGRATIONS", db.MIGRATIONS[:20]):
+                conn = db.connect(path)
+                ingest.ensure_account(conn, "ICICI", "credit", "2004")
+                conn.close()
+            conn = db.connect(path)
+            self.addCleanup(conn.close)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 21)
+            self.assertIsNone(conn.execute("SELECT closed_at FROM accounts").fetchone()[0])
+            self.assertTrue(list((Path(tmp) / "backups").glob("pre-v21-*.db")))
+            db.connect(path).close()  # a second open is a no-op
+
+    def test_account_close_and_reopen(self):
+        out = json.loads(self.cli("account-close", self.old).stdout)
+        self.assertEqual(out["id"], self.old)
+        self.assertTrue(out["closedAt"])
+        self.assertEqual(self.conn.execute("SELECT closed_at FROM accounts WHERE id = ?", (self.old,)).fetchone()[0],
+                         out["closedAt"])
+        marker = self.path.parent / ".changed"
+        before = marker.read_text()
+        out = json.loads(self.cli("account-close", self.old, "--reopen").stdout)
+        self.assertIsNone(out["closedAt"])
+        self.assertIsNone(self.conn.execute("SELECT closed_at FROM accounts WHERE id = ?", (self.old,)).fetchone()[0])
+        self.assertNotEqual(before, marker.read_text())
+
+    def test_account_close_unknown_exits_2(self):
+        r = self.cli("account-close", "ICICI|credit|0000", check=False)
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(self.cli("account-close", check=False).returncode, 2)
+
+    def test_snapshot_hides_closed_account_keeps_history(self):
+        before = queries.snapshot(self.conn)
+        self.assertEqual(len(before["cardOverviews"]), 2)
+        self.assertFalse(any("accountClosed" in t for t in before["transactions"]))
+        self.cli("account-close", self.old)
+        snap = queries.snapshot(self.conn)
+        self.assertEqual([c["accountId"] for c in snap["cardOverviews"]], [self.new])
+        self.assertEqual([b["accountId"] for b in snap["balances"]], [self.new])
+        self.assertEqual([a["id"] for a in snap["accounts"]], [self.new])
+        flags = {t["id"]: t.get("accountClosed", False) for t in snap["transactions"]}
+        self.assertEqual(flags, {"t-1": True, "t-2": False})
+        n = self.conn.execute("SELECT COUNT(*) FROM card_cycles_raw WHERE account_id = ?", (self.old,)).fetchone()[0]
+        self.assertEqual(n, 1)  # cycle history stays in the database
+
+    def test_fetch_does_not_reopen_closed_account(self):
+        self.cli("account-close", self.old)
+        stamp = self.conn.execute("SELECT closed_at FROM accounts WHERE id = ?", (self.old,)).fetchone()[0]
+        aid = ingest.ensure_account(self.conn, "ICICI", "credit", "2004", "RuPay")
+        ingest.upsert_rows(self.conn, aid, [row(3, "2026-10-05", -1.0)])
+        self.assertEqual(self.conn.execute("SELECT closed_at FROM accounts WHERE id = ?", (self.old,)).fetchone()[0], stamp)
+
+
 if __name__ == "__main__":
     unittest.main()
 

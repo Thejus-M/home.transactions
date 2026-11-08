@@ -682,6 +682,11 @@ MIGRATIONS = [
         updated_at   TEXT NOT NULL
     );
     """,
+    # v21: a closed account (a replaced card). NULL = open. A closed account
+    # keeps all its rows; the snapshot only hides it as a current account.
+    """
+    ALTER TABLE accounts ADD COLUMN closed_at TEXT;
+    """,
 ]
 
 

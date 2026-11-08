@@ -22,8 +22,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         # True when it was worked back from the account's current balance
         # rather than read off the statement (see ingest.derive_balances).
         "balanceDerived": bool(r["balance_derived"]),
+        # True for a row of a closed account: kept as history, the UI dims it.
+        **({"accountClosed": True} if r["closed_at"] else {}),
     } for r in conn.execute(
-        """SELECT t.*, a.bank, a.account_type, a.last4, (k.transaction_id IS NOT NULL) AS tracked
+        """SELECT t.*, a.bank, a.account_type, a.last4, a.closed_at, (k.transaction_id IS NOT NULL) AS tracked
            FROM transactions t JOIN accounts a ON a.id = t.account_id
            LEFT JOIN tracked k ON k.transaction_id = t.id
            ORDER BY t.date DESC, t.seq DESC, t.id""")]
@@ -77,7 +79,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "balance": from_paise(r["balance_paise"]), "currency": r["currency"], "asOf": r["as_of"],
     } for r in conn.execute(
         "SELECT b.*, a.bank, a.account_type, a.last4 FROM balances b JOIN accounts a ON a.id = b.account_id "
-        "ORDER BY a.bank, a.last4")]
+        "WHERE a.closed_at IS NULL ORDER BY a.bank, a.last4")]
     card_overviews = [{
         "name": r["name"] or "", "last4": r["last4"], "accountId": r["account_id"], "bank": r["bank"],
         # The network comes from the account, not from the card's name: a
@@ -91,11 +93,11 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "SELECT c.*, a.last4, a.bank, a.network, d.statement_day, d.statement_date, d.next_statement_date, "
         "d.due_date "
         "FROM card_cycles_raw c JOIN accounts a ON a.id = c.account_id "
-        "LEFT JOIN card_cycles d ON d.account_id = c.account_id ORDER BY a.last4")]
+        "LEFT JOIN card_cycles d ON d.account_id = c.account_id WHERE a.closed_at IS NULL ORDER BY a.last4")]
     accounts = [{
         "id": r["id"], "bank": r["bank"], "accountType": r["account_type"], "last4": r["last4"],
         "displayName": r["display_name"] or "", "network": r["network"] or "",
-    } for r in conn.execute("SELECT * FROM accounts ORDER BY bank, account_type, last4")]
+    } for r in conn.execute("SELECT * FROM accounts WHERE closed_at IS NULL ORDER BY bank, account_type, last4")]
     return {
         "transactions": transactions,
         "transfers": transfer_list,
@@ -105,7 +107,8 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "accounts": accounts,
         # Keyed by last4, the key the widget's bill and account-name code uses.
         "bills": {r["last4"]: {"markedPaid": bool(r["marked_paid"]), **({"notifiedDate": r["notified_date"]} if r["notified_date"] else {})}
-                  for r in conn.execute("SELECT b.*, a.last4 FROM bills b JOIN accounts a ON a.id = b.account_id")},
+                  for r in conn.execute("SELECT b.*, a.last4 FROM bills b JOIN accounts a ON a.id = b.account_id "
+                      "WHERE a.closed_at IS NULL")},
         "accountNames": {r["last4"]: r["display_name"] for r in conn.execute(
             "SELECT last4, display_name FROM accounts WHERE display_name IS NOT NULL")},
         "merchantNames": {r["group_key"]: r["name"] for r in conn.execute("SELECT * FROM merchant_names")},

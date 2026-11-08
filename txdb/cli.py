@@ -29,6 +29,7 @@
   txdb receipt-recalc <receiptId> [verify]  (verify also clears warnings) subtotal = sum of items, total = subtotal - discount + round off
   txdb receipt-remove <receiptId>        remove the bill altogether (row, photo files, database copy); never re-imported
   txdb receipt-image-export <receiptId> <file>   write the photo kept in the database to a file
+  txdb account-close <accountId> [--reopen]  hide a closed account (keeps its history); --reopen shows it again
   txdb bill-paid <account> <0|1>
   txdb bill-notified <account> <YYYY-MM-DD>
   txdb last-run <BANK>                   latest fetch run of a bank, as JSON
@@ -172,6 +173,15 @@ def main(argv: list[str]) -> int:
         name = " ".join(args[1:]).strip() or None
         with write(conn):
             conn.execute("UPDATE accounts SET display_name = ? WHERE id = ?", (name, aid))
+    elif cmd == "account-close":
+        ref = [a for a in args if a != "--reopen"]
+        if len(ref) != 1 or not conn.execute("SELECT 1 FROM accounts WHERE id = ?", (ref[0],)).fetchone():
+            print(f"Unknown account {ref[0] if ref else ''}", file=sys.stderr)
+            return 2
+        closed_at = None if "--reopen" in args else now()
+        with write(conn):
+            conn.execute("UPDATE accounts SET closed_at = ? WHERE id = ?", (closed_at, ref[0]))
+        print(json.dumps({"id": ref[0], "closedAt": closed_at}))
     elif cmd == "receipt-link":
         receipts.set_link(conn, args[0], transaction_id=args[1], state="linked",
                           matched_by="manual")

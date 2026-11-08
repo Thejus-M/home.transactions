@@ -58,14 +58,14 @@ class V20(unittest.TestCase):
         self.assertEqual((row["merchant"], row["total"], row["printedTotal"], row["platform"], row["category"]),
                          ("Shop", 5.0, None, None, None))
         self.assertEqual(row["fees"], [{"line": 1, "label": "Fee", "amount": 1.0, "original": None, "waived": False}])
-        backups = list((Path(self.dir.name) / "backups").glob("pre-v20-*.db"))
+        backups = list((Path(self.dir.name) / "backups").glob("pre-v*.db"))
         self.assertEqual(len(backups), 1)
         b = sqlite3.connect(backups[0])
         self.assertEqual(b.execute("PRAGMA user_version").fetchone()[0], 19)   # the copy is the old schema
         b.close()
         conn.close()
         db.connect(old).close()                                                # idempotent: no second backup
-        self.assertEqual(len(list((Path(self.dir.name) / "backups").glob("pre-v20-*.db"))), 1)
+        self.assertEqual(len(list((Path(self.dir.name) / "backups").glob("pre-v*.db"))), 1)
 
     def test_save_parse_keeps_waived_fees_and_the_new_fields(self):
         receipts.save_parse(self.conn, KOTTAYAM)
