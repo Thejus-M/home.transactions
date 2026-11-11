@@ -481,7 +481,11 @@ Panel {
   property var cashewGuessMeta: ({ batches: 0, seconds: 0, model: "" })
   readonly property var cashewGuessCounts: Model.cashewGuessLogCounts(root.cashewGuessLog)
   readonly property var cashewGuessPrefs: root.cashewState.guess || ({})
-  readonly property int cashewGuessWorkers: Math.max(1, Math.min(4, Math.round(Number(root.cashewGuessPrefs.workers) || 3)))
+  // Ollama here loads one model at a time (OLLAMA_MAX_LOADED_MODELS=1): a
+  // second worker just queues behind the first and barely helps (measured:
+  // 3 workers were only ~20% faster than 1 on this machine), so guesses run
+  // one at a time - simpler, and the per-row timing stays meaningful.
+  readonly property int cashewGuessWorkers: 1
   // Rows with no category (notes or not); the ask-me flow walks them.
   readonly property int cashewNeedCount: Model.cashewNeedIdxs(root.cashewDrafts, root.cashewShown).length
   // Rows with a note and no category: the only ones the model reads.
@@ -490,6 +494,7 @@ Panel {
   function cashewSetGuessPref(patch) {
     var prefs = Object.assign({}, root.cashewGuessPrefs, patch)
     delete prefs.onlyUncategorized   // old state files: the "All rows" mode is gone
+    delete prefs.workers              // old state files: guesses always run one at a time now
     root.cashewSetState(Object.assign({}, root.cashewState, { guess: prefs }))
   }
   function cashewGuessStart() {
@@ -7254,10 +7259,6 @@ Panel {
             active: root.cashewGuessedOnly
             enabled: root.cashewGuessedOnly || root.cashewGuessedCount > 0
             onClicked: root.cashewGuessedOnly = !root.cashewGuessedOnly
-          }
-          CashewBtn {
-            label: "Parallel: " + root.cashewGuessWorkers
-            onClicked: root.cashewSetGuessPref({ workers: root.cashewGuessWorkers % 4 + 1 })
           }
           CashewBtn {
             visible: root.cashewGuessedCount > 0
