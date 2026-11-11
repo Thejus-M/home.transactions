@@ -275,6 +275,16 @@ def save_image(conn: sqlite3.Connection, rid: str, data: bytes, mime: str = "ima
             (rid, mime, width, height, len(data), original_bytes, data, now()))
 
 
+def mark_image_deleted(conn: sqlite3.Connection, rid: str) -> None:
+    """The on-disk photo at `stored_path` is gone (the caller deletes it once
+    its bytes are safely kept in `receipt_images`, see compress_linked in the
+    receipt reader). The database's own copy is untouched; the snapshot's
+    `storedPath` then reads None and the widget falls back to it."""
+    _require(conn, rid)
+    with write(conn):
+        conn.execute("UPDATE receipts SET image_deleted = 1 WHERE id = ?", (rid,))
+
+
 def image_data(conn: sqlite3.Connection, rid: str) -> tuple[bytes, str] | None:
     row = conn.execute("SELECT data, mime FROM receipt_images WHERE receipt_id = ?", (rid,)).fetchone()
     return (bytes(row["data"]), row["mime"]) if row else None

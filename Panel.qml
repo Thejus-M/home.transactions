@@ -165,8 +165,63 @@ Panel {
   // inside this plugin's card, which is far too narrow to read a bill's
   // fine print at any size QML can draw it.
   function openReceiptPhoto(r) {
-    if (!r || !r.storedPath) return
-    Quickshell.execDetached(["xdg-open", root.widgetDir + "/data/" + r.storedPath])
+    if (!r) return
+    if (r.storedPath) { Quickshell.execDetached(["xdg-open", root.widgetDir + "/data/" + r.storedPath]); return }
+    if (r.imageSaved && r.imageSaved.bytes) {
+      root._openPhotoAfterExport = r.id
+      root.ensurePhotoExported(r)
+      if (root._exportedPhotoIds[r.id] && !photoExportProc.running)
+        Quickshell.execDetached(["xdg-open", root.cachedPhotoPath(r)])
+    }
+  }
+  // Once a linked bill's own photo file is compressed into the database (see
+  // the reader's compress_linked), there is no disk file for storedPath to
+  // point at any more — only `receipt-image-export` can get the bytes back
+  // out. The thumbnail alone (600 px) is too small to read a bill's fine
+  // print, so a receipt in that state gets its database copy exported once
+  // to a small on-disk cache the first time it is opened, and every full
+  // photo view (in-app or "open externally") uses that from then on.
+  readonly property string photoCacheDir: root.widgetDir + "/data/.photo-cache"
+  function cachedPhotoPath(r) { return root.photoCacheDir + "/" + r.id + ".jpg" }
+  // Local filesystem path (no "file://") to the best copy of this bill's
+  // photo this session can show: the original file, or - once exported -
+  // the cached copy of what is kept in the database. "" when neither exists
+  // yet (an export may still be running; `photoCacheVersion` wakes bindings
+  // that read this up once it finishes).
+  function effectivePhotoFile(r) {
+    if (!r) return ""
+    if (r.storedPath) return root.widgetDir + "/data/" + r.storedPath
+    if (r.imageSaved && r.imageSaved.bytes && root._exportedPhotoIds[r.id]) return root.cachedPhotoPath(r)
+    return ""
+  }
+  property var _exportedPhotoIds: ({})
+  property string _openPhotoAfterExport: ""
+  // Bumped whenever an export finishes, purely so a `source:` binding that
+  // reads effectivePhotoFile() is marked dirty and re-evaluates.
+  property int photoCacheVersion: 0
+  function ensurePhotoExported(r) {
+    if (!r || r.storedPath || !(r.imageSaved && r.imageSaved.bytes)) return
+    if (root._exportedPhotoIds[r.id] || photoExportProc.running) return
+    photoExportProc.targetId = r.id
+    photoExportProc.command = ["bash", "-c",
+      "mkdir -p '" + root.photoCacheDir + "' && python3 '" + root.txdbBin +
+      "' receipt-image-export '" + r.id + "' '" + root.cachedPhotoPath(r) + "'"]
+    photoExportProc.running = true
+  }
+  Process {
+    id: photoExportProc
+    property string targetId: ""
+    onExited: function (code) {
+      if (code === 0) {
+        var ids = root._exportedPhotoIds
+        ids[targetId] = true
+        root._exportedPhotoIds = ids
+        root.photoCacheVersion += 1
+        if (root._openPhotoAfterExport === targetId)
+          Quickshell.execDetached(["xdg-open", root.photoCacheDir + "/" + targetId + ".jpg"])
+      }
+      root._openPhotoAfterExport = ""
+    }
   }
   // Rows picked with their checkboxes (map: transaction id -> true). Separate
   // from "tracked": Track / Untrack act on the selection.
@@ -3007,7 +3062,11 @@ Panel {
     // Is the open bill one the list is showing (not a linked one hidden from it)?
     readonly property bool inVisibleList: root.visibleReceipts.some(function (x) { return x.id === receiptFullScreen.r.id })
     readonly property string billId: receiptFullScreen.r.id || ""
-    onBillIdChanged: { receiptFullScreen.photoZoom = 1.0; receiptFullScreen.extraRotation = 0 }
+    onBillIdChanged: {
+      receiptFullScreen.photoZoom = 1.0
+      receiptFullScreen.extraRotation = 0
+      root.ensurePhotoExported(receiptFullScreen.r)
+    }
 
     // Steps to the previous/next receipt in the same order the RECEIPTS
     // section lists them, so you can work through every bill needing a
@@ -3152,10 +3211,12 @@ Panel {
               // photo's own aspect ratio within whatever box this is.
               width: photoFlick.width * receiptFullScreen.photoZoom
               height: photoFlick.height * receiptFullScreen.photoZoom
-              source: receiptFullScreen.r.storedPath
-                ? ("file://" + root.widgetDir + "/data/" + receiptFullScreen.r.storedPath)
-                : (receiptFullScreen.r.thumbPath
-                    ? ("file://" + root.widgetDir + "/data/" + receiptFullScreen.r.thumbPath) : "")
+              source: {
+                var _dep = root.photoCacheVersion       // re-evaluate once an export finishes
+                var full = root.effectivePhotoFile(receiptFullScreen.r)
+                return full ? ("file://" + full)
+                  : (receiptFullScreen.r.thumbPath ? ("file://" + root.widgetDir + "/data/" + receiptFullScreen.r.thumbPath) : "")
+              }
               rotation: ((receiptFullScreen.r.rotation || 0) + receiptFullScreen.extraRotation + 360) % 360
               fillMode: Image.PreserveAspectFit
               asynchronous: true
