@@ -7160,7 +7160,17 @@ Panel {
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.namespace: "omarchy-transactions-cashew"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+    // NOT Exclusive (confirmed live, 2026-11-12): Exclusive keyboard focus
+    // makes Hyprland close this whole layer surface - killing an in-flight
+    // AI guess run and resetting all state - the instant ANY other window
+    // becomes active (even just this machine's own terminal regaining
+    // focus for a second). A guess run against a realistic row count takes
+    // several minutes; expecting zero focus changes anywhere on the desktop
+    // for that whole time is not realistic. OnDemand still gives this
+    // window real keyboard focus (the "N" shortcut, text fields, Escape)
+    // whenever it's the active surface, it just doesn't get force-closed
+    // the moment focus moves elsewhere.
+    WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
 
     // The in-card picker: "" (closed), "category" or "account".
     property string pickKind: ""
@@ -7209,9 +7219,24 @@ Panel {
       cashewWin.resultsRaw = false
       cashewWin.askActive = false
       if (cashewWin.visible) {
-        root.cashewLoad()
+        // Skip the reload while a guess is actively running: becoming
+        // visible again after the same kind of transient remap blip (see
+        // below) must not wipe the in-progress guess log/drafts out from
+        // under it. A real fresh open never has a guess running yet
+        // (a real close always stops one first, below), so this only ever
+        // skips the reload for a blip, never for an actual open.
+        if (!root.cashewGuessing) root.cashewLoad()
         cashewCard.forceActiveFocus()
-      } else {
+      } else if (!root.cashewOpen) {
+        // Only stop a running guess for a REAL close (the user's own
+        // cashewOpen intent going false) - not for `visible` alone, which
+        // can also go false for a moment the compositor remaps this
+        // Overlay layer surface (confirmed live, 2026-11-12: happens on an
+        // unrelated window becoming active, even with keyboardFocus set to
+        // OnDemand rather than Exclusive). cashewOpen never changes on its
+        // own, so this guard can't mistake a real close for a blip, and a
+        // guess left running through a blip just finishes in the
+        // background and shows its results whenever the window reopens.
         root.cashewGuessStop()
       }
     }
