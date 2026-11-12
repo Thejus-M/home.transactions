@@ -733,6 +733,17 @@ Panel {
     return index % 2 === 0 ? Color.accent : Util.alpha(Color.accent, 0.55)
   }
 
+  // One tone per card, the same in the bar, its key and the strips under it.
+  // Four tones are enough for the cards in use; a fifth wraps round.
+  function limitCardColor(last4) {
+    var tones = [Color.accent, root.pendingColor, root.creditColor, Util.alpha(Color.accent, 0.55)]
+    var i = 0
+    for (var k = 0; k < root.cardOverviewList.length; k++) {
+      if (root.cardOverviewList[k].last4 === last4) { i = k; break }
+    }
+    return tones[i % tones.length]
+  }
+
   function limitColor(percent) {
     return percent >= 50 ? root.debitColor : (percent >= 30 ? root.pendingColor : root.creditColor)
   }
@@ -2393,7 +2404,7 @@ Panel {
           visible: root.tab === "bank" && root.creditLimits.length > 0
           width: parent.width
           implicitHeight: limitTotalLabel.implicitHeight + Style.space(5) + limitTotalTrack.height
-            + Style.space(4)
+            + Style.space(4) + (limitTotalKey.visible ? limitTotalKey.implicitHeight + Style.space(5) : 0)
           radius: Style.cornerRadius
           color: limitHeader._hot ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent"
           borderSpec: limitHeader.activeFocus
@@ -2483,18 +2494,53 @@ Panel {
               height: parent.height
 
               Repeater {
-                model: limitHeader.total.pools || []
+                model: limitHeader.total.cards || []
                 delegate: Rectangle {
                   required property var modelData
                   required property int index
                   height: limitTotalTrack.height
                   width: limitHeader.total.limit > 0
-                    ? Math.max(modelData.used > 0 ? 1 : 0,
-                               limitTotalTrack.width * (modelData.used / limitHeader.total.limit))
+                    ? Math.max(modelData.amount > 0 ? 1 : 0, limitTotalTrack.width * modelData.fraction)
                     : 0
                   radius: height / 2
-                  color: root.limitSegmentColor(index)
+                  color: root.limitCardColor(modelData.last4)
                   Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                }
+              }
+            }
+          }
+
+          // Every card, in its own tone: "HDFC ••7462 8%". A card with no
+          // limit read yet says so, and is not drawn in the bar.
+          Flow {
+            id: limitTotalKey
+            visible: limitHeader.total.limit > 0
+            anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.rowPaddingX
+            anchors.right: parent.right
+            anchors.rightMargin: Style.spacing.rowPaddingX
+            anchors.top: limitTotalTrack.bottom
+            anchors.topMargin: Style.space(5)
+            spacing: Style.spacing.md
+
+            Repeater {
+              model: limitHeader.total.cards || []
+              delegate: Row {
+                required property var modelData
+                spacing: Style.space(4)
+                Rectangle {
+                  width: Style.space(6)
+                  height: width
+                  radius: width / 2
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.limitCardColor(modelData.last4)
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  text: modelData.bank + " ••" + modelData.last4 + " " + Math.round(modelData.percent) + "%"
+                  color: Qt.darker(root.foreground, 1.5)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
                 }
               }
             }
@@ -2607,7 +2653,7 @@ Panel {
                       height: limitTrack.height
                       width: Math.max(1, limitTrack.width * Math.min(1, Math.max(0, modelData.fraction)))
                       radius: height / 2
-                      color: root.limitSegmentColor(index)
+                      color: root.limitCardColor(modelData.last4)
                       Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
                     }
                   }
@@ -2639,7 +2685,7 @@ Panel {
                       height: width
                       radius: width / 2
                       anchors.verticalCenter: parent.verticalCenter
-                      color: root.limitSegmentColor(index)
+                      color: root.limitCardColor(modelData.last4)
                     }
 
                     Text {

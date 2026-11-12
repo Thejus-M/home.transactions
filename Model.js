@@ -796,16 +796,25 @@ function creditLimitPools(cardOverviewList) {
     var limits = cards.map(function (c) { return _money(parseCurrencyString(c.credit_limit_total)) })
     var shared = limits.every(function (l) { return l === limits[0] })
     if (shared) {
-      pools.push(_pool(order[b], order[b], cards, limits[0],
-                       _money(parseCurrencyString(cards[0].available_limit))))
+      pools.push(_pool(order[b], order[b], cards, limits[0], _availableOf(cards, limits[0])))
     } else {
       for (var c = 0; c < cards.length; c++) {
         pools.push(_pool(order[b] + " ••" + cards[c].last4, order[b], [cards[c]], limits[c],
-                         _money(parseCurrencyString(cards[c].available_limit))))
+                         _availableOf([cards[c]], limits[c])))
       }
     }
   }
   return pools.filter(function (pool) { return pool.limit > 0 })
+}
+
+// What is left of a limit. The bank's own "available" figure when its page
+// prints one (HDFC, ICICI); a page that prints none (SBI) has it worked out
+// from what the cards owe, never read as "nothing left".
+function _availableOf(cards, limit) {
+  if (cards[0].available_limit) return _money(parseCurrencyString(cards[0].available_limit))
+  var owed = 0
+  for (var i = 0; i < cards.length; i++) owed += Math.max(0, parseCurrencyString(cards[i].total_outstanding))
+  return _money(limit - owed)
 }
 
 function _pool(label, bank, cards, limit, available) {
@@ -819,6 +828,7 @@ function _pool(label, bank, cards, limit, available) {
     label: label, bank: bank, limit: limit, available: available, used: used, credit: credit,
     percent: limit > 0 ? _money(used / limit * 100) : 0,
     cards: cards.length, segments: _limitSegments(cards, limit, used),
+    members: cards.map(function (c) { return { last4: c.last4, bank: bank } }),
   }
 }
 
@@ -864,10 +874,27 @@ function creditLimitTotal(pools) {
   }
   limit = _money(limit)
   used = _money(used)
+  // One entry per card, for the bar's segments and its key: what the card
+  // owes against the whole limit (bar), and against its own pool (key).
+  var cards = []
+  for (var p = 0; p < list.length; p++) {
+    for (var m = 0; m < (list[p].members || []).length; m++) {
+      var member = list[p].members[m]
+      var amount = 0
+      for (var s = 0; s < list[p].segments.length; s++) {
+        if (list[p].segments[s].last4 === member.last4) amount = list[p].segments[s].amount
+      }
+      cards.push({
+        last4: member.last4, bank: member.bank, amount: amount,
+        fraction: limit > 0 ? amount / limit : 0,
+        percent: list[p].limit > 0 ? _money(amount / list[p].limit * 100) : 0
+      })
+    }
+  }
   return {
     limit: limit, used: used, available: _money(available), credit: _money(credit),
     percent: limit > 0 ? _money(used / limit * 100) : 0,
-    pools: list,
+    pools: list, cards: cards,
   }
 }
 

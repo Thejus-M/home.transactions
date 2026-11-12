@@ -244,7 +244,7 @@ class SectionTotalsTests(unittest.TestCase):
 
     def test_no_pools_totals_to_zero_without_dividing_by_it(self):
         self.assertEqual(self.run_js("creditLimitTotal([])"),
-                         {"limit": 0, "used": 0, "available": 0, "credit": 0, "percent": 0, "pools": []})
+                         {"limit": 0, "used": 0, "available": 0, "credit": 0, "percent": 0, "pools": [], "cards": []})
 
     def test_no_limit_scraped_yet_means_no_pool(self):
         self.assertEqual(self.run_js("creditLimitPools(input.cards)", cards=[CARDS["legacy"]]), [])
@@ -424,3 +424,23 @@ class CategoryCircleTests(unittest.TestCase):
         self.assertEqual(run("categoryIcon('Nope', %s)" % cats), "")
         self.assertEqual(run("subcategoryBadge('Dinner')"), "Din")
         self.assertEqual(run("subcategoryBadge('')"), "")
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class LimitBarAllCardsTests(unittest.TestCase):
+    def test_every_card_is_in_the_bar_and_sbi_available_is_worked_out(self):
+        cards = [
+            {"bank": "HDFC", "last4": "0220", "accountId": "HDFC|credit|0220", "credit_limit_total": "₹1,38,000.00", "available_limit": "₹1,16,612.19", "total_outstanding": "₹10,930.27"},
+            {"bank": "HDFC", "last4": "7462", "accountId": "HDFC|credit|7462", "credit_limit_total": "₹1,38,000.00", "available_limit": "₹1,16,612.19", "total_outstanding": "₹10,457.54"},
+            {"bank": "SBI", "last4": "5896", "accountId": "SBI|credit|5896", "credit_limit_total": "₹3,00,000", "available_limit": "", "total_outstanding": "₹ 11082.04"},
+        ]
+        script = ('const fs=require("fs"),vm=require("vm");const c={};vm.createContext(c);'
+                  'vm.runInContext(fs.readFileSync(process.argv[1],"utf8"),c);c.d=JSON.parse(process.argv[2]);'
+                  'console.log(JSON.stringify(vm.runInContext("creditLimitTotal(creditLimitPools(d))",c)))')
+        t = json.loads(subprocess.run([NODE, "-e", script, str(ROOT / "Model.js"), json.dumps(cards)],
+                                      capture_output=True, text=True, check=True).stdout)
+        self.assertEqual([c["last4"] for c in t["cards"]], ["0220", "7462", "5896"])
+        self.assertEqual(t["limit"], 438000)   # the HDFC pool once, plus SBI
+        sbi = [p for p in t["pools"] if p["bank"] == "SBI"][0]
+        self.assertEqual(sbi["used"], 11082.04)
+        self.assertEqual(sbi["available"], 288917.96)
