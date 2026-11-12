@@ -2937,17 +2937,28 @@ Panel {
           ListView {
             id: txnList
             width: parent.width
-            height: Math.min(contentHeight, Style.space(420))
-            clip: true
-            interactive: contentHeight > height
+            // Sized to its own full content, not a fixed/capped viewport:
+            // a capped height here meant this list scrolled INSIDE itself,
+            // nested inside the popup's own outer Flickable (`flick`) —
+            // that nested-scroll interaction turned out to cut users off
+            // from part of the list (reported: "can't see all the
+            // transactions") and was never actually tested by hand before
+            // being committed. Letting height track contentHeight makes
+            // `flick` the only scroll surface again, exactly like the old
+            // plain-Repeater layout, so every row is reachable the same
+            // way it always was. This does give up some of the
+            // view-virtualization win (every row still gets a delegate,
+            // same as before), but ListView still reuses delegate
+            // instances more cheaply across a model update than the old
+            // nested Repeaters did, and the bigger wins (skipping the
+            // redundant snapshot reload; not rebuilding on every filter
+            // keystroke) are untouched by this.
+            height: contentHeight
+            clip: false
+            interactive: false
             boundsBehavior: Flickable.StopAtBounds
-            // A generous cache keeps far more rows realized than are ever
-            // on screen, so Up/Down arrow nagivation (see
-            // root.focusNextInList) rarely has to force a not-yet-created
-            // neighbour into existence before focusing it.
             cacheBuffer: Style.space(2000)
             model: root.flatTransactionRows
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
             Component.onCompleted: root.txnListRef = txnList
             Component.onDestruction: if (root.txnListRef === txnList) root.txnListRef = null
 
