@@ -8894,7 +8894,7 @@ Panel {
                 }
                 CashewCell {
                   id: cardDate
-                  anchors { right: parent.right; top: parent.top; topMargin: Style.space(7) }
+                  anchors { right: parent.right; rightMargin: Style.space(62); top: parent.top; topMargin: Style.space(7) }
                   width: Style.space(110)
                   alignRight: true
                   kind: "date"
@@ -9318,10 +9318,24 @@ Panel {
       warn: (lg.d.account || "") === ""
       onClicked: cashewWin.openPicker("account", lg.idx)
     }
+    // Same right edge as a plain row: the amount stops where a row's amount stops,
+    // and the edit button sits where a row's buttons sit.
+    PanelActionButton {
+      id: lgEdit
+      anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+      size: Style.space(24)
+      iconText: "✎"
+      tooltipText: "Edit note"
+      foreground: root.foreground
+      bordered: false
+      focusable: false
+      opacity: lg.hot ? 1.0 : 0.55
+      onClicked: cashewWin.openPicker("note", lg.idx)
+    }
     CashewCell {
       id: lgAmount
-      anchors { right: parent.right; verticalCenter: parent.verticalCenter }
-      width: Style.space(150)
+      anchors { right: parent.right; rightMargin: Style.space(62); verticalCenter: parent.verticalCenter }
+      width: Style.space(120)
       implicitHeight: Style.space(26)
       kind: "amount"
       alignRight: true
@@ -9332,18 +9346,10 @@ Panel {
       color: lg.credit ? root.creditColor : root.debitColor
       onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, lg.idx, { amount: v }), true) }
     }
-    CashewNote {
-      id: lgNote
-      compact: true
-      anchors { right: lgAmount.left; rightMargin: Style.space(4); verticalCenter: parent.verticalCenter }
-      text: lg.d.notes || ""
-      hot: lg.hot
-      onClicked: cashewWin.openPicker("note", lg.idx)
-    }
     CashewCell {
       id: lgDate
       visible: (lg.d.date || "") !== lg.cardDate        // only a leg dated differently shows its date
-      anchors { right: lgNote.left; rightMargin: Style.space(6); verticalCenter: parent.verticalCenter }
+      anchors { right: lgAmount.left; rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
       width: Style.space(96)
       alignRight: true
       kind: "date"
@@ -9351,8 +9357,23 @@ Panel {
       color: cashewWin.muted
       onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, lg.idx, { date: v }), true) }
     }
+    // Between the account and the amount: the first line of the note, or a thin rule.
+    Item {
+      id: lgNoteBox
+      height: Style.space(22)
+      anchors { left: lgAcct.right; leftMargin: Style.space(10); right: lgDate.visible ? lgDate.left : lgAmount.left; rightMargin: Style.space(10); verticalCenter: parent.verticalCenter }
+    }
+    CashewNote {
+      id: lgNote
+      width: lgNoteBox.width
+      anchors { left: lgNoteBox.left; verticalCenter: lgNoteBox.verticalCenter }
+      text: lg.d.notes || ""
+      hot: lg.hot
+      onClicked: cashewWin.openPicker("note", lg.idx)
+    }
     Rectangle {
-      anchors { left: lgAcct.right; leftMargin: Style.space(8); right: lgDate.visible ? lgDate.left : lgNote.left; rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
+      visible: !lgNote.has && !lg.hot
+      anchors { left: lgNoteBox.left; right: lgNoteBox.right; verticalCenter: parent.verticalCenter }
       height: 1
       color: Util.alpha(root.foreground, 0.16)
     }
