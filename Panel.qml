@@ -8667,7 +8667,7 @@ Panel {
             property bool infoOpen: false
             readonly property bool wide: false      // one layout at every width: two lines per row
             readonly property var srcTxn: crow.infoOpen ? store.transactions.find(function (t) { return t.id === crow.d.id }) : null
-            height: crow.isTransfer ? (crow.paired ? Style.space(112) : Style.space(80)) : (crow.wide ? Style.space(60) : Style.space(68)) + (crow.infoOpen ? Style.space(22) : 0)
+            height: crow.isTransfer ? Style.space(68) : (crow.wide ? Style.space(60) : Style.space(68)) + (crow.infoOpen ? Style.space(22) : 0)
             radius: Style.space(12)
             color: crow.idx === cashewWin.flashIdx ? Util.alpha(Color.accent, 0.22) : Util.alpha(root.foreground, crowHover.hovered ? 0.06 : 0)
             HoverHandler { id: crowHover }
@@ -8872,29 +8872,77 @@ Panel {
               }
             }
 
-            // A transfer pair as one card, like Cashew: the title once, then a line per leg.
+            // A transfer: one row like any other. Line one: title and amount. Line two:
+            // the two accounts as "out -> in", then the note. A pair is edited as one.
             Component {
               id: cardBody
               Item {
+                id: tb
                 anchors { fill: parent; leftMargin: Style.space(8); rightMargin: Style.space(10) }
                 opacity: crow.d.include ? 1 : 0.5
+                readonly property var legs: crow.paired ? [crow.idx, crow.partner] : [crow.idx]
+                readonly property bool sameAmount: crow.paired && Math.abs(Number(String(crow.d.amount).replace(/,/g, ""))) === Math.abs(Number(String(crow.d2.amount).replace(/,/g, "")))
+                readonly property string noteText: (crow.d.notes || "") !== "" ? crow.d.notes : (crow.paired ? (crow.d2.notes || "") : "")
+                readonly property int noteIdx: (crow.d.notes || "") === "" && crow.paired && (crow.d2.notes || "") !== "" ? crow.partner : crow.idx
 
+                Item {
+                  id: tMain
+                  anchors { left: parent.left; right: parent.right; top: parent.top }
+                  height: Style.space(68)
+                }
                 CashewCheck {
                   id: cardCheck
-                  anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+                  anchors { left: parent.left; verticalCenter: tMain.verticalCenter }
                   checked: !!crow.d.include
-                  onToggled: root.cashewEdit(Model.cashewPatchMany(root.cashewDrafts, [crow.idx, crow.partner], { include: !crow.d.include }))
+                  onToggled: root.cashewEdit(Model.cashewPatchMany(root.cashewDrafts, tb.legs, { include: !crow.d.include }))
                 }
                 CashewIcon {
                   id: cardIcon
-                  anchors { left: cardCheck.right; leftMargin: Style.space(10); verticalCenter: parent.verticalCenter }
+                  anchors { left: cardCheck.right; leftMargin: Style.space(10); verticalCenter: tMain.verticalCenter }
                   icon: crow.cat.icon
                   fill: crow.cat.color
                   warn: crow.warn
                 }
+                Row {
+                  id: tActions
+                  anchors { right: parent.right; verticalCenter: tMain.verticalCenter }
+                  spacing: Style.space(4)
+                  opacity: crowHover.hovered ? 1.0 : 0.55
+                  PanelActionButton {
+                    size: Style.space(24)
+                    iconText: "✎"
+                    tooltipText: "Edit note"
+                    foreground: root.foreground
+                    bordered: false
+                    focusable: false
+                    onClicked: cashewWin.openPicker("note", tb.noteIdx)
+                  }
+                  Item { width: Style.space(24); height: Style.space(24) }
+                }
+                // amount: one figure for the transfer (the out leg); legs that differ show the in figure under it
                 CashewCell {
-                  id: cardDate
-                  anchors { right: parent.right; rightMargin: Style.space(62); top: parent.top; topMargin: Style.space(7) }
+                  id: tAmount
+                  anchors { right: tActions.left; rightMargin: Style.space(10); top: tMain.top; topMargin: Style.space(9) }
+                  width: Style.space(150)
+                  implicitHeight: Style.space(26)
+                  kind: "amount"
+                  alignRight: true
+                  bold: true
+                  pixelSize: Style.font.body + 2
+                  value: crow.d.amount || ""
+                  display: (crow.paired ? "⇄ " : (crow.isCredit ? "▴ " : "▾ ")) + Model.cashewMoney(crow.d.amount)
+                  color: crow.paired ? root.foreground : crow.kindColor
+                  onCommit: function (v) {
+                    // the in leg keeps matching the out leg while the two were equal
+                    var follow = tb.sameAmount && crow.partner >= 0
+                    var patch = Model.cashewPatch(root.cashewDrafts, crow.idx, { amount: v })
+                    if (follow) patch = Model.cashewPatch(patch, crow.partner, { amount: String(v).replace(/^-/, "") })
+                    root.cashewEdit(patch, true)
+                  }
+                }
+                CashewCell {
+                  id: tDate
+                  anchors { right: tAmount.right; top: tAmount.bottom; topMargin: Style.space(5) }
                   width: Style.space(110)
                   alignRight: true
                   kind: "date"
@@ -8908,30 +8956,54 @@ Panel {
                   }
                 }
                 CashewCell {
-                  id: cardTitle
-                  anchors { left: cardIcon.right; leftMargin: Style.space(14); right: cardDate.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(7) }
+                  id: tTitle
+                  anchors { left: cardIcon.right; leftMargin: Style.space(14); right: tAmount.left; rightMargin: Style.space(12); top: tMain.top; topMargin: Style.space(9) }
                   implicitHeight: Style.space(26)
                   pixelSize: Style.font.body + 1
                   value: crow.d.title || ""
                   color: root.foreground
-                  onCommit: function (v) { root.cashewEdit(Model.cashewPatchMany(root.cashewDrafts, [crow.idx, crow.partner], { title: v }), true) }
+                  onCommit: function (v) { root.cashewEdit(Model.cashewPatchMany(root.cashewDrafts, tb.legs, { title: v }), true) }
                 }
-                Column {
-                  anchors { left: cardTitle.left; right: parent.right; top: cardTitle.bottom; topMargin: Style.space(4) }
-                  spacing: Style.space(4)
-                  CashewLeg {
-                    width: parent.width
-                    idx: crow.idx
-                    cardDate: crow.d.date || ""
-                    hot: crowHover.hovered
-                  }
-                  CashewLeg {
-                    visible: crow.paired
-                    width: parent.width
-                    idx: crow.partner
-                    cardDate: crow.d.date || ""
-                    hot: crowHover.hovered
-                  }
+                CashewChip {
+                  id: tFrom
+                  anchors { left: tTitle.left; top: tTitle.bottom; topMargin: Style.space(5) }
+                  maxWidth: Style.space(120)
+                  tint: "#455A64"
+                  text: (crow.d.account || "") !== "" ? crow.d.account : "No account"
+                  warn: (crow.d.account || "") === ""
+                  onClicked: cashewWin.openPicker("account", crow.idx)
+                }
+                Text {
+                  id: tArrow
+                  visible: crow.paired
+                  anchors { left: tFrom.right; leftMargin: Style.space(8); verticalCenter: tFrom.verticalCenter }
+                  textFormat: Text.PlainText
+                  text: "→"
+                  color: cashewWin.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                CashewChip {
+                  id: tTo
+                  visible: crow.paired
+                  anchors { left: tArrow.right; leftMargin: Style.space(8); verticalCenter: tFrom.verticalCenter }
+                  maxWidth: Style.space(120)
+                  tint: "#455A64"
+                  text: (crow.d2.account || "") !== "" ? crow.d2.account : "No account"
+                  warn: (crow.d2.account || "") === ""
+                  onClicked: cashewWin.openPicker("account", crow.partner)
+                }
+                Item {
+                  id: tNoteBox
+                  height: Style.space(22)
+                  anchors { left: crow.paired ? tTo.right : tFrom.right; leftMargin: Style.space(10); right: tAmount.left; rightMargin: Style.space(12); verticalCenter: tFrom.verticalCenter }
+                }
+                CashewNote {
+                  width: tNoteBox.width
+                  anchors { left: tNoteBox.left; verticalCenter: tNoteBox.verticalCenter }
+                  text: tb.noteText
+                  hot: crowHover.hovered
+                  onClicked: cashewWin.openPicker("note", tb.noteIdx)
                 }
               }
             }
