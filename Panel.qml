@@ -8655,7 +8655,13 @@ Panel {
             readonly property var cat: cashewWin.catMap[crow.d.category] || ({ icon: "❓", color: "#5A2A2E" })
             readonly property color kindColor: crow.isCredit ? root.creditColor : root.debitColor
             width: cwList.width
-            height: crow.isTransfer ? (crow.paired ? Style.space(112) : Style.space(80)) : Style.space(68)
+            // Pointer over the row (or its info open): amount and date slide left and the
+            // info and edit buttons show at the right edge, as in the transaction list.
+            property bool infoOpen: false
+            property real slide: !crow.isTransfer && (crowHover.hovered || crow.infoOpen) ? Style.space(62) : 0
+            Behavior on slide { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+            readonly property var srcTxn: crow.infoOpen ? store.transactions.find(function (t) { return t.id === crow.d.id }) : null
+            height: crow.isTransfer ? (crow.paired ? Style.space(112) : Style.space(80)) : Style.space(68) + (crow.infoOpen ? Style.space(22) : 0)
             radius: Style.space(12)
             color: crow.idx === cashewWin.flashIdx ? Util.alpha(Color.accent, 0.22) : Util.alpha(root.foreground, crowHover.hovered ? 0.06 : 0)
             HoverHandler { id: crowHover }
@@ -8690,7 +8696,7 @@ Panel {
                 // right column: amount, then the date
                 CashewCell {
                   id: cAmount
-                  anchors { right: parent.right; top: parent.top; topMargin: Style.space(9) }
+                  anchors { right: parent.right; rightMargin: crow.slide; top: parent.top; topMargin: Style.space(9) }
                   width: Style.space(170)
                   implicitHeight: Style.space(26)
                   kind: "amount"
@@ -8704,7 +8710,7 @@ Panel {
                 }
                 CashewCell {
                   id: cDate
-                  anchors { right: parent.right; top: cAmount.bottom; topMargin: Style.space(5) }
+                  anchors { right: parent.right; rightMargin: crow.slide; top: cAmount.bottom; topMargin: Style.space(5) }
                   width: Style.space(110)
                   alignRight: true
                   kind: "date"
@@ -8719,7 +8725,7 @@ Panel {
                 // title, then the chips and the note
                 CashewCell {
                   id: cTitle
-                  anchors { left: crowIcon.right; leftMargin: Style.space(14); right: cAmount.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(9) }
+                  anchors { left: crowIcon.right; leftMargin: Style.space(14); right: cNotes.has ? cNotes.left : cAmount.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(9) }
                   implicitHeight: Style.space(26)
                   pixelSize: Style.font.body + 1
                   value: crow.d.title || ""
@@ -8773,12 +8779,50 @@ Panel {
                     font.pixelSize: Style.font.caption
                   }
                 }
+                // The note, as a small icon beside the amount (its text is in the edit).
                 CashewNote {
                   id: cNotes
-                  anchors { left: cCat.right; leftMargin: Style.space(8); right: cDate.left; rightMargin: Style.space(8); verticalCenter: cAcct.verticalCenter }
+                  compact: true
+                  anchors { right: cAmount.left; rightMargin: Style.space(8); verticalCenter: cTitle.verticalCenter }
                   text: crow.d.notes || ""
-                  hot: crowHover.hovered
+                  hot: false
                   onClicked: cashewWin.openPicker("note", crow.idx)
+                }
+
+                // Revealed by the slide: info (where the row came from) and edit (the note).
+                Row {
+                  visible: crow.slide > 1
+                  anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+                  spacing: Style.space(4)
+                  PanelActionButton {
+                    size: Style.space(24)
+                    iconText: "✎"
+                    tooltipText: "Edit note"
+                    foreground: root.foreground
+                    bordered: false
+                    focusable: false
+                    onClicked: cashewWin.openPicker("note", crow.idx)
+                  }
+                  PanelActionButton {
+                    size: Style.space(24)
+                    iconText: "󰋽"
+                    tooltipText: "Where this row came from"
+                    foreground: crow.infoOpen ? Color.accent : root.foreground
+                    bordered: false
+                    focusable: false
+                    onClicked: crow.infoOpen = !crow.infoOpen
+                  }
+                }
+
+                Text {
+                  visible: crow.infoOpen
+                  anchors { left: cTitle.left; right: parent.right; rightMargin: Style.space(70); top: cAcct.bottom; topMargin: Style.space(5) }
+                  elide: Text.ElideRight
+                  textFormat: Text.PlainText
+                  text: crow.srcTxn ? ("Raw: " + crow.srcTxn.merchant + "  ·  " + Model.formatFullDate(crow.srcTxn.date)) : "Source not in the current list"
+                  color: cashewWin.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
                 }
               }
             }
