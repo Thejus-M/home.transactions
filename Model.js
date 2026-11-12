@@ -2620,3 +2620,18 @@ function cashewPreview(url, head, tail) {
   var h = head || 140, t = tail || 20
   return url.length <= h + t + 1 ? url : url.slice(0, h) + "…" + url.slice(url.length - t)
 }
+
+
+// The icon of a category for the circle on a transaction card, from the
+// category list the snapshot carries. "" when the name is unknown.
+function categoryIcon(name, categories) {
+  var list = categories || []
+  for (var i = 0; i < list.length; i++) if (list[i].name === name) return list[i].icon || ""
+  return ""
+}
+
+// The first three letters of a subcategory ("Dinner" -> "Din"), "" for none.
+function subcategoryBadge(sub) {
+  var s = String(sub || "").trim()
+  return s ? s.slice(0, 3) : ""
+}

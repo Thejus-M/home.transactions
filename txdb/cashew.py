@@ -378,7 +378,8 @@ def open_readonly(path) -> sqlite3.Connection:
 
 # ---------------------------------------------------------------------- drafts
 
-def drafts(conn, state: dict | None = None) -> list[dict]:
+def drafts(conn, state: dict | None = None, all_rows: bool = False) -> list[dict]:
+    # all_rows: also tracked and unsettled rows (the widget's rows show a category for those too).
     state = state or empty_state()
     types, rules = _types(), load_rules()
     rows = [dict(r) for r in conn.execute(
@@ -410,7 +411,7 @@ def drafts(conn, state: dict | None = None) -> list[dict]:
 
     out = []
     for r in rows:
-        if r["tracked"] or r["status"] != "settled":
+        if not all_rows and (r["tracked"] or r["status"] != "settled"):
             continue
         negative = r["amount_paise"] < 0
         title = display_title(r["bank"], r["merchant"], r["group_key"], r["counterparty"], overrides)

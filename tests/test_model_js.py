@@ -409,3 +409,18 @@ class PaidSinceBillTests(unittest.TestCase):
         self.assertTrue(out["awaiting"])
         self.assertEqual(out["awaitingAmount"], 588.82)
         self.assertEqual(out["nextBill"], 10493.04)
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class CategoryCircleTests(unittest.TestCase):
+    def test_icon_and_badge(self):
+        script = ('const fs=require("fs"),vm=require("vm");const c={};vm.createContext(c);'
+                  'vm.runInContext(fs.readFileSync(process.argv[1],"utf8"),c);'
+                  'console.log(JSON.stringify(vm.runInContext(process.argv[2],c)))')
+        run = lambda e: json.loads(subprocess.run([NODE, "-e", script, str(ROOT / "Model.js"), e],
+                                                  capture_output=True, text=True, check=True).stdout)
+        cats = '[{name:"Food Out",icon:"🍽"}]'
+        self.assertEqual(run("categoryIcon('Food Out', %s)" % cats), "🍽")
+        self.assertEqual(run("categoryIcon('Nope', %s)" % cats), "")
+        self.assertEqual(run("subcategoryBadge('Dinner')"), "Din")
+        self.assertEqual(run("subcategoryBadge('')"), "")

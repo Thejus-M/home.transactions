@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from . import portfolio, receipts, transfers
+from . import cashew, portfolio, receipts, transfers
 from .db import from_paise
 from .ingest import OVERVIEW_FIELDS
 
@@ -29,6 +29,15 @@ def snapshot(conn: sqlite3.Connection) -> dict:
            FROM transactions t JOIN accounts a ON a.id = t.account_id
            LEFT JOIN tracked k ON k.transaction_id = t.id
            ORDER BY t.date DESC, t.seq DESC, t.id""")]
+    # The category of each row, for the circle on its card: the same pick the Cashew
+    # export makes (taught answer, rule, linked bill, payee name). Transfers keep their
+    # own mark, and a row with no answer gets "". No model is asked here.
+    picks = {d["id"]: d for d in cashew.drafts(conn, cashew.load_state(), all_rows=True)}
+    for t in transactions:
+        d = picks.get(t["id"])
+        ok = d and d["kind"] != "transfer" and (d["category"], d["subcategory"]) != cashew.UNCATEGORIZED
+        t["category"] = d["category"] if ok else ""
+        t["subcategory"] = d["subcategory"] if ok else ""
     # Pair the two sides of a movement between your own accounts (txdb/transfers.py).
     split = {r[0] for r in conn.execute("SELECT txn_id FROM transfer_splits")}
     tx_rows = [{"id": t["id"], "date": t["date"], "merchant": t["merchant"], "amount_paise": round(t["amount"] * 100),

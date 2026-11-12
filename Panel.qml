@@ -10010,10 +10010,20 @@ Panel {
         anchors.leftMargin: Style.spacing.rowPaddingX + (card.selectable && root.selectionMode ? Style.space(24) : 0)
         anchors.verticalCenter: parent.verticalCenter
 
+        // The circle carries the category: its icon inside, the first three
+        // letters of the subcategory in a badge on the lower-right edge. The
+        // colour still says out / in / transfer. A transfer keeps its own
+        // mark; a row with no category shows its direction arrow, dimmed.
+        readonly property bool hasCategory: !root.isTransferLeg(card.txn) && !!card.txn.category
+        readonly property string categoryIcon: avatar.hasCategory ? Model.categoryIcon(card.txn.category, store.receiptCategories) : ""
+        readonly property string subBadge: avatar.hasCategory ? Model.subcategoryBadge(card.txn.subcategory) : ""
+
         // Clicking the circle expands or collapses the details below.
         MouseArea {
+          id: avatarMouse
           anchors.fill: parent
           anchors.margins: -Style.space(4)
+          hoverEnabled: true
           enabled: !card.editing
           cursorShape: Qt.PointingHandCursor
           onClicked: card.expanded = !card.expanded
@@ -10022,11 +10032,42 @@ Panel {
         Text {
           anchors.centerIn: parent
           textFormat: Text.PlainText
-          text: root.isTransferLeg(card.txn) ? "⇄" : (card.isDebit ? "↓" : "↑")
+          text: root.isTransferLeg(card.txn) ? "⇄" : (avatar.categoryIcon !== "" ? avatar.categoryIcon : (card.isDebit ? "↓" : "↑"))
           color: card.directionColor
-          font.bold: true
-          font.pixelSize: Style.font.subtitle
+          opacity: root.isTransferLeg(card.txn) || avatar.hasCategory ? 1.0 : 0.6
+          font.bold: avatar.categoryIcon === ""
+          font.pixelSize: avatar.categoryIcon !== "" ? Style.font.title : Style.font.subtitle
         }
+
+        Rectangle {
+          id: subBadgeRect
+          visible: avatar.subBadge !== ""
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          anchors.rightMargin: -Style.space(5)
+          anchors.bottomMargin: -Style.space(3)
+          height: Style.space(13)
+          width: Math.max(height, subBadgeText.implicitWidth + Style.space(6))
+          radius: height / 2
+          color: Qt.tint(Color.background, Util.alpha(card.directionColor, 0.55))
+          border.width: 2
+          border.color: Color.background
+
+          Text {
+            id: subBadgeText
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: avatar.subBadge
+            color: root.foreground
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.caption - 2
+          }
+        }
+
+        ToolTip.visible: avatarMouse.containsMouse && avatar.hasCategory
+        ToolTip.text: card.txn.category + (card.txn.subcategory ? "  ›  " + card.txn.subcategory : "")
+        ToolTip.delay: 300
       }
 
       Column {
