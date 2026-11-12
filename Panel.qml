@@ -3358,7 +3358,7 @@ Panel {
     // density, so zoom seemed to "stop working" just as more detail would
     // have appeared. 8x clears that for typical phone photos while still
     // stopping well short of zooming into pure upscaled noise.
-    property real maxPhotoZoom: 8.0
+    property real maxPhotoZoom: 24.0
     property int extraRotation: 0
     // Looked up by id from the live receiptList every time either
     // changes, rather than a snapshot captured at open time — so a
@@ -3532,8 +3532,7 @@ Panel {
           Flickable {
             id: photoFlick
             anchors.fill: parent
-            anchors.margins: Style.space(6)
-            anchors.bottomMargin: Style.space(40)
+            anchors.margins: 0
             clip: true
             boundsBehavior: Flickable.StopAtBounds
 
@@ -3660,17 +3659,28 @@ Panel {
           // acceptedButtons: NoButton means it never intercepts the press
           // itself, so dragging to pan once zoomed in still reaches the
           // Flickable underneath untouched.
+          // Plain wheel scrolls the photo up/down (shift: left/right).
+          // Middle button held + wheel (or Ctrl + wheel) zooms around the cursor.
           MouseArea {
+            id: photoWheel
             anchors.fill: photoFlick
-            acceptedButtons: Qt.NoButton
+            acceptedButtons: Qt.MiddleButton
+            property bool midDown: false
+            onPressed: midDown = true
+            onReleased: midDown = false
+            onCanceled: midDown = false
             onWheel: function (event) {
-              // A touchpad reports smooth scrolling via pixelDelta, often
-              // with angleDelta left at zero — reading angleDelta alone is
-              // why this did nothing at all on a trackpad.
               var delta = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y
               if (delta !== 0) {
-                var factor = delta > 0 ? 1.2 : (1 / 1.2)
-                photoFlick.zoomTo(receiptFullScreen.photoZoom * factor, event.x, event.y)
+                if (midDown || (event.buttons & Qt.MiddleButton) || (event.modifiers & Qt.ControlModifier)) {
+                  var factor = delta > 0 ? 1.2 : (1 / 1.2)
+                  photoFlick.zoomTo(receiptFullScreen.photoZoom * factor, event.x, event.y)
+                } else {
+                  var step = event.pixelDelta.y !== 0 ? delta : delta * 0.5
+                  if (event.modifiers & Qt.ShiftModifier) photoFlick.contentX -= step
+                  else photoFlick.contentY -= step
+                  photoFlick.returnToBounds()
+                }
               }
               event.accepted = true
             }
@@ -3686,7 +3696,7 @@ Panel {
             PanelActionButton {
               size: Style.space(24)
               iconText: "−"
-              tooltipText: "Zoom out"
+              tooltipText: "Zoom out (middle button + wheel)"
               foreground: "#ffffff"
               focusable: false
               enabled: receiptFullScreen.photoZoom > 1.0
