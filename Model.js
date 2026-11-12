@@ -1878,9 +1878,17 @@ function cashewNeedIdxs(drafts, shown) {
   return out
 }
 
-// The rows `cashew-guess` reads: a non-empty note AND no category yet. A row
-// with a category from any source, a transfer, a row edited by hand and a row
-// already guessed are never sent. The rest is asked from the user.
+// The rows `cashew-guess` reads: no category yet, and at least ONE of
+// title/merchant/notes has real text for the model to reason from (empty
+// string on all three means there is nothing to send - no clue at all). A
+// row with a category from any source, a transfer, a row edited by hand and
+// a row already guessed are never sent. The rest is asked from the user.
+// cashew_guess.py's own prompt already treats merchant text, the UPI remark
+// and notes as three separate clues ("Use the merchant text, the UPI remark
+// and the notes as clues") - requiring notes specifically used to exclude
+// every row with a real merchant name but no UPI remark (most non-UPI card/
+// bank-fee rows, which is why "needs category" could show rows while the AI
+// button stayed disabled: none of them happened to have a note).
 // `groupKey` rides along (same identity as the UPI-rename feature, Model.
 // transactionGroupKey) so the grouping functions below can tell which rows
 // are really the same UPI counterparty asked N times.
@@ -1889,9 +1897,11 @@ function cashewGuessRows(drafts, shown) {
   for (var k = 0; k < shown.length; k++) {
     var d = drafts[shown[k]]
     if (!d || d.touched || d.guessed || !cashewNeedsCategory(d)) continue
+    var title = String(d.title || "").trim()
+    var merchant = String(d.merchant || "").trim()
     var note = String(d.notes || "").trim()
-    if (note === "") continue
-    out.push({ id: d.id, title: d.title || "", merchant: d.merchant || "", notes: note,
+    if (title === "" && merchant === "" && note === "") continue
+    out.push({ id: d.id, title: title, merchant: merchant, notes: note,
                amount: d.amount || "", kind: d.kind || "", bank: d.bank || "", accountType: d.accountId ? String(d.accountId).split("|")[1] || "" : "",
                groupKey: d.groupKey || "" })
   }
