@@ -449,9 +449,9 @@ class ClosedAccountTests(Base):
                 conn.close()
             conn = db.connect(path)
             self.addCleanup(conn.close)
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 21)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], len(db.MIGRATIONS))
             self.assertIsNone(conn.execute("SELECT closed_at FROM accounts").fetchone()[0])
-            self.assertTrue(list((Path(tmp) / "backups").glob("pre-v21-*.db")))
+            self.assertTrue(list((Path(tmp) / "backups").glob("pre-v*-*.db")))
             db.connect(path).close()  # a second open is a no-op
 
     def test_account_close_and_reopen(self):

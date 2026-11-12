@@ -687,6 +687,23 @@ MIGRATIONS = [
     """
     ALTER TABLE accounts ADD COLUMN closed_at TEXT;
     """,
+    # v22: a link remembers what its transaction looked like (account, date,
+    # amount, merchant text) when it was made. A transaction id can change
+    # (an unsettled spend settles, a card is replaced and its last four are in
+    # the id); with the fingerprint in the same row, ingest.heal_links can
+    # point the link at the same transaction again without any other source.
+    """
+    ALTER TABLE receipt_links ADD COLUMN fp_account_id TEXT;
+    ALTER TABLE receipt_links ADD COLUMN fp_date TEXT;
+    ALTER TABLE receipt_links ADD COLUMN fp_amount_paise INTEGER;
+    ALTER TABLE receipt_links ADD COLUMN fp_merchant TEXT;
+    """,
+    lambda conn: conn.execute(
+        "UPDATE receipt_links SET fp_account_id = (SELECT t.account_id FROM transactions t WHERE t.id = transaction_id), "
+        "fp_date = (SELECT t.date FROM transactions t WHERE t.id = transaction_id), "
+        "fp_amount_paise = (SELECT t.amount_paise FROM transactions t WHERE t.id = transaction_id), "
+        "fp_merchant = (SELECT t.merchant FROM transactions t WHERE t.id = transaction_id) "
+        "WHERE transaction_id IS NOT NULL"),
 ]
 
 

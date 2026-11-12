@@ -133,6 +133,9 @@ def replace_unsettled(conn: sqlite3.Connection, aid: str, rows: list[dict]) -> N
             if settled:
                 conn.execute("UPDATE OR IGNORE tracked SET transaction_id = ? WHERE transaction_id = ?",
                              (settled[0], old["id"]))
+                # A bill filed against the unsettled row moves to its settled twin too.
+                conn.execute("UPDATE OR IGNORE receipt_links SET transaction_id = ? WHERE transaction_id = ?",
+                             (settled[0], old["id"]))
             conn.execute("DELETE FROM tracked WHERE transaction_id = ?", (old["id"],))
             conn.execute("DELETE FROM transactions WHERE id = ?", (old["id"],))
         for row in rows:
@@ -283,6 +286,47 @@ def start_run(conn: sqlite3.Connection, bank: str) -> int:
         return conn.execute("INSERT INTO fetch_runs (bank, started_at) VALUES (?, ?)", (bank, now())).lastrowid
 
 
+def heal_links(conn: sqlite3.Connection) -> dict:
+    """A bill's link names a transaction by id. When that row is gone (an
+    unsettled spend settled under a new id, a card was replaced and its last
+    four digits are part of the id), look for the same transaction by the
+    fingerprint the link carries: same date and amount, the same account
+    first, else the same bank. Exactly one candidate that no other bill holds
+    -> the link moves to it. None or several -> left alone and reported;
+    a wrong link is worse than a missing one.
+    Returns {"healed": [...], "orphans": [{receipt_id, reason}]}."""
+    healed, orphans = [], []
+    broken = conn.execute(
+        "SELECT l.receipt_id, l.transaction_id, l.fp_account_id, l.fp_date, l.fp_amount_paise "
+        "FROM receipt_links l WHERE l.state = 'linked' AND l.transaction_id IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM transactions t WHERE t.id = l.transaction_id)").fetchall()
+    for b in broken:
+        if not b["fp_date"] or b["fp_amount_paise"] is None:
+            orphans.append({"receipt_id": b["receipt_id"], "reason": "no fingerprint saved"})
+            continue
+        bank = (b["fp_account_id"] or "").split("|")[0]
+        found = []
+        for same_account in (True, False):
+            found = [r[0] for r in conn.execute(
+                "SELECT t.id FROM transactions t JOIN accounts a ON a.id = t.account_id "
+                "WHERE t.date = ? AND t.amount_paise = ? AND " + ("t.account_id = ?" if same_account else "a.bank = ?") +
+                " AND NOT EXISTS (SELECT 1 FROM receipt_links o WHERE o.transaction_id = t.id)",
+                (b["fp_date"], b["fp_amount_paise"], b["fp_account_id"] if same_account else bank))]
+            if found:
+                break
+        if len(found) != 1:
+            orphans.append({"receipt_id": b["receipt_id"],
+                            "reason": "no transaction matches" if not found else f"{len(found)} transactions match"})
+            continue
+        with write(conn):
+            conn.execute(
+                "UPDATE receipt_links SET transaction_id = ?, fp_account_id = (SELECT account_id FROM transactions WHERE id = ?), "
+                "fp_merchant = (SELECT merchant FROM transactions WHERE id = ?) WHERE receipt_id = ?",
+                (found[0], found[0], found[0], b["receipt_id"]))
+        healed.append({"receipt_id": b["receipt_id"], "from": b["transaction_id"], "to": found[0]})
+    return {"healed": healed, "orphans": orphans}
+
+
 def finish_run(conn: sqlite3.Connection, run_id: int, outcome: str, message: str,
                added: int | None = None, total: int | None = None) -> None:
     # Every bank's fetch ends here (success or not), so this is where EVERY
@@ -298,6 +342,11 @@ def finish_run(conn: sqlite3.Connection, run_id: int, outcome: str, message: str
     except Exception as exc:      # noqa: BLE001 - history is optional, the run must still be recorded
         import sys
         print(f"transfer check skipped: {exc}", file=sys.stderr)
+    try:
+        heal_links(conn)
+    except Exception as exc:      # noqa: BLE001 - a failed repair must not fail the fetch
+        import sys
+        print(f"link repair skipped: {exc}", file=sys.stderr)
     with write(conn):
         conn.execute("UPDATE fetch_runs SET finished_at = ?, outcome = ?, message = ?, added = ?, total = ? "
                      "WHERE id = ?", (now(), outcome, message, added, total, run_id))

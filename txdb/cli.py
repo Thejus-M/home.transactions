@@ -6,6 +6,7 @@
   txdb rename <groupKey> [name]          no name = clear the rename
   txdb account-name <account> [name]     account = id (BANK|type|last4) or last4
   txdb receipt-link <receiptId> <txnId>  file a bill against a transaction
+  txdb heal-links                        re-point links whose transaction id changed
   txdb receipt-unlink <receiptId>        back to the top of the list
   txdb receipt-cash <receiptId>          paid in cash: park it, stop asking
   txdb receipt-ignore <receiptId>        not a bill, or a duplicate photo
@@ -282,11 +283,20 @@ def main(argv: list[str]) -> int:
         print("balances:", "all add up" if not problems else queries.reconcile_summary(conn))
         holdings = portfolio.reconcile(conn)
         print("portfolio:", "all adds up" if not holdings else portfolio.reconcile_summary(conn))
+        links = conn.execute("SELECT COUNT(*) FILTER (WHERE state = 'linked'), "
+                             "COUNT(*) FILTER (WHERE state = 'linked' AND NOT EXISTS "
+                             "(SELECT 1 FROM transactions t WHERE t.id = transaction_id)) FROM receipt_links").fetchone()
+        unlinked = conn.execute("SELECT COUNT(*) FROM receipts r WHERE NOT EXISTS "
+                                "(SELECT 1 FROM receipt_links l WHERE l.receipt_id = r.id)").fetchone()[0]
+        print(f"receipt links: {links[0]} linked, {links[1]} orphaned, {unlinked} bills not filed")
         counts = conn.execute("SELECT COUNT(*) FILTER (WHERE balance_paise IS NOT NULL), "
                               "COUNT(*) FILTER (WHERE balance_derived = 1) FROM transactions").fetchone()
         print(f"  {counts[0]} rows carry a balance, {counts[1]} of them worked out rather than read")
         for table in [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]:
             print(f"  {table}: {conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]}")
+    elif cmd == "heal-links":
+        from . import ingest
+        print(json.dumps(ingest.heal_links(conn), indent=2))
     elif cmd == "derive-balances":
         from . import ingest
         print(f"filled {ingest.derive_balances(conn, args[0] if args else None)} balances")

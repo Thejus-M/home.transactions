@@ -625,6 +625,9 @@ Panel {
     path: Quickshell.env("HOME") + "/.local/state/omarchy/transactions-cashew.json"
     atomicWrites: true
     printErrors: false
+    // The taught categories in this file decide the category shown on every
+    // transaction row (txdb snapshot reads it), so a save reloads the snapshot.
+    onSaved: root.refreshData()
   }
   Process {
     id: cashewDraftProc
@@ -881,12 +884,14 @@ Panel {
     "set-tracked": true, "set-tracked-many": true,
     "bill-paid": true, "bill-notified": true,
     "account-name": true, "rename": true,
-    "receipt-link": true, "receipt-unlink": true, "receipt-cash": true, "receipt-ignore": true,
+    // receipt-link / receipt-unlink / receipt-set-category are NOT here: they change a
+    // transaction row's category (a linked bill's category wins), which only the
+    // snapshot knows, so their own reload must run.
+    "receipt-cash": true, "receipt-ignore": true,
     "receipt-remove": true, "receipt-review": true, "receipt-edit": true, "receipt-edit-item": true,
     "receipt-add-item": true, "receipt-delete-item": true, "receipt-edit-tax": true,
     "receipt-add-fee": true, "receipt-edit-fee": true, "receipt-delete-fee": true,
     "receipt-add-tax": true, "receipt-recalc": true, "receipt-use-computed": true,
-    "receipt-set-category": true,
   })
   // One credit per optimistic write we have queued but whose matching
   // dbChangedFile touch has not arrived yet. dbChangedFile.onFileChanged
@@ -925,6 +930,7 @@ Panel {
 
   Process {
     id: txdbWriteProc
+    stderr: StdioCollector { id: writeErr }
     onExited: function (exitCode) {
       if (exitCode !== 0) {
         console.warn("txdb write failed (" + exitCode + "): " + command.slice(2).join(" "))
@@ -932,6 +938,15 @@ Panel {
         // after a successful commit) — give back the credit so a later,
         // real external change is not mistaken for this failed self-write.
         if (root._lastWriteOptimistic && root.selfWriteCredits > 0) root.selfWriteCredits--
+        // The screen must equal the database: undo the optimistic change by
+        // reloading the snapshot, and say that the save failed.
+        var failed = command.slice(2)
+        Quickshell.execDetached([
+          Quickshell.env("OMARCHY_PATH") + "/bin/omarchy-notification-send",
+          "--app-name", "home.transactions", "Could not save: " + failed[0],
+          (writeErr.text || "").trim().split("\n").pop() || ("exit " + exitCode)
+        ])
+        root.refreshData()
       }
       root.runNextWrite()
     }
@@ -974,7 +989,7 @@ Panel {
     running: true
     repeat: true
     triggeredOnStart: true
-    onTriggered: root.queueCompress()
+    onTriggered: { root.queueCompress(); root.runAutoLink() }
   }
 
   Timer {
@@ -1530,6 +1545,25 @@ Panel {
   function notifyFetchResult(bank) {
     notifyBank = bank
     lastRunProc.running = true
+    // A bank row may arrive after the bill that paid for it: file every bill
+    // that now has exactly one matching transaction (written to the database).
+    root.runAutoLink()
+  }
+
+  // receipt-ledger-stitcher's strict rule (same date, same amount to the
+  // paisa, one candidate). Writes through txdb, which touches data/.changed,
+  // so the snapshot reloads by itself. Also runs at start and every 30 min.
+  function runAutoLink() {
+    if (!autoLinkProc.running) autoLinkProc.running = true
+  }
+  Process {
+    id: autoLinkProc
+    command: ["bash", "-c", "cd '" + root.receiptStitcherDir + "' && .venv/bin/python -m src.main auto-link 2>&1"]
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function (line) { if (line.indexOf("LINK ") !== -1) console.log("auto-link: " + line) }
+    }
+    onExited: function (exitCode) { if (exitCode !== 0) console.warn("auto-link exited " + exitCode) }
   }
 
   Process {

@@ -209,14 +209,20 @@ def set_link(conn: sqlite3.Connection, rid: str, transaction_id: str | None = No
             (transaction_id, rid)).fetchone()
         if held:
             raise SystemExit(f"That transaction already has receipt {held[0]} filed against it")
+    fp = conn.execute("SELECT account_id, date, amount_paise, merchant FROM transactions WHERE id = ?",
+                      (transaction_id,)).fetchone() if transaction_id else None
     with write(conn):
         conn.execute(
             "INSERT INTO receipt_links (receipt_id, transaction_id, state, matched_by, score, "
-            "linked_at) VALUES (?,?,?,?,?,?) ON CONFLICT(receipt_id) DO UPDATE SET "
+            "linked_at, fp_account_id, fp_date, fp_amount_paise, fp_merchant) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(receipt_id) DO UPDATE SET "
             "transaction_id = excluded.transaction_id, state = excluded.state, "
             "matched_by = excluded.matched_by, score = excluded.score, "
-            "linked_at = excluded.linked_at",
-            (rid, transaction_id, state, matched_by, score, now()))
+            "linked_at = excluded.linked_at, fp_account_id = excluded.fp_account_id, "
+            "fp_date = excluded.fp_date, fp_amount_paise = excluded.fp_amount_paise, "
+            "fp_merchant = excluded.fp_merchant",
+            (rid, transaction_id, state, matched_by, score, now(),
+             *(tuple(fp) if fp else (None, None, None, None))))
 
 
 def clear_link(conn: sqlite3.Connection, rid: str) -> None:
