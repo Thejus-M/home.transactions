@@ -391,7 +391,7 @@ Panel {
   property var cashewWarnings: []
   property string cashewLinksError: ""
   // Same set the Python side drafts: untracked and settled.
-  readonly property int cashewCount: transactions.filter(function (t) { return !t.tracked && !t.accountClosed && t.status === "settled" }).length
+  readonly property int cashewCount: transactions.filter(function (t) { return !t.tracked && !t.accountClosed }).length
   readonly property string cashewBase: root.cashewState.base === "web" ? "web" : "app"
   readonly property int cashewIncludedCount: Model.cashewIncluded(root.cashewDrafts, root.cashewShown).length
   // Rows of a closed account never reach the window's counts or links.
@@ -8655,13 +8655,12 @@ Panel {
             readonly property var cat: cashewWin.catMap[crow.d.category] || ({ icon: "❓", color: "#5A2A2E" })
             readonly property color kindColor: crow.isCredit ? root.creditColor : root.debitColor
             width: cwList.width
-            // Pointer over the row (or its info open): amount and date slide left and the
-            // info and edit buttons show at the right edge, as in the transaction list.
+            // The popup is wide: columns stay put (no sliding). With the links pane
+            // open the list is narrow and the row falls back to two lines.
             property bool infoOpen: false
-            property real slide: !crow.isTransfer && (crowHover.hovered || crow.infoOpen) ? Style.space(62) : 0
-            Behavior on slide { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+            readonly property bool wide: cwList.width > Style.space(900)
             readonly property var srcTxn: crow.infoOpen ? store.transactions.find(function (t) { return t.id === crow.d.id }) : null
-            height: crow.isTransfer ? (crow.paired ? Style.space(112) : Style.space(80)) : Style.space(68) + (crow.infoOpen ? Style.space(22) : 0)
+            height: crow.isTransfer ? (crow.paired ? Style.space(112) : Style.space(80)) : (crow.wide ? Style.space(58) : Style.space(68)) + (crow.infoOpen ? Style.space(22) : 0)
             radius: Style.space(12)
             color: crow.idx === cashewWin.flashIdx ? Util.alpha(Color.accent, 0.22) : Util.alpha(root.foreground, crowHover.hovered ? 0.06 : 0)
             HoverHandler { id: crowHover }
@@ -8671,33 +8670,66 @@ Panel {
               sourceComponent: crow.isTransfer ? cardBody : rowBody
             }
 
-            // A plain transaction: icon, title, chips and the note at the left, amount and date at the right.
+            // A plain transaction. Wide: check | icon | title | note | account | category | amount+date | actions.
+            // Narrow: title and amount on line one; chips and note on line two.
             Component {
               id: rowBody
               Item {
                 anchors { fill: parent; leftMargin: Style.space(8); rightMargin: Style.space(10) }
                 opacity: crow.d.include ? 1 : 0.5
 
+                Item {
+                  id: mainArea
+                  anchors { left: parent.left; right: parent.right; top: parent.top }
+                  height: crow.wide ? Style.space(58) : Style.space(68)
+                }
+
                 CashewCheck {
                   id: crowCheck
-                  anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+                  anchors { left: parent.left; verticalCenter: mainArea.verticalCenter }
                   checked: !!crow.d.include
                   onToggled: root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { include: !crow.d.include }))
                 }
                 CashewIcon {
                   id: crowIcon
-                  anchors { left: crowCheck.right; leftMargin: Style.space(10); verticalCenter: parent.verticalCenter }
+                  anchors { left: crowCheck.right; leftMargin: Style.space(10); verticalCenter: mainArea.verticalCenter }
                   icon: crow.cat.icon
                   fill: crow.cat.color
                   warn: crow.warn
                   MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: cashewWin.openPicker("category", crow.idx) }
                 }
 
+                // actions: always there, dim until the pointer is over the row
+                Row {
+                  id: cActions
+                  anchors { right: parent.right; verticalCenter: mainArea.verticalCenter }
+                  spacing: Style.space(4)
+                  opacity: crowHover.hovered || crow.infoOpen ? 1.0 : 0.55
+                  PanelActionButton {
+                    size: Style.space(24)
+                    iconText: "✎"
+                    tooltipText: "Edit note"
+                    foreground: root.foreground
+                    bordered: false
+                    focusable: false
+                    onClicked: cashewWin.openPicker("note", crow.idx)
+                  }
+                  PanelActionButton {
+                    size: Style.space(24)
+                    iconText: "󰋽"
+                    tooltipText: "Where this row came from"
+                    foreground: crow.infoOpen ? Color.accent : root.foreground
+                    bordered: false
+                    focusable: false
+                    onClicked: crow.infoOpen = !crow.infoOpen
+                  }
+                }
+
                 // right column: amount, then the date
                 CashewCell {
                   id: cAmount
-                  anchors { right: parent.right; rightMargin: crow.slide; top: parent.top; topMargin: Style.space(9) }
-                  width: Style.space(170)
+                  anchors { right: cActions.left; rightMargin: Style.space(10); top: mainArea.top; topMargin: crow.wide ? Style.space(5) : Style.space(9) }
+                  width: crow.wide ? Style.space(150) : Style.space(170)
                   implicitHeight: Style.space(26)
                   kind: "amount"
                   alignRight: true
@@ -8710,7 +8742,7 @@ Panel {
                 }
                 CashewCell {
                   id: cDate
-                  anchors { right: parent.right; rightMargin: crow.slide; top: cAmount.bottom; topMargin: Style.space(5) }
+                  anchors { right: cAmount.right; top: cAmount.bottom; topMargin: crow.wide ? Style.space(1) : Style.space(5) }
                   width: Style.space(110)
                   alignRight: true
                   kind: "date"
@@ -8721,11 +8753,31 @@ Panel {
                     Qt.callLater(cashewWin.syncRows)
                   }
                 }
+                Text {
+                  visible: crow.d.pending === true
+                  anchors { right: cDate.left; rightMargin: Style.space(6); verticalCenter: cDate.verticalCenter }
+                  textFormat: Text.PlainText
+                  text: "pending"
+                  color: root.pendingColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+
+                // wide-mode column slots (the chips sit at their left edge)
+                Item { id: catSlot; width: Style.space(200); height: 1; anchors { right: cAmount.left; rightMargin: Style.space(14); verticalCenter: mainArea.verticalCenter } }
+                Item { id: acctSlot; width: Style.space(130); height: 1; anchors { right: catSlot.left; rightMargin: Style.space(10); verticalCenter: mainArea.verticalCenter } }
 
                 // title, then the chips and the note
                 CashewCell {
                   id: cTitle
-                  anchors { left: crowIcon.right; leftMargin: Style.space(14); right: cNotes.has ? cNotes.left : cAmount.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(9) }
+                  anchors {
+                    left: crowIcon.right; leftMargin: Style.space(14)
+                    right: crow.wide ? cNotes.left : (cNotes.has ? cNotes.left : cAmount.left)
+                    rightMargin: Style.space(10)
+                    top: crow.wide ? undefined : mainArea.top
+                    topMargin: Style.space(9)
+                    verticalCenter: crow.wide ? mainArea.verticalCenter : undefined
+                  }
                   implicitHeight: Style.space(26)
                   pixelSize: Style.font.body + 1
                   value: crow.d.title || ""
@@ -8734,8 +8786,13 @@ Panel {
                 }
                 CashewChip {
                   id: cAcct
-                  anchors { left: cTitle.left; top: cTitle.bottom; topMargin: Style.space(5) }
-                  maxWidth: Style.space(120)
+                  anchors {
+                    left: crow.wide ? acctSlot.left : cTitle.left
+                    top: crow.wide ? undefined : cTitle.bottom
+                    topMargin: Style.space(5)
+                    verticalCenter: crow.wide ? mainArea.verticalCenter : undefined
+                  }
+                  maxWidth: crow.wide ? Style.space(130) : Style.space(120)
                   tint: "#455A64"
                   text: (crow.d.account || "") !== "" ? crow.d.account : "No account"
                   warn: (crow.d.account || "") === ""
@@ -8743,8 +8800,12 @@ Panel {
                 }
                 CashewChip {
                   id: cCat
-                  anchors { left: cAcct.right; leftMargin: Style.space(6); verticalCenter: cAcct.verticalCenter }
-                  maxWidth: Style.space(220)
+                  anchors {
+                    left: crow.wide ? catSlot.left : cAcct.right
+                    leftMargin: crow.wide ? 0 : Style.space(6)
+                    verticalCenter: crow.wide ? mainArea.verticalCenter : cAcct.verticalCenter
+                  }
+                  maxWidth: crow.wide ? Style.space(200) : Style.space(220)
                   tint: crow.cat.color
                   text: crow.needs ? "Choose category" : (crow.d.guessed ? "✦ " : "") + (crow.d.category || "—") + ((crow.d.subcategory || "") !== "" ? "  ›  " + crow.d.subcategory : "")
                   selected: crow.needs
@@ -8779,44 +8840,25 @@ Panel {
                     font.pixelSize: Style.font.caption
                   }
                 }
-                // The note, as a small icon beside the amount (its text is in the edit).
+                // The note. Wide: a column showing its first line. Narrow: a small icon
+                // beside the amount, or, with room, the first line after the chips.
                 CashewNote {
                   id: cNotes
-                  compact: true
-                  anchors { right: cAmount.left; rightMargin: Style.space(8); verticalCenter: cTitle.verticalCenter }
+                  compact: !crow.wide
+                  hot: crow.wide
+                  width: crow.wide ? Style.space(220) : implicitWidth
+                  anchors {
+                    right: crow.wide ? acctSlot.left : cAmount.left
+                    rightMargin: crow.wide ? Style.space(12) : Style.space(8)
+                    verticalCenter: crow.wide ? mainArea.verticalCenter : cTitle.verticalCenter
+                  }
                   text: crow.d.notes || ""
-                  hot: false
                   onClicked: cashewWin.openPicker("note", crow.idx)
-                }
-
-                // Revealed by the slide: info (where the row came from) and edit (the note).
-                Row {
-                  visible: crow.slide > 1
-                  anchors { right: parent.right; verticalCenter: parent.verticalCenter }
-                  spacing: Style.space(4)
-                  PanelActionButton {
-                    size: Style.space(24)
-                    iconText: "✎"
-                    tooltipText: "Edit note"
-                    foreground: root.foreground
-                    bordered: false
-                    focusable: false
-                    onClicked: cashewWin.openPicker("note", crow.idx)
-                  }
-                  PanelActionButton {
-                    size: Style.space(24)
-                    iconText: "󰋽"
-                    tooltipText: "Where this row came from"
-                    foreground: crow.infoOpen ? Color.accent : root.foreground
-                    bordered: false
-                    focusable: false
-                    onClicked: crow.infoOpen = !crow.infoOpen
-                  }
                 }
 
                 Text {
                   visible: crow.infoOpen
-                  anchors { left: cTitle.left; right: parent.right; rightMargin: Style.space(70); top: cAcct.bottom; topMargin: Style.space(5) }
+                  anchors { left: cTitle.left; right: parent.right; rightMargin: Style.space(70); bottom: parent.bottom; bottomMargin: Style.space(4) }
                   elide: Text.ElideRight
                   textFormat: Text.PlainText
                   text: crow.srcTxn ? ("Raw: " + crow.srcTxn.merchant + "  ·  " + Model.formatFullDate(crow.srcTxn.date)) : "Source not in the current list"
@@ -9349,7 +9391,7 @@ Panel {
       anchors { left: cnIcon.right; leftMargin: Style.space(8); right: parent.right; verticalCenter: parent.verticalCenter }
       elide: Text.ElideRight
       textFormat: Text.PlainText
-      text: cn.text.split("\n")[0]
+      text: cn.text.split("\n")[0] + (cn.text.indexOf("\n") >= 0 ? "  …" : "")
       color: cashewWin.muted
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
