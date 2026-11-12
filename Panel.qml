@@ -3536,39 +3536,118 @@ Panel {
             anchors.bottomMargin: Style.space(40)
             clip: true
             boundsBehavior: Flickable.StopAtBounds
-            contentWidth: photoImg.width
-            contentHeight: photoImg.height
+
+            // The photo's own aspect, read from a tiny copy so it never depends on the
+            // zoomed Image below (that would loop). Turned 90 or 270 degrees, the shape on
+            // screen swaps width and height.
+            readonly property real photoAspect: aspectProbe.implicitHeight > 0 ? aspectProbe.implicitWidth / aspectProbe.implicitHeight : 1.0
+            readonly property int turn: ((receiptFullScreen.r.rotation || 0) + receiptFullScreen.extraRotation + 360) % 360
+            readonly property bool sideways: turn === 90 || turn === 270
+            readonly property real shownAspect: sideways ? 1.0 / photoAspect : photoAspect
+            // The photo as shown at zoom 1: the biggest box of its shape that fits the pane.
+            readonly property real fitW: shownAspect > width / Math.max(1, height) ? width : height * shownAspect
+            readonly property real fitH: shownAspect > width / Math.max(1, height) ? width / shownAspect : height
+            // Content IS the photo (no empty margin around it), so no pan can leave the picture.
+            contentWidth: fitW * receiptFullScreen.photoZoom
+            contentHeight: fitH * receiptFullScreen.photoZoom
+            // A photo smaller than the pane (zoom 1) is centred, not pinned to a corner.
+            leftMargin: Math.max(0, (width - contentWidth) / 2)
+            rightMargin: leftMargin
+            topMargin: Math.max(0, (height - contentHeight) / 2)
+            bottomMargin: topMargin
+
+            // Zoom to `z`, keeping the point (vx, vy) of the pane where it is on the photo.
+            function zoomTo(z, vx, vy) {
+              var clamped = Math.max(1.0, Math.min(receiptFullScreen.maxPhotoZoom, z))
+              if (clamped === receiptFullScreen.photoZoom) return
+              var fx = (contentX + vx - leftMargin) / Math.max(1, contentWidth)
+              var fy = (contentY + vy - topMargin) / Math.max(1, contentHeight)
+              receiptFullScreen.photoZoom = clamped
+              contentX = fx * contentWidth - vx + leftMargin
+              contentY = fy * contentHeight - vy + topMargin
+              returnToBounds()
+            }
+            // Centre the pane on a point of the photo given as fractions (0..1) of it.
+            function centreOn(fx, fy) {
+              contentX = fx * contentWidth - width / 2 + leftMargin
+              contentY = fy * contentHeight - height / 2 + topMargin
+              returnToBounds()
+            }
+
+            Image {
+              id: aspectProbe
+              visible: false
+              source: photoImg.source
+              sourceSize.width: 64
+              asynchronous: true
+              cache: false
+            }
 
             Image {
               id: photoImg
-              // Grows the Flickable's real content size with zoom (rather
-              // than a visual-only `scale`, which panning math would then
-              // have to second-guess) — PreserveAspectFit still fits the
-              // photo's own aspect ratio within whatever box this is.
-              width: photoFlick.width * receiptFullScreen.photoZoom
-              height: photoFlick.height * receiptFullScreen.photoZoom
+              // The box has the photo's own shape (turned back when sideways), so
+              // PreserveAspectFit leaves no empty margin inside it.
+              width: photoFlick.sideways ? photoFlick.contentHeight : photoFlick.contentWidth
+              height: photoFlick.sideways ? photoFlick.contentWidth : photoFlick.contentHeight
+              x: (photoFlick.contentWidth - width) / 2
+              y: (photoFlick.contentHeight - height) / 2
               source: {
                 var _dep = root.photoCacheVersion       // re-evaluate once an export finishes
                 var full = root.effectivePhotoFile(receiptFullScreen.r)
                 return full ? ("file://" + full)
                   : (receiptFullScreen.r.thumbPath ? ("file://" + root.widgetDir + "/data/" + receiptFullScreen.r.thumbPath) : "")
               }
-              rotation: ((receiptFullScreen.r.rotation || 0) + receiptFullScreen.extraRotation + 360) % 360
+              rotation: photoFlick.turn
               fillMode: Image.PreserveAspectFit
               asynchronous: true
               smooth: true
               cache: false
-              // Decode at the size the photo is actually shown at, not a
-              // fixed cap. A fixed sourceSize decodes the JPEG once, at that
-              // resolution, no matter how far zoomed in — so every zoom
-              // level past it just stretches the same small decoded bitmap,
-              // going blurrier the further in you go. Binding this to the
-              // Image's own width/height (which already grow with
-              // photoZoom) makes Qt re-decode at a bigger size as you zoom
-              // in, right up to the source file's own resolution — past
-              // that Qt does not invent pixels, it just stops growing.
+              // Decode at the size the photo is actually shown at, so zooming in
+              // re-decodes sharper, up to the file's own resolution.
               sourceSize.width: Math.ceil(width)
               sourceSize.height: Math.ceil(height)
+            }
+          }
+
+          // Where you are on the photo: a small square at the top right with a box for
+          // the part on screen. Shown only when zoomed in. Click or drag in it to jump.
+          Rectangle {
+            id: photoMap
+            visible: receiptFullScreen.photoZoom > 1.0
+            readonly property real side: Style.space(72)
+            width: photoFlick.shownAspect >= 1 ? side : side * photoFlick.shownAspect
+            height: photoFlick.shownAspect >= 1 ? side / photoFlick.shownAspect : side
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.topMargin: Style.space(10)
+            anchors.rightMargin: Style.space(10)
+            color: Qt.rgba(0, 0, 0, 0.45)
+            border.width: 1
+            border.color: Qt.rgba(1, 1, 1, 0.55)
+            radius: Style.space(2)
+
+            Rectangle {
+              // the part of the photo on screen
+              readonly property real cw: Math.max(1, photoFlick.contentWidth)
+              readonly property real ch: Math.max(1, photoFlick.contentHeight)
+              x: Math.max(0, Math.min(photoMap.width - width, (photoFlick.contentX + photoFlick.leftMargin) / cw * photoMap.width))
+              y: Math.max(0, Math.min(photoMap.height - height, (photoFlick.contentY + photoFlick.topMargin) / ch * photoMap.height))
+              width: Math.min(photoMap.width, photoFlick.width / cw * photoMap.width)
+              height: Math.min(photoMap.height, photoFlick.height / ch * photoMap.height)
+              color: Qt.rgba(1, 1, 1, 0.22)
+              border.width: 1
+              border.color: "#ffffff"
+            }
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              function jump(mouse) {
+                photoFlick.centreOn(Math.max(0, Math.min(1, mouse.x / photoMap.width)),
+                                    Math.max(0, Math.min(1, mouse.y / photoMap.height)))
+              }
+              onPressed: function (mouse) { jump(mouse) }
+              onPositionChanged: function (mouse) { if (pressed) jump(mouse) }
             }
           }
 
@@ -3591,7 +3670,7 @@ Panel {
               var delta = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y
               if (delta !== 0) {
                 var factor = delta > 0 ? 1.2 : (1 / 1.2)
-                receiptFullScreen.photoZoom = Math.max(1.0, Math.min(receiptFullScreen.maxPhotoZoom, receiptFullScreen.photoZoom * factor))
+                photoFlick.zoomTo(receiptFullScreen.photoZoom * factor, event.x, event.y)
               }
               event.accepted = true
             }
@@ -3611,7 +3690,7 @@ Panel {
               foreground: "#ffffff"
               focusable: false
               enabled: receiptFullScreen.photoZoom > 1.0
-              onClicked: receiptFullScreen.photoZoom = Math.max(1.0, receiptFullScreen.photoZoom / 1.3)
+              onClicked: photoFlick.zoomTo(receiptFullScreen.photoZoom / 1.3, photoFlick.width / 2, photoFlick.height / 2)
             }
             Rectangle {
               width: zoomLabel.implicitWidth + Style.space(10)
@@ -3635,7 +3714,7 @@ Panel {
               foreground: "#ffffff"
               focusable: false
               enabled: receiptFullScreen.photoZoom < receiptFullScreen.maxPhotoZoom
-              onClicked: receiptFullScreen.photoZoom = Math.min(receiptFullScreen.maxPhotoZoom, receiptFullScreen.photoZoom * 1.3)
+              onClicked: photoFlick.zoomTo(receiptFullScreen.photoZoom * 1.3, photoFlick.width / 2, photoFlick.height / 2)
             }
             PanelActionButton {
               size: Style.space(24)
