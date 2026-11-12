@@ -406,21 +406,14 @@ Panel {
     return set
   }
 
-  // Unconfirmed AI categories are lost when the window closes (they are saved only
-  // when accepted), so the first Close click with some left only arms this.
-  property bool cashewCloseArmed: false
-  Timer { id: cashewCloseTimer; interval: 6000; onTriggered: root.cashewCloseArmed = false }
+  // Unconfirmed AI categories are saved in the state file, so closing loses nothing.
   function closeCashew() {
-    if (root.cashewGuessedCount > 0 && !root.cashewCloseArmed) {
-      root.cashewCloseArmed = true
-      cashewCloseTimer.restart()
-      return
-    }
-    root.cashewCloseArmed = false
     root.flushCashewSave()
     root.cashewOpen = false
   }
   function cashewLoad() {
+    root.flushCashewSave()            // the file must hold the latest unconfirmed guesses before it is read back
+    root.cashewStateLoaded = false    // nothing may rewrite the state from the empty drafts while loading
     root.cashewGuessError = ""
     root.cashewGuessLog = []
     root.cashewGuessRaw = []
@@ -450,7 +443,8 @@ Panel {
     root.cashewState = data.state || ({ version: 1, categories: {}, accounts: {} })
     root.cashewStateSavedJson = JSON.stringify(root.cashewState)
     root.cashewStateLoaded = true
-    root.cashewDrafts = data.drafts
+    // Unconfirmed AI guesses saved in the state file come back as they were.
+    root.cashewDrafts = Model.cashewRestorePending(data.drafts, root.cashewState)
     root.cashewLoading = false
     root.cashewReshow()   // also builds the links, once
   }
@@ -469,6 +463,7 @@ Panel {
   // `typed` is true for a text cell: its rebuild waits 30 ms.
   function cashewEdit(next, typed) {
     root.cashewDrafts = next
+    root.cashewSetState(root.cashewState)   // keeps the saved unconfirmed guesses in step
     if (typed === true) root.cashewQueueLinks()
     else root.cashewRebuildLinks()
   }
@@ -480,7 +475,11 @@ Panel {
     }))
   }
   function cashewSetState(next) {
-    root.cashewState = next
+    if (!root.cashewStateLoaded) { root.cashewState = next; return }
+    // `pending` / `tried` always mirror the drafts and the run log (Model.cashewStateWithPending).
+    var withPending = Model.cashewStateWithPending(next, root.cashewDrafts, root.cashewGuessLog)
+    if (JSON.stringify(withPending) === JSON.stringify(root.cashewState)) return
+    root.cashewState = withPending
     cashewStateTimer.restart()
   }
   // ---- auto-guess categories (txdb cashew-guess, local Ollama). Rows are
@@ -529,7 +528,7 @@ Panel {
   // Rows with no category (notes or not); the ask-me flow walks them.
   readonly property int cashewNeedCount: Model.cashewNeedIdxs(root.cashewDrafts, root.cashewShown).length
   // Rows with a note and no category: the only ones the model reads.
-  readonly property int cashewGuessCount: Model.cashewGuessRows(root.cashewDrafts, root.cashewShown, Model.cashewGuessTried(root.cashewGuessLog)).length
+  readonly property int cashewGuessCount: Model.cashewGuessRows(root.cashewDrafts, root.cashewShown, Model.cashewTriedAll(root.cashewState, root.cashewGuessLog)).length
   readonly property int cashewGuessedCount: Model.cashewGuessedCount(root.cashewDrafts)
   function cashewSetGuessPref(patch) {
     var prefs = Object.assign({}, root.cashewGuessPrefs, patch)
@@ -539,7 +538,7 @@ Panel {
   }
   function cashewGuessStart() {
     if (root.cashewGuessing || cashewGuessProc.running) return
-    var rows = Model.cashewGuessRows(root.cashewDrafts, root.cashewShown, Model.cashewGuessTried(root.cashewGuessLog))
+    var rows = Model.cashewGuessRows(root.cashewDrafts, root.cashewShown, Model.cashewTriedAll(root.cashewState, root.cashewGuessLog))
     if (rows.length === 0) return
     // Same-UPI-counterparty rows (Model.cashewGuessGroups) are asked about
     // once: one representative per group goes to the model, and its answer
@@ -578,6 +577,7 @@ Panel {
     if (m.progress) { root.cashewGuessProgress = m.progress; return }
     if (m.finished) {
       var answered = Number(m.answered) || 0
+      root.cashewSetState(root.cashewState)   // saves which rows got no answer
       root.cashewGuessDoneLine = Model.cashewGuessDoneText(answered, Number(m.total) || 0, Number(m.seconds) || 0)
       if (answered === 0 && root.cashewGuessError === "") root.cashewGuessError = "The AI gave no category for any row. See Results for the raw reply."
       root.cashewGuessNotify(answered === 0 ? "AI categories: no answer" : "AI categories finished", root.cashewGuessDoneLine)
@@ -7406,7 +7406,8 @@ Panel {
         // Reload only after a real close (cashewStale), never because the compositor
         // remapped the layer while the window stayed open: that wiped the guessed
         // categories and sent the screen back to the start once a run had finished.
-        if (!root.cashewGuessing && root.cashewStale) { root.cashewStale = false; root.cashewLoad() }
+        if (root.cashewGuessing) root.cashewStale = false
+        else if (root.cashewStale) { root.cashewStale = false; console.log("cashew: reload after close"); root.cashewLoad() }
         cashewCard.forceActiveFocus()
       }
     }
@@ -7640,7 +7641,7 @@ Panel {
             else cashewWin.resultsOpen = true
           }
           CashewBtn { label: cashewWin.optionsOpen ? "Options ▴" : "Options ▾"; active: cashewWin.optionsOpen; onClicked: cashewWin.optionsOpen = !cashewWin.optionsOpen }
-          CashewBtn { label: root.cashewCloseArmed ? "Discard " + root.cashewGuessedCount + " unconfirmed? Click again" : "Close"; onClicked: root.closeCashew() }
+          CashewBtn { label: "Close"; onClicked: root.closeCashew() }
         }
       }
 
@@ -8470,7 +8471,10 @@ Panel {
               CashewBtn {
                 visible: !root.cashewGuessing && root.cashewGuessedCount > 0
                 label: "Review"
-                onClicked: { cashewWin.resultsFilter = "guessed"; cashewWin.resultsOpen = true }
+                onClicked: {
+                  if (root.cashewGuessLog.length === 0) { root.cashewGuessedOnly = true; return }
+                  cashewWin.resultsFilter = "guessed"; cashewWin.resultsOpen = true
+                }
               }
               CashewBtn {
                 visible: !root.cashewGuessing && root.cashewGuessedCount === 0 && root.cashewGuessCount > 0

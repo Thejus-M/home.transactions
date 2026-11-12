@@ -180,3 +180,30 @@ class GuessOfferTests(unittest.TestCase):
         tried = run("cashewGuessTried(input)", log)
         self.assertEqual(tried, {"c": True, "d": True})
         self.assertEqual(run("cashewGuessRows(input.d, [0,1,2,3], input.t).length", {"d": after_drafts, "t": tried}), 0)
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class PendingGuessTests(unittest.TestCase):
+    def test_unconfirmed_guesses_survive_a_reload(self):
+        fresh = [_d(x, notes="n") for x in "abcd"]
+        guessed = run("cashewApplyGuesses(input, [{id:'a',category:'Food Out',subcategory:'Lunch'}])", fresh)
+        log = [{"id": "a", "state": "guessed"}, {"id": "b", "state": "no-guess"}]
+        state = run("cashewStateWithPending({version:1,categories:{},accounts:{}}, input.d, input.l)", {"d": guessed, "l": log})
+        self.assertEqual(state["pending"], {"a": {"category": "Food Out", "subcategory": "Lunch"}})
+        self.assertEqual(state["tried"], ["b"])
+        # a reload gives fresh drafts; the saved guesses come back, marked guessed
+        back = run("cashewRestorePending(input.d, input.s)", {"d": fresh, "s": state})
+        self.assertTrue(back[0]["guessed"])
+        self.assertEqual(back[0]["category"], "Food Out")
+        self.assertFalse(back[1]["guessed"])
+        # the AI button offers only rows it has not tried: c and d
+        rows = run("cashewGuessRows(input.d, [0,1,2,3], cashewTriedAll(input.s, []))", {"d": back, "s": state})
+        self.assertEqual([r["id"] for r in rows], ["c", "d"])
+
+    def test_confirmed_or_edited_rows_leave_pending(self):
+        d = [_d("a", notes="n", guessed=True, category="Food Out"), _d("b", notes="n", touched=True, category="Shopping")]
+        state = run("cashewStateWithPending({pending:{a:{category:'x'},b:{category:'y'}},tried:['b','zz']}, input, [])", d)
+        self.assertEqual(list(state["pending"]), ["a"])
+        self.assertEqual(state["tried"], [])
+        d[0]["guessed"] = False
+        self.assertEqual(run("cashewStateWithPending({}, input, [])", d)["pending"], {})

@@ -2695,3 +2695,47 @@ function cashewGuessDoneText(answered, total, seconds) {
   if (total - answered > 0) text += " \u00b7 " + (total - answered) + " had no answer"
   return text + " \u00b7 " + took
 }
+
+
+// ---- unconfirmed AI guesses that survive a reload. They are kept in the Cashew
+// state file as { pending: { <txn id>: {category, subcategory} }, tried: [<txn id>] },
+// so closing the window, a compositor remap or a shell restart cannot lose them.
+
+// The state with `pending` and `tried` rebuilt from the drafts and the run log.
+function cashewStateWithPending(state, drafts, log) {
+  var pending = {}
+  var need = {}
+  for (var i = 0; i < (drafts || []).length; i++) {
+    var d = drafts[i]
+    if (d.guessed) pending[d.id] = { category: d.category, subcategory: d.subcategory || "" }
+    else if (cashewNeedsCategory(d) && !d.touched) need[d.id] = true
+  }
+  var tried = {}
+  var old = (state && state.tried) || []
+  for (var k = 0; k < old.length; k++) if (need[old[k]]) tried[old[k]] = true
+  var fresh = cashewGuessTried(log)
+  for (var id in fresh) if (need[id]) tried[id] = true
+  return Object.assign({}, state, { pending: pending, tried: Object.keys(tried).sort() })
+}
+
+// Freshly loaded drafts with the saved unconfirmed guesses put back (marked
+// guessed). A row that no longer needs a category keeps what it has.
+function cashewRestorePending(drafts, state) {
+  var pending = (state && state.pending) || {}
+  var any = false
+  var out = (drafts || []).map(function (d) {
+    var g = pending[d.id]
+    if (!g || !g.category || !cashewNeedsCategory(d)) return d
+    any = true
+    return Object.assign({}, d, { category: g.category, subcategory: g.subcategory || "", guessed: true, warn: "" })
+  })
+  return any ? out : drafts
+}
+
+// Every id the model could not answer: saved ones plus this run's.
+function cashewTriedAll(state, log) {
+  var tried = cashewGuessTried(log)
+  var old = (state && state.tried) || []
+  for (var i = 0; i < old.length; i++) tried[old[i]] = true
+  return tried
+}
