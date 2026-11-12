@@ -10617,6 +10617,5284 @@ Panel {
     }
 
     // Edit panel: shows while editing. Name is the field in the row above.
+    // It is either a Note or a Bill (typed here, item by item), never both.
+    Column {
+      id: editPanel
+      visible: card.editing
+      anchors.top: cInfo.bottom
+      anchors.topMargin: Style.space(2)
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.leftMargin: Style.spacing.rowPaddingX
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      spacing: Style.space(6)
+      property bool billMode: false
+      property bool picking: false
+      property var billItems: [{ d: "", p: "" }]
+      readonly property real billSum: {
+        var t = 0
+        for (var i = 0; i < billItems.length; i++) t += parseFloat(String(billItems[i].p).replace(/,/g, "")) || 0
+        return t
+      }
+      readonly property bool billValid: {
+        for (var i = 0; i < billItems.length; i++) if (String(billItems[i].d).trim() !== "") return true
+        return false
+      }
+      onVisibleChanged: if (visible) { billMode = false; picking = false; billItems = [{ d: "", p: "" }] }
+      function setItem(i, key, val) {
+        var next = billItems.slice()
+        next[i] = Object.assign({}, next[i]); next[i][key] = val
+        billItems = next
+      }
+      function saveBill() {
+        var lines = []
+        for (var i = 0; i < billItems.length; i++) {
+          var d = String(billItems[i].d).trim().replace(/\s+/g, " ")
+          var pr = String(billItems[i].p).trim().replace(/,/g, "")
+          if (d === "") continue
+          lines.push(pr !== "" && !isNaN(parseFloat(pr)) ? d + " " + parseFloat(pr) : d)
+        }
+        store.setTransactionName(card.groupKey, editField.text)
+        store.noteBill(card.txn.id, lines.join("\n"))
+        card.editing = false
+      }
+
+      Row {
+        spacing: Style.space(6)
+        visible: !card.linkedReceipt
+        TxnBtn { label: "Note"; primary: !editPanel.billMode; onClicked: editPanel.billMode = false }
+        TxnBtn { label: "Bill"; primary: editPanel.billMode; onClicked: editPanel.billMode = true }
+        TxnBtn { label: editPanel.picking ? "Hide bills" : "Link a bill"; onClicked: editPanel.picking = !editPanel.picking }
+      }
+
+      // NOTE
+      Rectangle {
+        visible: !editPanel.billMode
+        width: parent.width
+        height: Style.space(72)
+        radius: Style.space(6)
+        color: Util.alpha(root.foreground, 0.06)
+        border.width: 1
+        border.color: noteArea.activeFocus ? Color.accent : Util.alpha(root.foreground, 0.2)
+        TextArea {
+          id: noteArea
+          anchors.fill: parent
+          anchors.margins: Style.space(4)
+          wrapMode: TextArea.Wrap
+          placeholderText: "Note"
+          color: root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.body
+          background: null
+          onVisibleChanged: if (visible) text = card.userNote
+          Keys.onEscapePressed: { card.editing = false; Qt.callLater(function () { card.forceActiveFocus() }) }
+        }
+      }
+
+      // BILL: one row per item, right here in the widget.
+      Column {
+        visible: editPanel.billMode && !card.linkedReceipt
+        width: parent.width
+        spacing: Style.space(4)
+        Repeater {
+          model: editPanel.billItems.length
+          delegate: Row {
+            id: itemRow
+            required property int index
+            width: parent.width
+            spacing: Style.space(4)
+            TextField {
+              width: parent.width - Style.space(96) - Style.space(28) - parent.spacing * 2
+              placeholderText: "Item"
+              text: editPanel.billItems[itemRow.index] ? editPanel.billItems[itemRow.index].d : ""
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              onTextEdited: editPanel.setItem(itemRow.index, "d", text)
+            }
+            TextField {
+              width: Style.space(96)
+              placeholderText: "Price"
+              inputMethodHints: Qt.ImhFormattedNumbersOnly
+              horizontalAlignment: Text.AlignRight
+              text: editPanel.billItems[itemRow.index] ? editPanel.billItems[itemRow.index].p : ""
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              onTextEdited: editPanel.setItem(itemRow.index, "p", text)
+            }
+            PanelActionButton {
+              size: Style.space(28)
+              iconText: "×"
+              tooltipText: "Remove item"
+              foreground: root.foreground
+              bordered: false
+              focusable: false
+              enabled: editPanel.billItems.length > 1
+              onClicked: {
+                var next = editPanel.billItems.slice()
+                next.splice(itemRow.index, 1)
+                editPanel.billItems = next
+              }
+            }
+          }
+        }
+        Text {
+          textFormat: Text.PlainText
+          color: Math.abs(editPanel.billSum - Math.abs(card.txn.amount)) < 0.5 ? root.creditColor : Qt.darker(root.foreground, 1.3)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          text: "Items " + Model.currencySymbol(card.txn.currency) + Model.formatGrouped(editPanel.billSum)
+            + "  ·  transaction " + Model.currencySymbol(card.txn.currency) + Model.formatGrouped(Math.abs(card.txn.amount))
+        }
+      }
+
+      Row {
+        spacing: Style.space(6)
+        TxnBtn {
+          label: editPanel.billMode && !card.linkedReceipt ? "Save bill" : "Save"
+          primary: true
+          enabled: !(editPanel.billMode && !card.linkedReceipt) || editPanel.billValid
+          onClicked: editPanel.billMode && !card.linkedReceipt ? editPanel.saveBill() : card.saveEdit()
+        }
+        TxnBtn {
+          label: "+ Item"
+          visible: editPanel.billMode && !card.linkedReceipt
+          onClicked: editPanel.billItems = editPanel.billItems.concat([{ d: "", p: "" }])
+        }
+        TxnBtn { label: "Cancel"; onClicked: { card.editing = false; Qt.callLater(function () { card.forceActiveFocus() }) } }
+        TxnBtn {
+          label: "Open bill"
+          visible: !!card.linkedReceipt
+          onClicked: { card.editing = false; root.openReceiptDetail(card.linkedReceipt) }
+        }
+      }
+
+      // Bills not yet filed against any transaction.
+      Flow {
+        visible: editPanel.picking && !card.linkedReceipt
+        width: parent.width
+        spacing: Style.space(6)
+        Repeater {
+          model: editPanel.picking ? store.receipts.filter(function (r) { return r.state === "unmatched" }).slice(0, 12) : []
+          delegate: TxnBtn {
+            required property var modelData
+            label: Model.receiptTitle(modelData) + (modelData.total != null ? "  " + Model.currencySymbol(modelData.currency) + Model.formatGrouped(modelData.total) : "")
+            onClicked: { store.linkReceipt(modelData.id, card.txn.id); card.editing = false }
+          }
+        }
+      }
+    }
+
+    Column {
+      id: detailsPanel
+      visible: billRow.expanded
+      anchors.top: collapsedRow.bottom
+      anchors.topMargin: Style.space(6)
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.leftMargin: billRow.contentLeft
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      spacing: Style.space(4)
+
+      Rectangle {
+        width: parent.width
+        height: Style.spacing.hairline
+        color: Qt.darker(root.foreground, 1.8)
+      }
+
+      // Which bank the card is from, as its own mark: the collapsed row has
+      // no space for it, and the card's name no longer carries the bank.
+      Item {
+        width: parent.width
+        height: Math.max(bankLabel.implicitHeight, bankMark.implicitHeight)
+
+        Text {
+          id: bankLabel
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: "Bank"
+          color: Qt.darker(root.foreground, 1.4)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        // A bank with no mark of its own falls back to its name. Never
+        // defaults to HDFC, which would mislabel the first Axis or SBI card.
+        Loader {
+          id: bankMark
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          sourceComponent: billRow.bank === "HDFC" ? hdfcMark
+            : (billRow.bank === "AXIS" ? axisMark
+                : (billRow.bank === "SBI" ? sbiMark
+                : (billRow.bank === "ICICI" ? iciciMark : bankNameOnly)))
+        }
+
+        Component { id: hdfcMark; HdfcLogo { variant: "icon"; markSize: Style.spaceReal(12) } }
+        Component { id: axisMark; AxisLogo { markSize: Style.spaceReal(12) } }
+        Component { id: sbiMark; SbiLogo { markSize: Style.spaceReal(12) } }
+        Component { id: iciciMark; IciciLogo { markSize: Style.spaceReal(12) } }
+        Component {
+          id: bankNameOnly
+          Text {
+            textFormat: Text.PlainText
+            text: billRow.bank
+            color: root.foreground
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.caption
+          }
+        }
+      }
+
+      Repeater {
+        model: [
+          { label: "Last bill", value: billRow.parts.hasBreakdown ? billRow.overview.last_statement_amount : "" },
+          // paidIn is only known once the Outstanding Summary has been
+          // scraped; until then the same money shows as this cycle's credits.
+          { label: "Paid into card", value: billRow.parts.paidIn > 0
+              ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.paidIn)
+              : (Model.parseCurrencyString(billRow.overview.credited_this_cycle) !== 0
+                  ? billRow.overview.credited_this_cycle : "") },
+          { label: "Paid, bank not updated", value: billRow.parts.awaiting
+              ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.awaitingAmount)
+                + (billRow.parts.awaitingDate ? "  ·  " + Model.formatShortDate(billRow.parts.awaitingDate, true) : "") : "" },
+          { label: "Left to pay", value: billRow.parts.payNow > 0
+              ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.payNow) : "" },
+          { label: "In credit", value: billRow.parts.inCredit
+              ? Model.currencySymbol("INR") + Model.formatGrouped(Math.abs(billRow.parts.payNow)) : "" },
+          { label: "Last bill closed", value: Model.cycleClose(billRow.overview).known ? Model.formatShortDate(Model.cycleClose(billRow.overview).lastClosed, true) : Model.formatShortDate(billRow.overview.statementDate, true) },
+          { label: "Pay by", value: billRow.overview.dueDate
+              ? Model.formatShortDate(billRow.overview.dueDate, true) + "  ·  " + Model.dueCountdown(billRow.overview.dueDate) : "" },
+          { label: "Next bill closes", value: Model.cycleClose(billRow.overview).known ? Model.formatShortDate(Model.cycleClose(billRow.overview).closesOn, true) : "" },
+          { label: "Next bill so far", value: billRow.parts.nextBill > 0
+              ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.nextBill) : "" },
+          { label: "Total outstanding", value: billRow.overview.total_outstanding },
+          { label: "Unsettled / loans", value: billRow.overview.unsettled_amount || "" },
+          // One shared pool: every card on this account reports the same
+          // limit, so the row says so instead of implying this card has it
+          // to itself.
+          { label: "Limit", value: (billRow.overview.credit_limit_total || "")
+              + (billRow.overview.credit_limit_total && billRow.pool && billRow.pool.cards > 1
+                  ? "  ·  shared with " + (billRow.pool.cards - 1)
+                    + (billRow.pool.cards > 2 ? " other cards" : " other card") : "") },
+          { label: "Available", value: billRow.overview.available_limit || "" },
+          { label: "Used", value: billRow.pool && billRow.pool.limit > 0
+              ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.pool.used) : "" },
+          { label: "Last payment", value: (billRow.overview.last_payment_amount || "") + (billRow.overview.last_payment_date ? "  ·  " + billRow.overview.last_payment_date : "") },
+          { label: "Status", value: billRow.overview.payment_status }
+        ].filter(function (row) { return row.value })
+        delegate: Item {
+          required property var modelData
+          width: parent.width
+          height: Math.max(labelText.implicitHeight, valueText.implicitHeight)
+
+          Text {
+            id: labelText
+            anchors.left: parent.left
+            textFormat: Text.PlainText
+            text: modelData.label
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            id: valueText
+            anchors.left: labelText.right
+            anchors.leftMargin: Style.space(10)
+            anchors.right: parent.right
+            horizontalAlignment: Text.AlignRight
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            text: modelData.value
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+        }
+      }
+    }
+  }
+
+  // A bill laid out neatly in a small space: date and payment line, one row
+  // per item (name and amount, "qty x rate" dim underneath), the money lines
+  // and the total - or the raw OCR text for a bill with no items. Used in the
+  // RECEIPTS rows and under a transaction that has the bill filed against it.
+  component MiniBill: Column {
+    id: mb
+    required property var receipt
+    width: parent.width
+    spacing: Style.space(3)
+
+    Column {
+      visible: (mb.receipt.items || []).length > 0
+      width: parent.width
+      spacing: Style.space(3)
+
+        Text {
+          visible: text !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          text: [
+            mb.receipt.date ? Model.formatReceiptDate(mb.receipt.date) : "",
+            mb.receipt.time || "",
+            mb.receipt.paymentHint ? "Paid by " + mb.receipt.paymentHint : "",
+          ].filter(function (x) { return x !== "" }).join("   ·   ")
+          color: Qt.darker(root.foreground, 1.4)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        Repeater {
+          model: mb.receipt.items || []
+          delegate: Item {
+            id: miniItem
+            required property var modelData
+            width: parent.width
+            height: miniName.implicitHeight + (miniDetail.visible ? miniDetail.implicitHeight : 0) + Style.space(2)
+
+            Text {
+              id: miniName
+              anchors.left: parent.left
+              anchors.right: miniAmt.left
+              anchors.rightMargin: Style.space(8)
+              textFormat: Text.PlainText
+              text: miniItem.modelData.description || ""
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              id: miniAmt
+              anchors.right: parent.right
+              textFormat: Text.PlainText
+              text: miniItem.modelData.amount != null ? Number(miniItem.modelData.amount).toFixed(2) : ""
+              color: root.foreground
+              font.family: "monospace"
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              id: miniDetail
+              visible: (miniItem.modelData.qty != null && miniItem.modelData.rate != null)
+                || miniItem.modelData.gstRate != null
+              anchors.top: miniName.bottom
+              anchors.left: parent.left
+              textFormat: Text.PlainText
+              text: [
+                miniItem.modelData.qty != null && miniItem.modelData.rate != null
+                  ? Model.formatQty(miniItem.modelData) + " × " + Number(miniItem.modelData.rate).toFixed(2) : "",
+                miniItem.modelData.gstRate != null ? "GST " + miniItem.modelData.gstRate + "%" : "",
+              ].filter(function (x) { return x !== "" }).join("  ·  ")
+              color: Qt.darker(root.foreground, 1.6)
+              font.family: "monospace"
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
+        FsRule {}
+
+        Repeater {
+          model: Model.receiptSummaryLines(mb.receipt)
+          delegate: MiniRow {
+            required property var modelData
+            label: modelData.label
+            value: modelData.value
+          }
+        }
+
+        MiniRow {
+          label: "TOTAL"
+          bold: true
+          value: mb.receipt.total != null
+            ? Model.currencySymbol(mb.receipt.currency) + mb.receipt.total.toFixed(2) : "?"
+          valueColor: Model.receiptIsBalanced(mb.receipt) ? root.creditColor : root.debitColor
+        }
+
+    }
+
+    TextEdit {
+        width: parent.width
+        visible: (mb.receipt.items || []).length === 0 && !!mb.receipt.rawText
+        readOnly: true
+        selectByMouse: true
+        persistentSelection: true
+        textFormat: TextEdit.PlainText
+        text: mb.receipt.rawText || ""
+        wrapMode: TextEdit.Wrap
+        color: Qt.darker(root.foreground, 1.3)
+        font.family: "monospace"
+        font.pixelSize: Style.font.caption
+      }
+  }
+
+  // One label / right-aligned value line of the small bill view.
+  component MiniRow: Item {
+    id: mr
+    property string label: ""
+    property string value: ""
+    property bool bold: false
+    property var valueColor: null
+    width: parent.width
+    height: Math.max(mrLabel.implicitHeight, mrValue.implicitHeight)
+    Text {
+      id: mrLabel
+      anchors.left: parent.left
+      textFormat: Text.PlainText
+      text: mr.label
+      color: mr.bold ? root.foreground : Qt.darker(root.foreground, 1.4)
+      font.family: Style.font.family
+      font.bold: mr.bold
+      font.pixelSize: Style.font.caption
+    }
+    Text {
+      id: mrValue
+      anchors.right: parent.right
+      textFormat: Text.PlainText
+      text: mr.value
+      color: mr.valueColor ? mr.valueColor : (mr.bold ? root.foreground : Qt.darker(root.foreground, 1.2))
+      font.family: "monospace"
+      font.bold: mr.bold
+      font.pixelSize: Style.font.caption
+    }
+  }
+
+  // A transaction drawn exactly like a card in the main RECENT list: the
+  // round up/down arrow, bold merchant, bank mark + account pill and date,
+  // the amount on the right - and, for the link picker, why it was offered
+  // (the match reasons) under the amount. Click to choose it.
+  component TxnPickRow: BorderSurface {
+    id: pick
+    required property var txn
+    property string reasons: ""
+    property int score: 0
+    property bool clickable: true
+    // Same amount on the bill's own date: drawn green, with a tick.
+    property bool highlight: false
+    property bool dimmed: false
+    signal picked()
+    opacity: pick.dimmed ? 0.5 : 1.0
+
+    readonly property string displayMerchant: Model.transactionDisplayName(txn, store.transactionNameOverrides)
+    readonly property string accountName: Model.accountChipText(txn, store.cardOverviews, store.accountNameOverrides)
+    readonly property bool isDebit: txn.amount < 0
+    readonly property color directionColor: root.directionColor(txn)
+    readonly property bool isSavings: txn.accountType === "checking" && (txn.bank === "AXIS" || txn.bank === "SBI")
+
+    implicitHeight: Style.space(52)
+    radius: Style.cornerRadius
+    color: pick.highlight ? Util.alpha(root.creditColor, pickHover.hovered ? 0.24 : 0.14)
+      : (pickHover.hovered && pick.clickable ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent")
+    borderSpec: pick.highlight ? Border.flat(root.creditColor, 1) : Border.none()
+    Behavior on color { ColorAnimation { duration: 100 } }
+
+    HoverHandler { id: pickHover }
+    MouseArea {
+      anchors.fill: parent
+      enabled: pick.clickable
+      cursorShape: Qt.PointingHandCursor
+      preventStealing: true
+      onClicked: pick.picked()
+    }
+
+    Rectangle {
+      id: pickAvatar
+      width: Style.space(36)
+      height: width
+      radius: width / 2
+      color: Util.alpha(pick.directionColor, 0.22)
+      anchors.left: parent.left
+      anchors.leftMargin: Style.spacing.rowPaddingX
+      anchors.verticalCenter: parent.verticalCenter
+      Text {
+        anchors.centerIn: parent
+        textFormat: Text.PlainText
+        text: pick.isDebit ? "↓" : "↑"
+        color: pick.directionColor
+        font.bold: true
+        font.pixelSize: Style.font.subtitle
+      }
+    }
+
+    Column {
+      anchors.left: pickAvatar.right
+      anchors.leftMargin: Style.space(10)
+      anchors.right: pickAmount.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(3)
+
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        text: pick.displayMerchant
+        color: root.foreground
+        font.family: Style.font.family
+        font.bold: true
+        font.pixelSize: Style.font.subtitle
+        elide: Text.ElideRight
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(6)
+
+        BrandMark {
+          network: Model.cardNetwork(pick.txn, store.cardOverviews)
+          markHeight: Style.spaceReal(9)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+        HdfcLogo {
+          variant: "icon"
+          visible: pick.txn.accountType === "checking" && pick.txn.bank === "HDFC"
+          markSize: Style.spaceReal(9)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+        AxisLogo {
+          visible: pick.txn.accountType === "checking" && pick.txn.bank === "AXIS"
+          markSize: Style.spaceReal(9)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+        SbiLogo {
+          visible: pick.txn.accountType === "checking" && pick.txn.bank === "SBI"
+          markSize: Style.spaceReal(9)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+        Rectangle {
+          radius: Style.space(4)
+          color: Util.alpha(root.foreground, 0.12)
+          implicitWidth: pickPill.implicitWidth + Style.space(10)
+          implicitHeight: pickPill.implicitHeight + Style.space(4)
+          Text {
+            id: pickPill
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: pick.accountName
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: Model.formatFullDate(pick.txn.date)
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+
+    Column {
+      id: pickAmount
+      anchors.right: parent.right
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(2)
+
+      Text {
+        anchors.right: parent.right
+        textFormat: Text.PlainText
+        text: Model.formatAmount(pick.txn)
+        color: pick.directionColor
+        font.family: Style.font.family
+        font.bold: true
+        font.pixelSize: Style.font.subtitle
+      }
+      Text {
+        visible: pick.reasons !== ""
+        anchors.right: parent.right
+        textFormat: Text.PlainText
+        text: pick.reasons
+        color: pick.highlight ? root.creditColor : Qt.darker(root.foreground, 1.5)
+        font.family: Style.font.family
+        font.bold: pick.highlight
+        font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
+  // A photographed bill. Collapsed: a status disc (unmatched / needs
+  // review / filed / parked), the merchant, a one-line subtitle, the total.
+  // Expanded: the photo thumbnail, the item table, the GST breakdown, and
+  // either the linked transaction's one-liner or the candidate picker.
+  // Built on BillRow's skeleton — same collapsed/expanded split, same
+  // fixed-height pinned collapsed row, same detail-panel anchoring.
+  component ReceiptRow: BorderSurface {
+    id: receiptRow
+    required property var receipt
+    property bool expanded: false
+    readonly property var mark: Model.receiptStateMark(receiptRow.receipt)
+    readonly property color statusColor: receiptRow.mark.tone === "credit" ? root.creditColor
+      : (receiptRow.mark.tone === "debit" ? root.debitColor
+        : (receiptRow.mark.tone === "pending" ? root.pendingColor : Qt.darker(root.foreground, 1.4)))
+    readonly property bool _hot: rowHoverR.hovered || receiptRow.activeFocus
+    readonly property int collapsedHeight: Style.space(44)
+    readonly property int contentLeft: Style.spacing.rowPaddingX + root.billStatusWidth + Style.spacing.md
+
+    implicitHeight: receiptRow.collapsedHeight
+      + (receiptRow.expanded ? detailsPanelR.implicitHeight + Style.space(10) : 0)
+    radius: Style.cornerRadius
+    opacity: rowMouseR.pressed ? 0.75 : 1.0
+    color: receiptRow._hot ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent"
+    borderSpec: receiptRow.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+
+    Behavior on implicitHeight { NumberAnimation { duration: 120 } }
+    Behavior on color { ColorAnimation { duration: 100 } }
+    Behavior on opacity { NumberAnimation { duration: 80 } }
+
+    HoverHandler { id: rowHoverR }
+
+    activeFocusOnTab: true
+    Keys.onReturnPressed: receiptRow.expanded = !receiptRow.expanded
+    Keys.onEnterPressed: receiptRow.expanded = !receiptRow.expanded
+    Keys.onSpacePressed: receiptRow.expanded = !receiptRow.expanded
+    Keys.onUpPressed: root.focusNext(receiptRow, false)
+    Keys.onDownPressed: root.focusNext(receiptRow, true)
+    Keys.onLeftPressed: receiptRow.expanded = false
+    Keys.onRightPressed: receiptRow.expanded = true
+
+    Item {
+      id: collapsedRowR
+      anchors.top: parent.top
+      anchors.left: parent.left
+      anchors.right: parent.right
+      height: receiptRow.collapsedHeight
+
+      MouseArea {
+        id: rowMouseR
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: receiptRow.expanded = !receiptRow.expanded
+      }
+
+      Item {
+        id: statusGutterR
+        anchors.left: parent.left
+        anchors.leftMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+        width: root.billStatusWidth
+        height: avatarR.height + Style.space(4) + statePillR.height
+
+        Rectangle {
+          id: avatarR
+          width: Style.space(20)
+          height: width
+          radius: width / 2
+          color: Util.alpha(receiptRow.statusColor, 0.16)
+          anchors.top: parent.top
+          anchors.left: parent.left
+
+          Text {
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: receiptRow.mark.glyph
+            color: receiptRow.statusColor
+            font.bold: true
+            font.pixelSize: Style.font.caption
+          }
+
+          // The one place a quick decision lives without opening the whole
+          // row — same precedent as BillRow's "mark as paid" disc.
+          MouseArea {
+            anchors.fill: parent
+            anchors.margins: -Style.space(10)
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              // An unmatched bill's quick decision now lives in the
+              // full-screen window (the small panel no longer carries its
+              // own link picker), so this disc opens straight there;
+              // anything else just expands the quick-glance thumbnail+text.
+              if (receiptRow.receipt.state === "unmatched") {
+                root.openReceiptDetail(receiptRow.receipt)
+              } else {
+                receiptRow.expanded = true
+              }
+            }
+          }
+        }
+
+        Rectangle {
+          id: statePillR
+          anchors.top: avatarR.bottom
+          anchors.topMargin: Style.space(4)
+          anchors.left: parent.left
+          implicitWidth: Math.min(parent.width, pillTextR.implicitWidth + Style.space(8))
+          implicitHeight: pillTextR.implicitHeight + Style.space(2)
+          width: implicitWidth
+          height: implicitHeight
+          radius: Style.space(4)
+          color: Util.alpha(receiptRow.statusColor, 0.18)
+
+          Text {
+            id: pillTextR
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: receiptRow.mark.pill
+            color: receiptRow.statusColor
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.caption
+          }
+        }
+      }
+
+      Column {
+        anchors.left: statusGutterR.right
+        anchors.leftMargin: Style.spacing.md
+        anchors.right: amountStackR.left
+        anchors.rightMargin: Style.spacing.md
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(3)
+
+        Text {
+          width: parent.width
+          textFormat: Text.PlainText
+          text: Model.receiptTitle(receiptRow.receipt)
+          color: root.foreground
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
+        }
+
+        Text {
+          width: parent.width
+          textFormat: Text.PlainText
+          text: Model.receiptSubtitle(receiptRow.receipt)
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+      }
+
+      Column {
+        id: amountStackR
+        width: root.billFigureWidth
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(3)
+
+        Text {
+          anchors.right: parent.right
+          width: parent.width
+          horizontalAlignment: Text.AlignRight
+          textFormat: Text.PlainText
+          text: receiptRow.receipt.total != null
+            ? Model.currencySymbol(receiptRow.receipt.currency) + Model.formatGrouped(receiptRow.receipt.total)
+            : "?"
+          color: root.debitColor
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.subtitle
+        }
+
+        Text {
+          anchors.right: parent.right
+          width: parent.width
+          horizontalAlignment: Text.AlignRight
+          textFormat: Text.PlainText
+          text: receiptRow.receipt.state === "linked" ? ("••" + receiptRow.receipt.txnAmount) : ""
+          visible: receiptRow.receipt.state === "linked"
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+
+    Column {
+      id: detailsPanelR
+      visible: receiptRow.expanded
+      anchors.top: collapsedRowR.bottom
+      anchors.topMargin: Style.space(6)
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.leftMargin: receiptRow.contentLeft
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      spacing: Style.space(4)
+
+      Rectangle { width: parent.width; height: Style.spacing.hairline; color: Qt.darker(root.foreground, 1.8) }
+
+      // A small thumbnail, same footprint as every other row's inline
+      // content — clicking it opens the full review window below rather
+      // than growing the row itself, so the row stays a quick glance and
+      // the photo gets the space it actually needs only once asked for.
+      Rectangle {
+        visible: !!(receiptRow.receipt.thumbPath || receiptRow.receipt.storedPath)
+        width: Style.space(96)
+        height: Style.space(96)
+        radius: Style.cornerRadius
+        color: Qt.darker(root.foreground, 2.4)
+        clip: true
+
+        Image {
+          anchors.fill: parent
+          // storedPath/thumbPath from the snapshot are relative to the
+          // widget's data/ directory (txdb/receipts.py), not absolute —
+          // the path a bare "file://" + that string resolves to doesn't
+          // exist, which is how this first showed up as a silent blank box.
+          source: receiptRow.receipt.thumbPath
+            ? ("file://" + root.widgetDir + "/data/" + receiptRow.receipt.thumbPath)
+            : (receiptRow.receipt.storedPath
+                ? ("file://" + root.widgetDir + "/data/" + receiptRow.receipt.storedPath) : "")
+          rotation: receiptRow.receipt.rotation || 0
+          fillMode: Image.PreserveAspectFit
+          asynchronous: true
+          cache: false
+          sourceSize.height: Style.spaceReal(192)
+        }
+
+        MouseArea {
+          anchors.fill: parent
+          cursorShape: Qt.PointingHandCursor
+          preventStealing: true
+          onClicked: root.openReceiptDetail(receiptRow.receipt)
+        }
+      }
+
+      // The bill, neatly (see MiniBill); the full editor is in the review window.
+      MiniBill {
+        width: parent.width
+        receipt: receiptRow.receipt
+      }
+    }
+  }
+
+  // ---- The RECENT filter: inline, under the RECENT header ------------------
+  // A plain Item tree (no Popup, Menu or ComboBox), so it scrolls with the
+  // list and can never draw outside the widget. Changing the filter only
+  // changes bindings: no TextField and no transaction delegate is rebuilt.
+
+  // One toggle chip. Left click or Space/Enter: clicked(). Right or middle
+  // click, or Delete: cleared(). Left/Right move to the neighbouring chip.
+  component FilterChip: BorderSurface {
+    id: chip
+    property string label: ""
+    property string bank: ""
+    property string network: ""
+    property bool active: false
+    property bool closable: false
+    property bool focusable: true
+    property string tip: ""
+    signal clicked()
+    signal cleared()
+
+    readonly property bool _hot: chipMouse.containsMouse || chip.activeFocus
+    // Active label colour: the accent pulled toward the foreground. Plain
+    // accent on its own 20% tint is under 4.5:1 in 16 of 23 shipped themes
+    // (2.6:1 in rose-pine); this mix is 4.0:1 or better in all of them.
+    readonly property color _activeText: Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75))
+    // A label wider than this is cut with an ellipsis (a long account name
+    // must not push the chip past the widget).
+    property real maxLabelWidth: Style.space(190)
+
+    // Quiet by default: no border, a faint tonal fill. Active = accent tint.
+    // Only keyboard focus draws a ring.
+    implicitHeight: Style.space(26)
+    implicitWidth: chipRow.implicitWidth + Style.space(14)
+    radius: Style.space(13)
+    opacity: chipMouse.pressed ? 0.7 : 1
+    color: chip.active
+      ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, chip._hot ? 0.24 : 0.20)
+      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, chip._hot ? 0.13 : 0.06)
+    borderSpec: chip.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+
+    activeFocusOnTab: chip.focusable && chip.visible
+    Keys.onReturnPressed: chip.clicked()
+    Keys.onEnterPressed: chip.clicked()
+    Keys.onSpacePressed: chip.clicked()
+    Keys.onDeletePressed: chip.cleared()
+    Keys.onLeftPressed: root.focusNext(chip, false)
+    Keys.onRightPressed: root.focusNext(chip, true)
+    Keys.onDownPressed: root.focusNext(chip, true)
+    Keys.onUpPressed: root.focusNext(chip, false)
+    Keys.onEscapePressed: function (event) {
+      if (!root.filterOpen) { event.accepted = false; return }
+      root.filterOpen = false
+      event.accepted = true
+      Qt.callLater(function () { column.forceActiveFocus() })
+    }
+
+    Behavior on color { ColorAnimation { duration: 100 } }
+
+    Row {
+      id: chipRow
+      anchors.centerIn: parent
+      spacing: Style.space(5)
+
+      HdfcLogo {
+        variant: "icon"
+        visible: chip.bank === "HDFC"
+        markSize: Style.spaceReal(9)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      AxisLogo {
+        visible: chip.bank === "AXIS"
+        markSize: Style.spaceReal(9)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      SbiLogo {
+        visible: chip.bank === "SBI"
+        markSize: Style.spaceReal(9)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      BrandMark {
+        network: chip.network
+        markHeight: Style.spaceReal(9)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      Text {
+        textFormat: Text.PlainText
+        text: chip.label
+        width: Math.min(implicitWidth, chip.maxLabelWidth)
+        elide: Text.ElideRight
+        color: chip.active ? chip._activeText : root.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        font.bold: chip.active
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      Text {
+        visible: chip.closable
+        textFormat: Text.PlainText
+        text: "×"
+        color: chip._activeText
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    ToolTip.visible: chipMouse.containsMouse && chip.tip !== ""
+    ToolTip.text: chip.tip
+    ToolTip.delay: 500
+
+    MouseArea {
+      id: chipMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+      onClicked: function (mouse) {
+        // Capture first: the handlers can change what this chip shows, and a
+        // summary chip is destroyed when its filter part is removed.
+        var left = mouse.button === Qt.LeftButton
+        if (left) chip.clicked()
+        else chip.cleared()
+      }
+    }
+  }
+
+  // Min / Max amount field. Takes "5k", "1.2L", "1,200". The wheel steps by
+  // 100 (Shift: 1,000); the wheel is routed here by the list's
+  // ScrollWheelArea (see FilterBar.handleWheel).
+  component FilterAmountField: TextField {
+    id: field
+    property string which: "min"
+
+    implicitWidth: Style.space(84)
+    implicitHeight: Style.space(28)
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption
+    horizontalAlignment: TextInput.AlignRight
+    leftPadding: Style.space(10)
+    rightPadding: Style.space(10)
+    selectByMouse: true
+    // Only what Model.parseAmountInput reads: digits, comma, dot, space,
+    // the rupee sign and the letters of k l lac lakh cr crore m.
+    validator: RegularExpressionValidator { regularExpression: /^[0-9.,\s\u20b9klacrohem]*$/i }
+    background: Rectangle {
+      radius: Style.space(8)
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, field.activeFocus ? 0.12 : 0.06)
+      border.width: field.activeFocus ? 1 : 0
+      border.color: Color.accent
+    }
+
+    // The value this field last showed. A change from outside (the x on a
+    // summary chip, Clear all) must reach the text even while the field has
+    // focus; plain typing does not change the filter, so it is left alone.
+    property var shown: null
+    function syncFromFilter() {
+      var v = root.filter[field.which]
+      if (v === undefined) v = null
+      var want = v === null ? "" : Model.formatGrouped(v)
+      if (v !== field.shown) field.shown = v
+      else if (field.activeFocus) return
+      if (field.text !== want && (!field.activeFocus || v !== field._lastSynced)) field.text = want
+      field._lastSynced = v
+    }
+    property var _lastSynced: null
+    function commit() {
+      softCommitTimer.stop()
+      var parsed = Model.parseAmountInput(field.text)
+      if (parsed === 0 && field.which === "min") parsed = null   // "0" = no lower bound
+      root.setFilterPart(field.which, parsed)
+      field.text = parsed === null ? "" : Model.formatGrouped(parsed)
+    }
+    // Commit while typing (debounced) without touching the text, so the
+    // cursor stays. `shown` and `_lastSynced` are set first so that
+    // syncFromFilter sees its own value and leaves the text alone.
+    function softCommit() {
+      var parsed = Model.parseAmountInput(field.text)
+      if (parsed === null && field.text.trim() !== "") return
+      if (parsed === 0 && field.which === "min") parsed = null
+      var cur = root.filter[field.which]
+      if (cur === undefined) cur = null
+      if (parsed === cur) return
+      field.shown = parsed
+      field._lastSynced = parsed
+      root.setFilterPart(field.which, parsed)
+    }
+    Timer {
+      id: softCommitTimer
+      interval: 400
+      onTriggered: field.softCommit()
+    }
+    onTextEdited: softCommitTimer.restart()
+    function step(up, big) {
+      var cur = root.filter[field.which]
+      if (cur === null || cur === undefined) cur = field.which === "max" ? root.filterBounds.max : 0
+      var next = Math.max(0, cur + (up ? 1 : -1) * (big ? 1000 : 100))
+      var value = (field.which === "min" && next === 0) ? null : next
+      root.setFilterPart(field.which, value)
+      field.text = value === null ? "" : Model.formatGrouped(value)
+    }
+
+    Component.onCompleted: field.syncFromFilter()
+    Connections {
+      target: root
+      function onFilterChanged() { field.syncFromFilter() }
+    }
+
+    onEditingFinished: field.commit()
+    Keys.onReturnPressed: function (event) {
+      field.commit()
+      event.accepted = true
+      Qt.callLater(function () { column.forceActiveFocus() })
+    }
+    Keys.onEnterPressed: function (event) {
+      field.commit()
+      event.accepted = true
+      Qt.callLater(function () { column.forceActiveFocus() })
+    }
+    Keys.onEscapePressed: function (event) {
+      event.accepted = true
+      root.filterOpen = false
+      Qt.callLater(function () { column.forceActiveFocus() })
+    }
+  }
+
+  component FilterBar: Column {
+    id: bar
+    spacing: Style.space(8)
+
+    // The summary strip lists every active part except the search text,
+    // which is already visible in the search field.
+    // Reassigned only when the list really changes, so typing in the search
+    // box does not rebuild the summary chips on every pause.
+    property var summary: []
+    readonly property int activeCount: bar.summary.length
+    readonly property bool anyActive: root.filterChips.length > 0
+    readonly property string thisMonth: root.todayIso.slice(0, 7)
+    function syncSummary() {
+      var next = root.filterChips.filter(function (c) { return c.id !== "q" })
+      if (JSON.stringify(next) !== JSON.stringify(bar.summary)) bar.summary = next
+    }
+    Component.onCompleted: bar.syncSummary()
+    Connections {
+      target: root
+      function onFilterChipsChanged() { bar.syncSummary() }
+    }
+
+    function focusSearch() {
+      searchInput.forceActiveFocus()
+      searchInput.selectAll()
+    }
+
+    function stepMonth(dir) {
+      var b = root.filterBounds
+      var cur = root.filter.month
+      if (!b.lastMonth) return
+      var next
+      if (cur === "" || cur === "30d") next = dir < 0 ? b.lastMonth : ""
+      else {
+        next = Model.shiftMonth(cur, dir)
+        if (next === "") next = dir < 0 ? b.lastMonth : ""
+        else if (next > b.lastMonth) next = dir < 0 ? b.lastMonth : ""
+        else if (next < b.firstMonth) next = b.firstMonth
+      }
+      root.setFilterPart("month", next)
+    }
+
+    function _inside(source, item, event) {
+      if (!item.visible) return false
+      var p = source.mapToItem(item, event.x, event.y)
+      return p.x >= 0 && p.y >= 0 && p.x < item.width && p.y < item.height
+    }
+
+    // The list's wheel area asks here first. True = the wheel was used on an
+    // amount field or the month stepper and must not scroll the list.
+    function handleWheel(source, event) {
+      if (!bar.visible || !root.filterOpen) return false
+      var target = bar._inside(source, minField, event) ? minField
+        : (bar._inside(source, maxField, event) ? maxField
+        : (bar._inside(source, monthStepper, event) ? monthStepper : null))
+      if (!target) { bar._wheelAcc = 0; return false }
+      // One step per 120 units (a mouse notch). A touchpad sends many small
+      // deltas, and phase-end events with a delta of 0, which must not step.
+      var delta = event.angleDelta.y !== 0 ? event.angleDelta.y : event.pixelDelta.y * 2
+      bar._wheelAcc += delta
+      if (Math.abs(bar._wheelAcc) < 120) return true
+      var up = bar._wheelAcc > 0
+      bar._wheelAcc = 0
+      var big = (event.modifiers & Qt.ShiftModifier) !== 0
+      if (target === monthStepper) bar.stepMonth(up ? 1 : -1)
+      else target.step(up, big)
+      return true
+    }
+    property real _wheelAcc: 0
+
+    // Row 1: search + the Filter toggle.
+    Item {
+      width: bar.width
+      height: Style.space(28)
+
+      BorderSurface {
+        id: toggle
+        anchors.right: parent.right
+        height: parent.height
+        width: toggleRow.implicitWidth + Style.space(22)
+        radius: Style.space(8)
+        readonly property bool _hot: toggleMouse.containsMouse || toggle.activeFocus
+        readonly property color _activeText: Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75))
+        opacity: toggleMouse.pressed ? 0.7 : 1
+        color: root.filterOpen || bar.activeCount > 0
+          ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, toggle._hot ? 0.24 : 0.20)
+          : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, toggle._hot ? 0.13 : 0.06)
+        borderSpec: toggle.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+
+        activeFocusOnTab: toggle.visible
+        Keys.onReturnPressed: root.filterOpen = !root.filterOpen
+        Keys.onEnterPressed: root.filterOpen = !root.filterOpen
+        Keys.onSpacePressed: root.filterOpen = !root.filterOpen
+        Keys.onDownPressed: root.focusNext(toggle, true)
+        Keys.onUpPressed: root.focusNext(toggle, false)
+        // Esc collapses an open panel first (it used to close the popup).
+        Keys.onEscapePressed: function (event) {
+          if (!root.filterOpen) { event.accepted = false; return }
+          root.filterOpen = false
+          event.accepted = true
+        }
+
+        Row {
+          id: toggleRow
+          anchors.centerIn: parent
+          spacing: Style.space(5)
+
+          Text {
+            textFormat: Text.PlainText
+            text: "󰈳"
+            color: bar.activeCount > 0 ? toggle._activeText : root.foreground
+            font.pixelSize: Style.font.caption
+            anchors.verticalCenter: parent.verticalCenter
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: "Filter"
+            color: bar.activeCount > 0 ? toggle._activeText : root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: bar.activeCount > 0
+            anchors.verticalCenter: parent.verticalCenter
+          }
+          Text {
+            visible: bar.activeCount > 0
+            textFormat: Text.PlainText
+            text: String(bar.activeCount)
+            color: toggle._activeText
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            anchors.verticalCenter: parent.verticalCenter
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: root.filterOpen ? "▴" : "▾"
+            color: root.foreground
+            font.pixelSize: Style.font.caption
+            anchors.verticalCenter: parent.verticalCenter
+          }
+        }
+
+        MouseArea {
+          id: toggleMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.filterOpen = !root.filterOpen
+        }
+      }
+
+      TextField {
+        id: searchInput
+        anchors.left: parent.left
+        anchors.right: toggle.left
+        anchors.rightMargin: Style.space(6)
+        height: parent.height
+        placeholderText: "Search merchant or note"
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        selectByMouse: true
+        leftPadding: Style.space(12)
+        background: Rectangle {
+          radius: Style.space(8)
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, searchInput.activeFocus ? 0.12 : 0.06)
+          border.width: searchInput.activeFocus ? 1 : 0
+          border.color: Color.accent
+        }
+
+        // The text reaches root.filter after a short pause (and on Enter),
+        // not on every key, and is never bound back: no binding loop.
+        onTextChanged: searchDebounce.restart()
+        onEditingFinished: { searchDebounce.stop(); root.setFilterPart("q", searchInput.text) }
+        Keys.onReturnPressed: function (event) {
+          searchDebounce.stop()
+          root.setFilterPart("q", searchInput.text)
+          event.accepted = true
+          Qt.callLater(function () { column.forceActiveFocus(); root.focusNext(column, true) })
+        }
+        Keys.onEnterPressed: function (event) {
+          searchDebounce.stop()
+          root.setFilterPart("q", searchInput.text)
+          event.accepted = true
+          Qt.callLater(function () { column.forceActiveFocus(); root.focusNext(column, true) })
+        }
+        Keys.onDownPressed: root.focusNext(searchInput, true)
+        // Esc: clear the text, then collapse the panel, then close the popup
+        // (the event goes on to the column's own Escape handler).
+        Keys.onEscapePressed: function (event) {
+          if (searchInput.text !== "") {
+            searchDebounce.stop()
+            searchInput.text = ""
+            root.setFilterPart("q", "")
+            event.accepted = true
+          } else if (root.filterOpen) {
+            root.filterOpen = false
+            event.accepted = true
+          } else {
+            event.accepted = false
+          }
+        }
+
+        Timer {
+          id: searchDebounce
+          interval: 150
+          onTriggered: root.setFilterPart("q", searchInput.text)
+        }
+        // Clear all / the x on a chip empty the field from outside.
+        Connections {
+          target: root
+          function onFilterChanged() {
+            if (root.filter.q === "" && searchInput.text !== "" && !searchDebounce.running) searchInput.text = ""
+          }
+        }
+      }
+    }
+
+    // Row 2: one chip per active part, the count, Clear all.
+    Flow {
+      width: bar.width
+      spacing: Style.space(6)
+      visible: bar.anyActive
+
+      Repeater {
+        model: bar.summary
+        delegate: FilterChip {
+          required property var modelData
+          label: modelData.label
+          active: true
+          closable: true
+          focusable: false
+          tip: "Click or right-click to remove"
+          onClicked: { var id = modelData.id; root.clearFilterPart(id) }
+          onCleared: { var id = modelData.id; root.clearFilterPart(id) }
+        }
+      }
+
+      Text {
+        height: Style.space(26)
+        leftPadding: Style.space(4)
+        verticalAlignment: Text.AlignVCenter
+        textFormat: Text.PlainText
+        text: root.filteredTransactions.length + " of " + root.transactions.length + " rows"
+        color: Qt.darker(root.foreground, 1.2)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      TextAction {
+        label: "Clear all"
+        onTriggered: root.clearAllFilters()
+      }
+    }
+
+    // The expanded panel: four labelled rows, a caption column on the left
+    // and chips on the right, with room between the rows.
+    Column {
+      id: panel
+      width: bar.width
+      spacing: Style.space(12)
+      topPadding: Style.space(6)
+      bottomPadding: Style.space(4)
+      visible: root.filterOpen
+
+      readonly property real captionWidth: Style.space(46)
+
+      // Accounts, sorted by bank. Short and the same length: the logo and the
+      // last four digits; the full name is in the tooltip. Alt+1..6 toggle the first six.
+      Row {
+        spacing: Style.space(8)
+        Text {
+          width: panel.captionWidth
+          height: Style.space(26)
+          verticalAlignment: Text.AlignVCenter
+          textFormat: Text.PlainText
+          text: "Account"
+          color: Qt.darker(root.foreground, 1.2)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Flow {
+          width: panel.width - panel.captionWidth - Style.space(8)
+          spacing: Style.space(6)
+
+          Repeater {
+            model: root.accountChipOptions
+            delegate: FilterChip {
+              required property var modelData
+              required property int index
+              label: ((modelData.label.match(/(\d{4})\s*$/) || ["", modelData.label])[1])
+              bank: modelData.accountType === "checking" ? modelData.bank : ""
+              network: modelData.network || ""
+              active: root.filter.accounts.indexOf(modelData.key) !== -1
+              tip: modelData.label + (index < 6 ? "  ·  Alt+" + (index + 1) : "")
+              onClicked: { var key = modelData.key; root.toggleAccountFilter(key) }
+              onCleared: {
+                var key = modelData.key
+                if (root.filter.accounts.indexOf(key) !== -1) root.toggleAccountFilter(key)
+              }
+            }
+          }
+        }
+      }
+
+      // Direction and the cycling chips.
+      Row {
+        spacing: Style.space(8)
+        Text {
+          width: panel.captionWidth
+          height: Style.space(26)
+          verticalAlignment: Text.AlignVCenter
+          textFormat: Text.PlainText
+          text: "Show"
+          color: Qt.darker(root.foreground, 1.2)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Flow {
+          width: panel.width - panel.captionWidth - Style.space(8)
+          spacing: Style.space(6)
+
+          FilterChip {
+            label: "In"
+            active: root.filter.dir === "in"
+            onClicked: root.setFilterPart("dir", root.filter.dir === "in" ? "any" : "in")
+            onCleared: root.setFilterPart("dir", "any")
+          }
+          FilterChip {
+            label: "Out"
+            active: root.filter.dir === "out"
+            onClicked: root.setFilterPart("dir", root.filter.dir === "out" ? "any" : "out")
+            onCleared: root.setFilterPart("dir", "any")
+          }
+          FilterChip {
+            label: root.filter.tracked === "untracked" ? "Not tracked" : "Tracked"
+            active: root.filter.tracked !== "any"
+            tip: "Click cycles any, tracked, not tracked"
+            onClicked: root.cycleFilterPart("tracked", ["any", "tracked", "untracked"])
+            onCleared: root.setFilterPart("tracked", "any")
+          }
+          FilterChip {
+            label: root.filter.transfers === "hide" ? "No transfers" : (root.filter.transfers === "only" ? "Transfers only" : "Transfers")
+            active: root.filter.transfers !== "any"
+            tip: "Click cycles any, only, hide"
+            onClicked: root.cycleFilterPart("transfers", ["any", "only", "hide"])
+            onCleared: root.setFilterPart("transfers", "any")
+          }
+          FilterChip {
+            visible: store.receipts.length > 0 || root.filter.bill !== "any"
+            label: root.filter.bill === "none" ? "No bill" : (root.filter.bill === "has" ? "Has bill" : "Bill")
+            active: root.filter.bill !== "any"
+            tip: "Click cycles any, has bill, no bill"
+            onClicked: root.cycleFilterPart("bill", ["any", "has", "none"])
+            onCleared: root.setFilterPart("bill", "any")
+          }
+        }
+      }
+
+      // Amount range.
+      Row {
+        spacing: Style.space(8)
+        Text {
+          width: panel.captionWidth
+          height: Style.space(28)
+          verticalAlignment: Text.AlignVCenter
+          textFormat: Text.PlainText
+          text: "Amount"
+          color: Qt.darker(root.foreground, 1.2)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Row {
+          spacing: Style.space(8)
+          FilterAmountField { id: minField; which: "min"; placeholderText: "Min" }
+          Text {
+            height: Style.space(28)
+            verticalAlignment: Text.AlignVCenter
+            textFormat: Text.PlainText
+            text: "to"
+            color: Qt.darker(root.foreground, 1.2)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          FilterAmountField {
+            id: maxField
+            which: "max"
+            placeholderText: root.filterBounds.max > 0 ? Model.formatGrouped(root.filterBounds.max) : "Max"
+          }
+        }
+      }
+
+      // Date: a month stepper and three shortcuts.
+      Row {
+        spacing: Style.space(8)
+        Text {
+          width: panel.captionWidth
+          height: Style.space(26)
+          verticalAlignment: Text.AlignVCenter
+          textFormat: Text.PlainText
+          text: "Date"
+          color: Qt.darker(root.foreground, 1.2)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Flow {
+          width: panel.width - panel.captionWidth - Style.space(8)
+          spacing: Style.space(6)
+
+          Row {
+            id: monthStepper
+            spacing: Style.space(2)
+            FilterChip {
+              label: "‹"
+              tip: "Earlier month (wheel)"
+              onClicked: bar.stepMonth(-1)
+              onCleared: root.setFilterPart("month", "")
+            }
+            Text {
+              height: Style.space(26)
+              width: Style.space(88)
+              horizontalAlignment: Text.AlignHCenter
+              verticalAlignment: Text.AlignVCenter
+              textFormat: Text.PlainText
+              text: root.filter.month === "" ? "All months" : (root.filter.month === "30d" ? "Last 30 days" : Model.monthLabel(root.filter.month))
+              color: root.filter.month === "" ? Qt.darker(root.foreground, 1.2) : root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: root.filter.month !== ""
+            }
+            FilterChip {
+              label: "›"
+              tip: "Later month (wheel)"
+              onClicked: bar.stepMonth(1)
+              onCleared: root.setFilterPart("month", "")
+            }
+          }
+          FilterChip {
+            label: "30d"
+            active: root.filter.month === "30d"
+            onClicked: root.setFilterPart("month", root.filter.month === "30d" ? "" : "30d")
+            onCleared: root.setFilterPart("month", "")
+          }
+          FilterChip {
+            label: "This month"
+            active: root.filter.month === bar.thisMonth
+            onClicked: root.setFilterPart("month", root.filter.month === bar.thisMonth ? "" : bar.thisMonth)
+            onCleared: root.setFilterPart("month", "")
+          }
+        }
+      }
+
+      // One quiet line: the count on the left, the way out on the right.
+      Item {
+        width: panel.width
+        height: Style.space(18)
+
+        Text {
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: root.filteredTransactions.length + " of " + root.transactions.length + " rows shown"
+          color: Qt.darker(root.foreground, 1.2)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: "Esc to close"
+          color: Qt.darker(root.foreground, 1.2)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+  }
+
+  // One bank in the balance row: its logo (the reload button) then its balance.
+  component BankBalance: Item {
+    id: chip
+    property string bank: "hdfc"
+    property string tooltip: ""
+    property string balanceText: ""
+    readonly property bool running: chip.bank === "axis" ? axisFetchProc.running
+      : (chip.bank === "sbi" ? sbiFetchProc.running
+        : (chip.bank === "icici" ? iciciFetchProc.running : fetchProc.running))
+    // Only one fetch at a time: allowed while no other bank's fetch runs.
+    readonly property bool allowed: chip.running || !root.anyFetchRunning
+
+    implicitWidth: control.width + Style.spacing.xs + balanceLabel.implicitWidth
+    implicitHeight: Style.space(28)
+    width: implicitWidth
+    height: implicitHeight
+
+    FetchControl {
+      id: control
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      bank: chip.bank
+      running: chip.running
+      allowed: chip.allowed
+      idleTooltip: chip.tooltip
+      foreground: root.foreground
+      scrollIntoView: root.scrollIntoView
+      onFetch: root.startFetch(chip.bank)
+      onCancel: root.cancelFetch(chip.bank)
+    }
+
+    Text {
+      id: balanceLabel
+      anchors.left: control.right
+      anchors.leftMargin: Style.spacing.xs
+      anchors.verticalCenter: parent.verticalCenter
+      // Elides rather than pushing the row over: the logos are the
+      // buttons, so they are the last thing that should give way.
+      elide: Text.ElideRight
+      textFormat: Text.PlainText
+      text: chip.balanceText !== "" ? chip.balanceText : "no balance yet"
+      color: chip.balanceText !== "" ? Qt.darker(root.foreground, 1.3) : Qt.darker(root.foreground, 1.7)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.italic: chip.balanceText === ""
+    }
+  }
+
+  // A transparent MouseArea stacked on top of a Flickable (declared after
+  // it, so it is topmost and hit first) to take over its wheel handling.
+  // Flickable's own built-in wheel-scroll claims the event before any
+  // WheelHandler placed inside or as an ancestor of it ever sees it - the
+  // same root cause already diagnosed for the photo pane's zoom, and the
+  // reason the default wheel feel everywhere else in this widget was slow
+  // and un-tunable. acceptedButtons: NoButton means it never intercepts
+  // the press itself, so drag-to-scroll still reaches the Flickable
+  // underneath untouched - only the wheel is rerouted here.
+  //
+  // The jump this applies is animated with a one-shot NumberAnimation,
+  // not a `Behavior on contentY` on the target: a Behavior there would
+  // also animate every contentY change Flickable's own drag handling
+  // makes internally, fighting it frame by frame and making drag-to-
+  // scroll feel laggy - the opposite of the point. Only a wheel-triggered
+  // jump gets the easing; native drag/touch scrolling is untouched.
+  component ScrollWheelArea: MouseArea {
+    id: scrollWheel
+    required property Flickable target
+    // How many content pixels one wheel "line" (a mouse notch, or an
+    // equivalent slice of trackpad pixelDelta) moves - tune this, not the
+    // animation, to make scrolling faster or slower. 5 = ~300 px a notch.
+    property real speed: 5.0
+    property double _lastWheel: 0
+    // Optional function(source, event) -> bool. True = it used the wheel.
+    property var interceptWheel: null
+
+    acceptedButtons: Qt.NoButton
+
+    NumberAnimation {
+      id: scrollAnim
+      target: scrollWheel.target
+      property: "contentY"
+      duration: 240
+      easing.type: Easing.OutQuart
+    }
+
+    onWheel: function (event) {
+      if (scrollWheel.interceptWheel && scrollWheel.interceptWheel(scrollWheel, event)) {
+        event.accepted = true
+        return
+      }
+      // A touchpad reports smooth scrolling via pixelDelta (already real
+      // pixels); angleDelta.y (eighths of a degree, 120 per notch on a
+      // normal mouse wheel) is normalised against the same ~60px-per-
+      // notch baseline browsers use, so both input types land in the same
+      // speed scale.
+      var touchpad = event.pixelDelta.y !== 0
+      var raw = touchpad ? event.pixelDelta.y : (event.angleDelta.y / 120) * 60
+      if (raw !== 0) {
+        var now = Date.now()
+        // A wheel spun quickly keeps speeding up (up to 2x), the way a long
+        // scroll should; a single notch stays precise.
+        var gain = (!touchpad && now - scrollWheel._lastWheel < 90) ? 2.0 : 1.0
+        scrollWheel._lastWheel = now
+        var t = scrollWheel.target
+        var maxY = Math.max(0, t.contentHeight - t.height)
+        // Continue from where the running glide is headed, not from where it
+        // happens to be this frame: notches that arrive mid-glide add up
+        // instead of each restarting from a half-finished position (that
+        // lost most of a fast spin and made the page stutter).
+        var base = scrollAnim.running ? scrollAnim.to : t.contentY
+        var y = Math.max(0, Math.min(maxY, base - raw * scrollWheel.speed * gain))
+        scrollAnim.duration = touchpad ? 90 : 240
+        scrollAnim.to = y
+        scrollAnim.restart()
+      }
+      event.accepted = true
+    }
+  }
+
+  // A bill-style rule in the full-screen review window: one hairline, or a
+  // doubled pair for a section boundary - the same "----" vs "====" a
+  // printed till receipt uses to tell an item divider from the header/
+  // GRAND TOTAL border.
+  component FsRule: Item {
+    id: fsRule
+    property bool doubled: false
+    width: parent.width
+    height: fsRuleText.implicitHeight
+    clip: true
+    Text {
+      id: fsRuleText
+      width: parent.width
+      textFormat: Text.PlainText
+      wrapMode: Text.NoWrap
+      text: (fsRule.doubled ? "=" : "-").repeat(120)
+      color: Qt.darker(root.foreground, 1.8)
+      font.family: "monospace"
+      font.pixelSize: Style.font.caption
+    }
+  }
+
+  // A blank box of the "add a product" row.
+  component NewItemBox: TextField {
+    color: root.foreground
+    placeholderTextColor: Qt.darker(root.foreground, 2.0)
+    font.family: "monospace"
+    font.pixelSize: Style.font.caption
+    background: Rectangle {
+      radius: Style.cornerRadius
+      color: Util.alpha(Color.accent, 0.08)
+      border.width: 1
+      border.color: Util.alpha(Color.accent, 0.4)
+    }
+  }
+
+  // A text value of the bill (shop name, date, time, paid by) that edits where
+  // it stands: plain text until clicked, then a box; Enter or clicking away
+  // saves, Escape cancels. It is a fixed part of the card - not built per
+  // refresh - so a database refresh while you type cannot close it. A date
+  // must be a real one (DD-MM-YYYY and similar) or the box stays red and
+  // nothing is saved.
+  component InlineEdit: Item {
+    id: ie
+    property string fieldName: ""
+    property string display: ""
+    property string initial: ""
+    property string placeholder: ""
+    property color textColor: root.foreground
+    property int hAlign: Text.AlignLeft
+    property bool bold: false
+    property int pixelSize: Style.font.caption
+    property bool editing: false
+    readonly property string billId: receiptFullScreen.r.id || ""
+    readonly property bool invalid: ie.editing && ie.fieldName === "date"
+      && Model.parseReceiptDate(input.text) === null
+    onBillIdChanged: ie.editing = false
+
+    implicitWidth: ie.editing ? Math.max(label.implicitWidth, Style.space(110)) : label.implicitWidth
+    implicitHeight: ie.editing ? input.implicitHeight : label.implicitHeight
+
+    Text {
+      id: label
+      visible: !ie.editing
+      anchors.left: parent.left
+      anchors.right: parent.right
+      horizontalAlignment: ie.hAlign
+      textFormat: Text.PlainText
+      text: ie.display
+      color: ie.textColor
+      font.family: "monospace"
+      font.bold: ie.bold
+      font.pixelSize: ie.pixelSize
+      wrapMode: Text.WordWrap
+      MouseArea {
+        anchors.fill: parent
+        anchors.margins: -Style.space(6)
+        cursorShape: Qt.IBeamCursor
+        onClicked: { input.text = ie.initial; ie.editing = true; input.forceActiveFocus(); input.selectAll() }
+      }
+    }
+
+    TextField {
+      id: input
+      visible: ie.editing
+      anchors.fill: parent
+      horizontalAlignment: ie.hAlign
+      placeholderText: ie.placeholder
+      placeholderTextColor: Qt.darker(root.foreground, 2.0)
+      color: ie.invalid ? root.debitColor : root.foreground
+      font.family: "monospace"
+      font.bold: ie.bold
+      font.pixelSize: ie.pixelSize
+      background: Rectangle {
+        radius: Style.cornerRadius
+        color: Util.alpha(Color.accent, 0.12)
+        border.width: 1
+        border.color: ie.invalid ? root.debitColor : Util.alpha(Color.accent, 0.6)
+      }
+      Keys.onEscapePressed: ie.editing = false
+      onEditingFinished: {
+        if (!ie.editing || ie.invalid) return
+        var st = store
+        var rid = receiptFullScreen.r.id
+        var name = ie.fieldName
+        var typed = text.trim()
+        var changed = typed !== ie.initial.trim()
+        if (name === "date") typed = Model.parseReceiptDate(typed)
+        ie.editing = false
+        if (changed) st.editReceiptField(rid, name, typed)
+      }
+    }
+  }
+
+  // A live log in a fixed-height box that scrolls: it follows the newest text
+  // until you scroll up to read back (then it stays put; scroll to the bottom
+  // to follow again), is selectable, and has a close button once it is done.
+  component StreamBox: Item {
+    id: sb
+    property string text: ""
+    property int boxHeight: Style.space(150)
+    property bool closable: false
+    signal closed()
+    height: sb.boxHeight
+    clip: true
+
+    Rectangle { anchors.fill: parent; radius: Style.cornerRadius; color: Util.alpha(root.foreground, 0.05) }
+
+    Flickable {
+      id: sbFlick
+      anchors.fill: parent
+      anchors.margins: Style.space(6)
+      clip: true
+      contentWidth: width
+      contentHeight: sbText.implicitHeight
+      boundsBehavior: Flickable.StopAtBounds
+
+      property bool follow: true
+      property bool jumping: false
+      onContentYChanged: if (!jumping) follow = contentY + height >= contentHeight - 12
+      function toBottom() {
+        jumping = true
+        contentY = Math.max(0, contentHeight - height)
+        jumping = false
+        follow = true
+      }
+
+      TextEdit {
+        id: sbText
+        width: parent.width
+        readOnly: true
+        selectByMouse: true
+        persistentSelection: true
+        textFormat: TextEdit.PlainText
+        text: sb.text
+        wrapMode: TextEdit.WrapAnywhere
+        color: Qt.darker(root.foreground, 1.4)
+        font.family: "monospace"
+        font.pixelSize: Style.font.caption
+        onTextChanged: Qt.callLater(function () { if (sbFlick.follow) sbFlick.toBottom() })
+      }
+    }
+
+    ScrollWheelArea { anchors.fill: sbFlick; target: sbFlick }
+
+    PanelActionButton {
+      visible: sb.closable
+      size: Style.space(20)
+      anchors.top: parent.top
+      anchors.right: parent.right
+      anchors.margins: Style.space(4)
+      iconText: "×"
+      tooltipText: "Close"
+      foreground: root.foreground
+      focusable: false
+      onClicked: sb.closed()
+    }
+  }
+
+  // One figure on an item row. Plain text until clicked; then only this
+  // one becomes a box. Enter or clicking away saves, Escape cancels. The
+  // qty cell takes "1.444kg" / "3 pc" and splits the unit off itself.
+  component ItemCell: Item {
+    id: ic
+    property var line
+    property string fieldName: ""
+    property string display: ""
+    property string initial: ""
+    property color textColor: root.foreground
+    property bool editing: false
+    readonly property bool invalid: {
+      var t = input.text.trim()
+      if (!ic.editing || t === "") return false
+      if (ic.fieldName === "qty") return !/^\d*\.?\d+\s*[^\d\s]*$/.test(t)
+      return isNaN(Number(t))
+    }
+    implicitHeight: ic.editing ? input.implicitHeight : label.implicitHeight
+
+    Text {
+      id: label
+      visible: !ic.editing
+      anchors.left: parent.left
+      anchors.right: parent.right
+      horizontalAlignment: Text.AlignRight
+      textFormat: Text.PlainText
+      text: ic.display
+      color: ic.textColor
+      font.family: "monospace"
+      font.pixelSize: Style.font.caption
+      MouseArea {
+        anchors.fill: parent
+        anchors.margins: -Style.space(3)
+        cursorShape: Qt.IBeamCursor
+        onClicked: { ic.editing = true; input.forceActiveFocus(); input.selectAll() }
+      }
+    }
+
+    TextField {
+      id: input
+      visible: ic.editing
+      anchors.fill: parent
+      text: ic.initial
+      horizontalAlignment: TextInput.AlignRight
+      color: ic.invalid ? root.debitColor : root.foreground
+      font.family: "monospace"
+      font.pixelSize: Style.font.caption
+      background: Rectangle {
+        radius: Style.cornerRadius
+        color: Util.alpha(Color.accent, 0.12)
+        border.width: 1
+        border.color: ic.invalid ? root.debitColor : Util.alpha(Color.accent, 0.6)
+      }
+      Keys.onEscapePressed: { input.text = ic.initial; ic.editing = false }
+      onEditingFinished: {
+        if (!ic.editing) return
+        // Everything is read first: the first store call re-renders the
+        // rows and destroys this cell, and nothing may touch it afterwards.
+        var st = store
+        var rid = receiptFullScreen.r.id
+        var line = ic.line
+        var field = ic.fieldName
+        var t = text.trim()
+        var changed = t !== ic.initial.trim()
+        var ok = !ic.invalid
+        ic.editing = false
+        if (!ok || !changed) return
+        if (field === "qty") {
+          // "3" changes the number only; "3 pc" or "1.5kg" also sets the unit.
+          // (Typing a bare number used to wipe the unit.)
+          var m = /^(\d*\.?\d+)\s*(.*)$/.exec(t)
+          if (m && m[2] !== "") st.editReceiptItemField(rid, line, "unit", m[2])
+          st.editReceiptItemField(rid, line, "qty", m ? m[1] : t)
+        } else {
+          st.editReceiptItemField(rid, line, field, t)
+        }
+      }
+    }
+  }
+
+  // One editable value in the full-screen review window: a label and a
+  // value that is plain text until you click it - then just that one value
+  // becomes a box (Enter or clicking away saves, Escape cancels). Nothing
+  // else on the bill opens up. A numeric value that does not parse shows an
+  // inline error and is not saved. `autoStart` opens it at once when it is
+  // shown, for the header values chosen by clicking the title/date/time.
+  //
+  // `ledger: true` is the bill's right-aligned money layout (Subtotal, Bill
+  // Discount, Round off, GRAND TOTAL); `big`/`valueColor` are for GRAND
+  // TOTAL alone.
+  component ReceiptEditField: Item {
+    id: ef
+    property bool ledger: false
+    property bool big: false
+    property var valueColor: null
+    property string prefix: ""        // shown before the value, never part of what is typed or saved
+    property var taxRate: null        // set on a GST row: save through the slab, not the header
+    property var feeLine: null        // set on a fee row: save through that fee
+    property string feeField: "amount" // which of the fee's fields the value is (amount / original)
+    property bool struck: false       // the value is drawn struck through (a waived charge's original)
+    property bool free: false         // a green FREE follows the value
+    property bool autoStart: false
+    signal finished()
+    required property string label
+    required property string fieldName
+    required property string value
+    property bool numeric: false
+    property bool editing: ef.autoStart
+    readonly property bool badDate: ef.editing && ef.fieldName === "date"
+      && Model.parseReceiptDate(efInput.text) === null
+    readonly property bool invalid: ef.badDate || (ef.editing && ef.numeric
+      && efInput.text.trim() !== "" && isNaN(Number(efInput.text.trim())))
+    width: parent.width
+    height: efRow.implicitHeight + (ef.invalid ? Style.space(2) + efError.implicitHeight : 0)
+
+    function startEditing() {
+      ef.editing = true
+      efInput.text = ef.value
+      efInput.forceActiveFocus()
+      efInput.selectAll()
+    }
+    Component.onCompleted: if (ef.autoStart) Qt.callLater(ef.startEditing)
+
+    Column {
+      id: efRow
+      width: parent.width
+      spacing: Style.space(2)
+
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
+
+        Text {
+          id: efLabel
+          width: ef.big ? Style.space(170) : (ef.ledger ? Style.space(120) : Style.space(76))
+          textFormat: Text.PlainText
+          text: ef.label
+          color: ef.big ? root.foreground : Qt.darker(root.foreground, 1.4)
+          font.family: ef.ledger ? "monospace" : Style.font.family
+          font.bold: ef.big
+          font.pixelSize: ef.big ? Style.font.body : Style.font.caption
+        }
+
+        Text {
+          visible: !ef.editing
+          width: parent.width - efLabel.width - parent.spacing - (ef.free ? freeBadge.width + parent.spacing : 0)
+          textFormat: Text.PlainText
+          horizontalAlignment: ef.ledger ? Text.AlignRight : Text.AlignLeft
+          font.strikeout: ef.struck
+          text: ef.value ? ef.prefix + ef.value : "—"
+          elide: Text.ElideRight
+          color: ef.valueColor ? ef.valueColor
+            : (ef.value && ef.ledger && Model.receiptIsBalanced(receiptFullScreen.r) ? root.creditColor
+              : (ef.value ? Qt.darker(root.foreground, 1.2) : Qt.darker(root.foreground, 2.2)))
+          font.family: ef.ledger ? "monospace" : Style.font.family
+          font.bold: ef.big
+          font.pixelSize: ef.big ? Style.font.body : Style.font.caption
+          MouseArea {
+            anchors.fill: parent
+            anchors.margins: -Style.space(3)
+            cursorShape: Qt.IBeamCursor
+            onClicked: ef.startEditing()
+          }
+        }
+
+        Text {
+          id: freeBadge
+          visible: ef.free && !ef.editing
+          textFormat: Text.PlainText
+          text: "FREE"
+          color: root.creditColor
+          font.family: "monospace"
+          font.bold: true
+          font.pixelSize: Style.font.caption
+        }
+
+        TextField {
+          id: efInput
+          visible: ef.editing
+          width: parent.width - efLabel.width - parent.spacing
+          horizontalAlignment: ef.ledger ? TextInput.AlignRight : TextInput.AlignLeft
+          text: ef.value
+          color: ef.invalid ? root.debitColor : root.foreground
+          font.family: ef.ledger ? "monospace" : Style.font.family
+          font.bold: ef.big
+          font.pixelSize: ef.big ? Style.font.body : Style.font.caption
+          background: Rectangle {
+            radius: Style.cornerRadius
+            color: Util.alpha(Color.accent, 0.12)
+            border.width: 1
+            border.color: ef.invalid ? root.debitColor : Util.alpha(Color.accent, 0.6)
+          }
+          Keys.onEscapePressed: { ef.editing = false; ef.finished() }
+          onEditingFinished: {
+            if (!ef.editing) return
+            if (ef.invalid) return
+            // Read everything first: saving re-renders the bill and the
+            // field may be destroyed by the time the store call returns.
+            var st = store
+            var rid = receiptFullScreen.r.id
+            var name = ef.fieldName
+            var rate = ef.taxRate
+            var fee = ef.feeLine
+            var feeName = ef.feeField
+            var typed = text
+            var changed = text.trim() !== (ef.value || "").trim()
+            // Dates are shown DD-MM-YYYY but stored ISO; a discount is
+            // always a positive amount taken off, whatever sign the bill
+            // printed it with.
+            if (name === "date") typed = Model.parseReceiptDate(text)
+            if (name === "discount") typed = text.replace(/^\s*-/, "")
+            ef.editing = false
+            ef.finished()
+            if (!changed) return
+            if (fee !== null) st.editReceiptFee(rid, fee, feeName, typed)
+            else if (rate !== null) st.editReceiptTaxField(rid, rate, name, typed)
+            else st.editReceiptField(rid, name, typed)
+          }
+        }
+      }
+
+      Text {
+        id: efError
+        visible: ef.invalid
+        textFormat: Text.PlainText
+        text: ef.badDate ? "Date needs DD-MM-YYYY (e.g. 25-06-2026)" : ef.label + " needs a plain number"
+        color: root.debitColor
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------------
+  // Cashew verify window: a layer-shell surface like receiptFullScreen. Left,
+  // the drafts to check and edit; right, the links built from them. Nothing
+  // is marked tracked until the user says so.
+  PanelWindow {
+    id: cashewWin
+    visible: root.cashewOpen
+    anchors { top: true; bottom: true; left: true; right: true }
+    color: "transparent"
+    exclusionMode: ExclusionMode.Ignore
+    WlrLayershell.namespace: "omarchy-transactions-cashew"
+    WlrLayershell.layer: WlrLayer.Overlay
+    // NOT Exclusive (confirmed live, 2026-11-12): Exclusive keyboard focus
+    // makes Hyprland close this whole layer surface - killing an in-flight
+    // AI guess run and resetting all state - the instant ANY other window
+    // becomes active (even just this machine's own terminal regaining
+    // focus for a second). A guess run against a realistic row count takes
+    // several minutes; expecting zero focus changes anywhere on the desktop
+    // for that whole time is not realistic. OnDemand still gives this
+    // window real keyboard focus (the "N" shortcut, text fields, Escape)
+    // whenever it's the active surface, it just doesn't get force-closed
+    // the moment focus moves elsewhere.
+    WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
+
+    // The in-card picker: "" (closed), "category" or "account".
+    property string pickKind: ""
+    property int pickIdx: -1
+    property string pickMain: ""
+    property bool pickRemember: true
+    // Starts collapsed: links are logically step 2, after categorising, so
+    // the pane doesn't compete with the categorisation work for ~40% of the
+    // card width before there is anything to copy yet (audit: LINKS pane
+    // dominance). Not reset on reopen (see onVisibleChanged below), so a
+    // user's own choice to expand it still carries across reopens.
+    property bool linksCollapsed: true
+    property bool confirmMark: false
+    property bool oldestFirst: false
+    property bool optionsOpen: false          // the Options row; persists across reopens
+    property bool needOnly: false             // the list shows only rows with no category; persists across reopens
+    property bool askActive: false            // the ask-me sequence is running
+    // The guess results panel (an in-card overlay).
+    property bool resultsOpen: false
+    property bool resultsRaw: false
+    property string resultsFilter: "all"      // all | guessed | none
+    property int flashIdx: -1
+    readonly property var catMap: Model.cashewCategoryMap(root.cashewCategories)
+    readonly property var dayTotals: Model.cashewDayTotals(root.cashewDrafts, root.cashewShown)
+    readonly property color muted: Qt.darker(root.foreground, 1.2)
+    readonly property var pickDraft: cashewWin.pickIdx >= 0 ? (root.cashewDrafts[cashewWin.pickIdx] || ({})) : ({})
+    readonly property var pickCats: cashewWin.pickKind === "category"
+      ? Model.cashewCategoriesFor(root.cashewCategories, cashewWin.pickDraft.amount) : []
+    readonly property var pickSubs: {
+      for (var i = 0; i < cashewWin.pickCats.length; i++)
+        if (cashewWin.pickCats[i].name === cashewWin.pickMain) return cashewWin.pickCats[i].subcategories || []
+      return []
+    }
+
+    onVisibleChanged: {
+      // optionsOpen and needOnly are deliberately NOT reset here any more —
+      // they are plain view preferences (which filter row is showing), cheap
+      // to keep, and resetting them every reopen was pure friction (audit:
+      // "nothing persists across a close/reopen"). Everything else below is
+      // tied to a specific in-progress interaction (a picker, a confirm, the
+      // ask-sequence, the results overlay) and still resets, since those
+      // reference draft rows that get reloaded fresh on every open.
+      cashewWin.pickKind = ""
+      cashewWin.confirmMark = false
+      cashewWin.resultsOpen = false
+      cashewWin.resultsRaw = false
+      cashewWin.askActive = false
+      // Closing this window (Close button, Escape, backdrop click) no
+      // longer stops a running guess - it keeps going in the background
+      // and its results are there waiting the next time the window opens.
+      // Only the explicit "Stop" button (cashewGuessStop, next to the "AI
+      // categories" button) actually cancels it: a close is "get this out
+      // of my way for now", not "cancel what I started", and conflating
+      // the two is also what made an incidental compositor visibility blip
+      // (see below) kill a multi-minute run by accident in the first
+      // place - fixed 2026-11-12.
+      if (cashewWin.visible) {
+        // Skip the reload while a guess is actively running: becoming
+        // visible again, whether from a real reopen or the compositor
+        // transiently remapping this Overlay layer surface (confirmed
+        // live: happens on an unrelated window becoming active, even with
+        // keyboardFocus set to OnDemand rather than Exclusive), must not
+        // wipe the in-progress guess log/drafts out from under it.
+        // Reload only after a real close (cashewStale), never because the compositor
+        // remapped the layer while the window stayed open: that wiped the guessed
+        // categories and sent the screen back to the start once a run had finished.
+        if (root.cashewGuessing) root.cashewStale = false
+        else if (root.cashewStale) { root.cashewStale = false; console.log("cashew: reload after close"); root.cashewLoad() }
+        cashewCard.forceActiveFocus()
+      }
+    }
+
+    // The list rows, in day order. Only a new set of shown rows, a date edit or
+    // the order toggle rebuilds it; every other edit keeps the delegates.
+    ListModel { id: cwRows }
+    function syncRows() {
+      var rows = Model.cashewRowOrder(root.cashewDrafts, root.cashewShown, !cashewWin.oldestFirst)
+      if (cashewWin.needOnly) rows = rows.filter(function (r) {
+        return Model.cashewNeedsCategory(root.cashewDrafts[r.idx])
+      })
+      if (root.cashewGuessedOnly) rows = rows.filter(function (r) {
+        var a = root.cashewDrafts[r.idx], b = r.partner >= 0 ? root.cashewDrafts[r.partner] : null
+        return !!((a && a.guessed) || (b && b.guessed))
+      })
+      cwRows.clear()
+      for (var i = 0; i < rows.length; i++) cwRows.append(rows[i])
+    }
+    onOldestFirstChanged: cashewWin.syncRows()
+    onNeedOnlyChanged: cashewWin.syncRows()
+    Connections {
+      target: root
+      function onCashewShownChanged() { cashewWin.syncRows() }
+      function onCashewGuessedOnlyChanged() { cashewWin.syncRows() }
+      function onCashewGuessLogChanged() { if (cashewWin.resultsOpen) cashewWin.syncGuessRows() }
+      function onCashewDraftsChanged() { if (cashewWin.resultsOpen) cashewWin.syncGuessRows() }
+      function onCashewGuessedCountChanged() {
+        // Accepting/reverting every guess can empty this filter outright (same
+        // as needOnly below): turn it off instead of leaving a silent blank list.
+        if (!root.cashewGuessedOnly) return
+        if (root.cashewGuessedCount === 0) root.cashewGuessedOnly = false   // its change handler syncs
+        else cashewWin.syncRows()
+      }
+      function onCashewNeedCountChanged() {
+        if (!cashewWin.needOnly) return
+        if (root.cashewNeedCount === 0) cashewWin.needOnly = false   // its change handler syncs
+        else cashewWin.syncRows()
+      }
+    }
+
+    onResultsOpenChanged: if (cashewWin.resultsOpen) cashewWin.syncGuessRows()
+    onResultsFilterChanged: cashewWin.syncGuessRows()
+    ListModel { id: cgRows }
+    Timer { id: cwFlashTimer; interval: 1600; onTriggered: cashewWin.flashIdx = -1 }
+    // Brings cgRows up to date in place, so the rows and the scroll stay while a run adds results.
+    function syncGuessRows() {
+      var view = Model.cashewGuessLogView(root.cashewGuessLog, root.cashewDrafts, cashewWin.resultsFilter)
+      var n = Math.min(view.length, cgRows.count)
+      var prefix = cgRows.count <= view.length
+      for (var i = 0; prefix && i < n; i++) if (cgRows.get(i).gid !== view[i].gid) prefix = false
+      if (!prefix) { cgRows.clear(); n = 0; cgList.positionViewAtBeginning() }
+      for (var j = 0; j < n; j++) {
+        var cur = cgRows.get(j)
+        if (cur.st !== view[j].st || cur.guessCat !== view[j].guessCat || cur.idx !== view[j].idx) cgRows.set(j, view[j])
+      }
+      for (var k = n; k < view.length; k++) cgRows.append(view[k])
+    }
+    // Scrolls the list to draft `idx` and marks it for a moment.
+    function scrollToRow(idx) {
+      for (var i = 0; i < cwRows.count; i++) {
+        var r = cwRows.get(i)
+        if (r.idx === idx || r.partner === idx) {
+          cwList.positionViewAtIndex(i, ListView.Center)
+          cashewWin.flashIdx = r.idx
+          cwFlashTimer.restart()
+          return
+        }
+      }
+    }
+    function revealRow(idx) {
+      cashewWin.resultsOpen = false
+      cashewWin.scrollToRow(idx)
+    }
+    // Ask-me flow: jump to the next row that has no category and open its picker.
+    // `from` is the draft index just done (-1 = from the top). Ends when none is left.
+    function askNext(from) {
+      var order = []
+      for (var i = 0; i < cwRows.count; i++) { var r = cwRows.get(i); order.push({ idx: r.idx, partner: r.partner }) }
+      var idx = Model.cashewNextNeed(root.cashewDrafts, order, from)
+      if (idx < 0 || idx === from) { cashewWin.askActive = false; return }
+      cashewWin.resultsOpen = false
+      cashewWin.scrollToRow(idx)
+      cashewWin.openPicker("category", idx)
+      cashewWin.askActive = true
+    }
+    function askStart() {
+      if (root.cashewNeedCount === 0 || root.cashewLoading) return
+      if (root.cashewGuessedOnly) root.cashewGuessedOnly = false   // would hide the rows to ask
+      cashewWin.askNext(-1)
+    }
+    function openPicker(kind, idx) {
+      var d = root.cashewDrafts[idx]
+      if (!d) return
+      cashewWin.pickIdx = idx
+      cashewWin.pickRemember = true
+      cashewWin.pickMain = d.category || ""
+      cashewWin.pickKind = kind
+    }
+    // Reads the text first: closing the picker destroys the editor.
+    function saveNote(text) {
+      var idx = cashewWin.pickIdx
+      var next = Model.cashewPatch(root.cashewDrafts, idx, { notes: String(text).replace(/\r/g, "").trim() })
+      cashewWin.closePicker()
+      root.cashewEdit(next, true)
+    }
+    function closePicker() {
+      cashewWin.askActive = false
+      cashewWin.pickKind = ""
+      cashewCard.forceActiveFocus()
+    }
+    // Reads the draft first: the edit replaces the array the picker reads from.
+    function pickCategory(category, sub) {
+      var idx = cashewWin.pickIdx
+      var d = root.cashewDrafts[idx]
+      if (!d) return
+      var key = d.groupKey
+      var remember = cashewWin.pickRemember && d.kind !== "transfer" && category !== "Uncategorized"
+      var next = Model.cashewApplyCategory(root.cashewDrafts, idx, category, sub, remember)
+      var st = remember ? Model.cashewRememberCategory(root.cashewState, key, category, sub) : null
+      var again = cashewWin.askActive
+      cashewWin.closePicker()
+      root.cashewEdit(next)
+      if (st) root.cashewSetState(st)
+      if (again) Qt.callLater(function () { cashewWin.askNext(idx) })
+    }
+    function pickAccount(name) {
+      var idx = cashewWin.pickIdx
+      var d = root.cashewDrafts[idx]
+      if (!d) return
+      var spread = cashewWin.pickRemember
+      var accountId = d.accountId
+      var next = Model.cashewApplyAccount(root.cashewDrafts, idx, name, spread)
+      var st = spread ? Model.cashewRememberAccount(root.cashewState, accountId, name) : null
+      cashewWin.closePicker()
+      root.cashewEdit(next)
+      if (st) root.cashewSetState(st)
+    }
+    function markTracked() {
+      var rows = Model.cashewIncluded(root.cashewDrafts, root.cashewShown)
+      var st = store
+      cashewWin.confirmMark = false
+      st.setTrackedMany(rows, true)
+      root.closeCashew()
+    }
+
+    Rectangle {
+      anchors.fill: parent
+      color: Qt.rgba(0, 0, 0, 0.78)
+      MouseArea { anchors.fill: parent; onClicked: root.closeCashew() }
+    }
+
+    Item {
+      id: cashewCard
+      anchors.centerIn: parent
+      width: Math.min(parent.width - Style.space(80), Style.space(1280))
+      height: Math.min(parent.height - Style.space(80), Style.space(680))
+      focus: true
+      Keys.onPressed: function (event) {
+        // N: categorise the next row. A text field takes the key first, so this
+        // only runs when no field has the focus.
+        if (event.key === Qt.Key_N && event.modifiers === Qt.NoModifier && cashewWin.pickKind === "") {
+          cashewWin.askStart()
+          event.accepted = true
+        }
+      }
+      Keys.onEscapePressed: function (event) {
+        cashewWin.askActive = false
+        if (cashewWin.pickKind !== "") cashewWin.closePicker()
+        else if (cashewWin.resultsOpen && root.cashewGuessedCount === 0) cashewWin.resultsOpen = false
+        else root.closeCashew()
+        event.accepted = true
+      }
+
+      MouseArea { anchors.fill: parent; onClicked: {} }
+
+      BorderSurface {
+        anchors.fill: parent
+        color: Color.popups.background
+        borderSpec: Border.none()
+        radius: Style.cornerRadius
+      }
+
+      // ---- header
+      Item {
+        id: cwHeader
+        anchors { top: parent.top; left: parent.left; right: parent.right; margins: Style.space(16) }
+        height: Style.space(30)
+
+        Row {
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(12)
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: "Cashew links"
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: root.cashewGuessError !== "" ? root.cashewGuessError
+              : root.cashewGuessing ? Model.cashewGuessProgressText(root.cashewGuessProgress, root.cashewGuessDone, root.cashewGuessTotal)
+              : root.cashewGuessedCount > 0 ? "✦ " + root.cashewGuessedCount + " AI categories wait for your confirmation"
+              : root.cashewGuessDoneLine !== "" ? root.cashewGuessDoneLine
+              : root.cashewShown.length + " rows  ·  " + (root.cashewNeedCount > 0 ? root.cashewNeedCount + " need a category" : "all categorised")
+            color: root.cashewGuessError !== "" ? root.debitColor : cashewWin.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+        // "Needs category" and the AI guess trigger moved down to the left
+        // pane's title row, next to "Categorise next" — so the two ways to
+        // categorise sit side by side instead of one living in the header
+        // and the other in the list below (audit: disconnected flows). Only
+        // one "Results" affordance is kept (was duplicated here and in
+        // Options, with two different labels for the same panel).
+        Row {
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(6)
+          CashewBtn {
+            visible: root.cashewGuessLog.length > 0
+            label: "Results  ·  " + root.cashewGuessCounts.guessed + " guessed / " + root.cashewGuessCounts.sent + " sent"
+            active: cashewWin.resultsOpen
+            onClicked: if (root.cashewGuessedCount === 0) cashewWin.resultsOpen = !cashewWin.resultsOpen
+            else cashewWin.resultsOpen = true
+          }
+          CashewBtn { label: cashewWin.optionsOpen ? "Options ▴" : "Options ▾"; active: cashewWin.optionsOpen; onClicked: cashewWin.optionsOpen = !cashewWin.optionsOpen }
+          CashewBtn { label: "Close"; onClicked: root.closeCashew() }
+        }
+      }
+
+      // ---- options (collapsed by default)
+      Item {
+        id: cwOptions
+        visible: cashewWin.optionsOpen
+        anchors { top: cwHeader.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors.topMargin: cashewWin.optionsOpen ? Style.space(10) : 0
+        anchors.rightMargin: Style.space(12)
+        height: cashewWin.optionsOpen ? cwOptionsRow.implicitHeight : 0
+
+        Flow {
+          id: cwOptionsRow
+          width: parent.width
+          spacing: Style.space(6)
+          CashewBtn { label: "Oldest first"; active: cashewWin.oldestFirst; onClicked: cashewWin.oldestFirst = !cashewWin.oldestFirst }
+          CashewBtn { label: "Include all"; onClicked: root.cashewSetAll(true) }
+          CashewBtn { label: "Exclude all"; onClicked: root.cashewSetAll(false) }
+          CashewBtn {
+            label: "Only the current filter"
+            active: root.cashewOnlyFilter
+            onClicked: root.cashewOnlyFilter = !root.cashewOnlyFilter
+          }
+          CashewBtn {
+            label: "Guessed only"
+            active: root.cashewGuessedOnly
+            enabled: root.cashewGuessedOnly || root.cashewGuessedCount > 0
+            onClicked: root.cashewGuessedOnly = !root.cashewGuessedOnly
+          }
+          CashewBtn {
+            visible: root.cashewGuessedCount > 0
+            label: "Accept guesses  ·  " + root.cashewGuessedCount
+            onClicked: root.cashewAcceptGuesses()
+          }
+        }
+      }
+
+      // ---- three-step hint above the right pane (visual only)
+      Row {
+        id: cwHint
+        visible: !cashewWin.linksCollapsed
+        anchors { top: cwHeader.bottom; right: parent.right; rightMargin: Style.space(16); topMargin: Style.space(10) }
+        height: cashewWin.linksCollapsed ? 0 : Style.space(18)
+        spacing: Style.space(6)
+        Repeater {
+          model: ["1 Categorise (manual or AI)", "›", "2 Copy the links", "›", "3 Mark as tracked"]
+          delegate: Text {
+            required property string modelData
+            required property int index
+            textFormat: Text.PlainText
+            text: modelData
+            color: index === 0 && root.cashewNeedCount === 0 ? root.creditColor : cashewWin.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: index === 0 && root.cashewNeedCount === 0
+          }
+        }
+      }
+
+      // ---- right pane: links
+      Rectangle {
+        id: cwRight
+        anchors { top: cwHint.bottom; bottom: parent.bottom; right: parent.right; margins: Style.space(16) }
+        anchors.topMargin: Style.space(8)
+        width: cashewWin.linksCollapsed ? Style.space(40) : Math.round((cashewCard.width - Style.space(48)) * 0.4)
+        radius: Style.space(10)
+        color: Util.alpha(root.foreground, 0.05)
+
+        CashewBtn {
+          id: cwChevron
+          anchors { top: parent.top; right: parent.right; margins: Style.space(6) }
+          label: cashewWin.linksCollapsed ? "‹" : "›"
+          width: Style.space(28)
+          onClicked: cashewWin.linksCollapsed = !cashewWin.linksCollapsed
+        }
+
+        Text {
+          visible: !cashewWin.linksCollapsed
+          anchors { top: parent.top; left: parent.left; margins: Style.space(14) }
+          anchors.topMargin: Style.space(14)
+          textFormat: Text.PlainText
+          text: "LINKS"
+          color: cashewWin.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        CashewBtn {
+          id: cwBaseBtn
+          visible: !cashewWin.linksCollapsed
+          anchors { top: parent.top; right: cwChevron.left; topMargin: Style.space(6); rightMargin: Style.space(6) }
+          label: root.cashewBase === "web" ? "Cashew: Web app" : "Cashew: App"
+          active: root.cashewBase === "web"
+          onClicked: {
+            var next = Object.assign({}, root.cashewState, { base: root.cashewBase === "web" ? "app" : "web" })
+            root.cashewSetState(next)
+            root.cashewRebuildLinks()
+          }
+        }
+
+        Flickable {
+          id: cwLinksFlick
+          visible: !cashewWin.linksCollapsed
+          anchors { top: cwChevron.bottom; left: parent.left; right: parent.right; bottom: cwMarkRow.top }
+          anchors.margins: Style.space(12)
+          clip: true
+          contentWidth: width
+          contentHeight: cwLinksCol.implicitHeight
+          boundsBehavior: Flickable.StopAtBounds
+
+          Column {
+            id: cwLinksCol
+            width: parent.width
+            spacing: Style.space(10)
+
+            Column {
+              visible: root.cashewGuessedCount > 0
+              width: parent.width
+              spacing: Style.space(6)
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+                text: "✦ " + root.cashewGuessedCount + " AI-guessed categor" + (root.cashewGuessedCount === 1 ? "y is" : "ies are")
+                  + " not verified yet. Please check them before you import these links."
+                color: root.pendingColor
+                font.family: Style.font.family
+                font.bold: true
+                font.pixelSize: Style.font.caption
+              }
+              Row {
+                spacing: Style.space(6)
+                CashewBtn {
+                  label: "Review guessed"
+                  primary: true
+                  onClicked: root.cashewGuessedOnly = true
+                }
+                CashewBtn {
+                  label: "I checked them · accept all"
+                  onClicked: root.cashewAcceptGuesses()
+                }
+              }
+            }
+
+            Text {
+              visible: root.cashewLinksError !== ""
+              width: parent.width
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: root.cashewLinksError
+              color: root.debitColor
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            Column {
+              visible: root.cashewWarnings.length > 0
+              width: parent.width
+              spacing: Style.space(3)
+              Repeater {
+                model: root.cashewWarnings.slice(0, 5)
+                delegate: Text {
+                  required property string modelData
+                  width: parent.width
+                  wrapMode: Text.Wrap
+                  maximumLineCount: 2
+                  elide: Text.ElideRight
+                  textFormat: Text.PlainText
+                  text: "•  " + modelData
+                  color: root.pendingColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
+              Text {
+                visible: root.cashewWarnings.length > 5
+                textFormat: Text.PlainText
+                text: "+" + (root.cashewWarnings.length - 5) + " more"
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            Text {
+              visible: root.cashewLinks.length === 0 && root.cashewLinksError === "" && !root.cashewLoading
+              width: parent.width
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: root.cashewIncludedCount === 0 ? "No row is included, so there is no link." : "Building the links…"
+              color: cashewWin.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            Repeater {
+              model: root.cashewLinks
+              delegate: Rectangle {
+                id: lk
+                required property var modelData
+                required property int index
+                property bool copied: false
+                property bool showRaw: false
+                // Stays set once Open is tapped, so a page of several links
+                // keeps track of which ones are done after a scroll away.
+                property bool opened: false
+                width: cwLinksCol.width
+                height: lkCol.implicitHeight + Style.space(20)
+                radius: Style.space(8)
+                color: Util.alpha(root.foreground, 0.06)
+                border.width: lk.opened ? 1 : 0
+                border.color: Util.alpha(root.creditColor, 0.5)
+                Timer { id: lkCopiedTimer; interval: 1500; onTriggered: lk.copied = false }
+
+                Column {
+                  id: lkCol
+                  anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(10) }
+                  spacing: Style.space(8)
+
+                  Text {
+                    width: parent.width
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: Model.cashewLinkLabel(lk.index, root.cashewLinks.length, lk.modelData.count, lk.modelData.chars)
+                      + (lk.opened ? "  ·  opened" : "")
+                    color: root.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+
+                  Item {
+                    width: parent.width
+                    height: Style.space(56)
+                    clip: true
+                    // A short preview only: laying out ~6,000 characters per card was slow.
+                    // Copy and Open use the full URL.
+                    Text {
+                      width: parent.width
+                      wrapMode: Text.WrapAnywhere
+                      maximumLineCount: 3
+                      elide: Text.ElideRight
+                      textFormat: Text.PlainText
+                      text: Model.cashewPreview(lk.modelData.url, 140, 20)
+                      color: cashewWin.muted
+                      font.family: "monospace"
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+
+                  Row {
+                    spacing: Style.space(6)
+                    CashewBtn {
+                      label: root.cashewVerifyArmed ? "Unverified AI · click again" : (lk.copied ? "Copied" : "Copy")
+                      primary: true
+                      onClicked: {
+                        if (!root.cashewVerifyGate()) return
+                        var url = lk.modelData.url
+                        Quickshell.execDetached(["wl-copy", url])
+                        lk.copied = true
+                        lkCopiedTimer.restart()
+                      }
+                    }
+                    CashewBtn {
+                      label: root.cashewVerifyArmed ? "Unverified AI · click again" : "Open"
+                      onClicked: {
+                        if (!root.cashewVerifyGate()) return
+                        Quickshell.execDetached(["xdg-open", lk.modelData.url])
+                        lk.opened = true
+                      }
+                    }
+                    CashewBtn {
+                      label: "Raw JSON"
+                      active: lk.showRaw
+                      onClicked: lk.showRaw = !lk.showRaw
+                    }
+                  }
+
+                  Flickable {
+                    id: lkRawFlick
+                    visible: lk.showRaw
+                    width: parent.width
+                    height: lk.showRaw ? Style.space(160) : 0
+                    clip: true
+                    contentWidth: width
+                    contentHeight: lkRawText.implicitHeight
+                    boundsBehavior: Flickable.StopAtBounds
+                    TextEdit {
+                      id: lkRawText
+                      width: parent.width
+                      readOnly: true
+                      selectByMouse: true
+                      wrapMode: TextEdit.WrapAnywhere
+                      textFormat: TextEdit.PlainText
+                      text: lk.showRaw ? Model.cashewPrettyJson(lk.modelData.json) : ""
+                      color: cashewWin.muted
+                      selectionColor: Util.alpha(Color.accent, 0.4)
+                      font.family: "monospace"
+                      font.pixelSize: Style.font.caption
+                    }
+                    ScrollWheelArea { anchors.fill: parent; target: lkRawFlick }
+                  }
+                }
+              }
+            }
+
+            // Paired transfers: one Cashew transfer page each; Cashew cannot save them from a link.
+            Column {
+              visible: root.cashewTransfers.length > 0
+              width: parent.width
+              spacing: Style.space(8)
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: "Transfers · " + root.cashewTransfers.length
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+                text: "Cashew opens each transfer page; tap Save once per transfer."
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+              Repeater {
+                model: root.cashewTransfers
+                delegate: Rectangle {
+                  id: tf
+                  required property var modelData
+                  property bool copied: false
+                  property bool opened: false
+                  width: cwLinksCol.width
+                  height: tfCol.implicitHeight + Style.space(20)
+                  radius: Style.space(8)
+                  color: Util.alpha(root.foreground, 0.06)
+                  border.width: tf.opened ? 1 : 0
+                  border.color: Util.alpha(root.creditColor, 0.5)
+                  Timer { id: tfCopiedTimer; interval: 1500; onTriggered: tf.copied = false }
+
+                  Column {
+                    id: tfCol
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(10) }
+                    spacing: Style.space(6)
+                    Text {
+                      width: parent.width
+                      elide: Text.ElideRight
+                      textFormat: Text.PlainText
+                      text: tf.modelData.title + (tf.opened ? "  ·  opened" : "")
+                      color: root.foreground
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                    }
+                    Text {
+                      width: parent.width
+                      elide: Text.ElideRight
+                      textFormat: Text.PlainText
+                      text: Model.cashewTransferLine(tf.modelData)
+                      color: cashewWin.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                    }
+                    Row {
+                      spacing: Style.space(6)
+                      CashewBtn {
+                        label: root.cashewVerifyArmed ? "Unverified AI · click again" : (tf.copied ? "Copied" : "Copy")
+                        primary: true
+                        onClicked: {
+                          if (!root.cashewVerifyGate()) return
+                          var url = tf.modelData.url
+                          Quickshell.execDetached(["wl-copy", url])
+                          tf.copied = true
+                          tfCopiedTimer.restart()
+                        }
+                      }
+                      CashewBtn {
+                        label: root.cashewVerifyArmed ? "Unverified AI · click again" : "Open"
+                        onClicked: {
+                          if (!root.cashewVerifyGate()) return
+                          Quickshell.execDetached(["xdg-open", tf.modelData.url])
+                          tf.opened = true
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          ScrollWheelArea { anchors.fill: parent; target: cwLinksFlick }
+        }
+
+        // Mark as tracked, asked twice and inline (no popup).
+        Item {
+          id: cwMarkRow
+          visible: !cashewWin.linksCollapsed
+          anchors { left: parent.left; right: parent.right; bottom: parent.bottom; margins: Style.space(12) }
+          height: cashewWin.confirmMark ? cwConfirmCol.implicitHeight : Style.space(30)
+          Timer { id: cwConfirmTimer; interval: 8000; running: cashewWin.confirmMark; onTriggered: cashewWin.confirmMark = false }
+
+          CashewBtn {
+            visible: !cashewWin.confirmMark
+            label: "Mark " + root.cashewIncludedCount + " as tracked"
+            primary: true
+            enabled: root.cashewIncludedCount > 0
+            onClicked: cashewWin.confirmMark = true
+          }
+          Column {
+            id: cwConfirmCol
+            visible: cashewWin.confirmMark
+            width: parent.width
+            spacing: Style.space(6)
+            Text {
+              width: parent.width
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: Model.cashewMarkQuestion(root.cashewIncludedCount, root.cashewTransfers.length)
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+            Row {
+              spacing: Style.space(8)
+              CashewBtn { label: "Yes"; primary: true; onClicked: cashewWin.markTracked() }
+              CashewBtn { label: "No"; onClicked: cashewWin.confirmMark = false }
+            }
+          }
+        }
+      }
+
+      // ---- guess results: what the model returned for each row sent
+      Rectangle {
+        id: cwResults
+        visible: cashewWin.resultsOpen
+        z: 20
+        anchors { top: cwOptions.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors.topMargin: Style.space(10)
+        anchors.rightMargin: Style.space(12)
+        radius: Style.space(12)
+        color: Color.popups.background
+        border.width: 1
+        border.color: Util.alpha(root.foreground, 0.18)
+
+        MouseArea { anchors.fill: parent; onClicked: {} }
+
+        Row {
+          id: cgTitleRow
+          anchors { left: parent.left; top: parent.top; margins: Style.space(14) }
+          height: Style.space(28)
+          spacing: Style.space(12)
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: "GUESS RESULTS"
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: Model.cashewGuessSummary(root.cashewGuessCounts.sent, root.cashewGuessMeta.batches, root.cashewGuessing ? 0 : root.cashewGuessMeta.seconds, root.cashewGuessMeta.model)
+            color: cashewWin.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+        Flow {
+          id: cgButtons
+          anchors { left: parent.left; right: parent.right; top: cgTitleRow.bottom; leftMargin: Style.space(14); rightMargin: Style.space(14); topMargin: Style.space(8) }
+          spacing: Style.space(6)
+          CashewBtn { label: "All"; active: cashewWin.resultsFilter === "all"; onClicked: cashewWin.resultsFilter = "all" }
+          CashewBtn { label: "Guessed"; active: cashewWin.resultsFilter === "guessed"; onClicked: cashewWin.resultsFilter = "guessed" }
+          CashewBtn { label: "No guess"; active: cashewWin.resultsFilter === "none"; onClicked: cashewWin.resultsFilter = "none" }
+          CashewBtn {
+            label: "Accept all"
+            primary: true
+            enabled: root.cashewGuessedCount > 0
+            onClicked: root.cashewAcceptGuesses()
+          }
+          CashewBtn {
+            label: "Revert all"
+            enabled: root.cashewGuessedCount > 0
+            onClicked: root.cashewRevertGuessRows(null)
+          }
+          CashewBtn { label: "Raw output"; active: cashewWin.resultsRaw; onClicked: cashewWin.resultsRaw = !cashewWin.resultsRaw }
+          CashewBtn { visible: root.cashewGuessedCount === 0; label: "Close"; onClicked: cashewWin.resultsOpen = false }
+        }
+
+        ListView {
+          id: cgList
+          visible: !cashewWin.resultsRaw
+          anchors { top: cgButtons.bottom; bottom: parent.bottom; left: parent.left; right: parent.right; margins: Style.space(14) }
+          anchors.topMargin: Style.space(10)
+          clip: true
+          spacing: Style.space(2)
+          boundsBehavior: Flickable.StopAtBounds
+          model: cgRows
+          reuseItems: false
+
+          delegate: Rectangle {
+            id: cgr
+            required property string gid
+            required property string rawId
+            required property int idx
+            required property string title
+            required property string amount
+            required property string st
+            required property string beforeCat
+            required property string beforeSub
+            required property string guessCat
+            required property string guessSub
+            required property bool isGroup
+            required property int count
+            required property var members
+            // Same-UPI-counterparty rows (isGroup) start collapsed - the
+            // group card itself already says enough ("4 transactions · guess
+            // · Apply to all 4"); this just lets a user drop into the list
+            // of actual transactions to review or adjust one at a time.
+            property bool expanded: false
+            readonly property bool hasGuess: cgr.guessCat !== ""
+            readonly property bool anyGuessed: cgr.isGroup
+              ? cgr.members.some(function (mm) { return mm.st === "guessed" })
+              : cgr.st === "guessed"
+            readonly property var catInfo: cashewWin.catMap[cgr.hasGuess ? cgr.guessCat : cgr.beforeCat] || ({ icon: "❓", color: "#5A2A2E" })
+            readonly property var beforeInfo: cashewWin.catMap[cgr.beforeCat] || ({ icon: "❓", color: "#5A2A2E" })
+            readonly property bool isCredit: cgr.amount.charAt(0) !== "-"
+            width: cgList.width
+            height: Style.space(62) + (cgr.isGroup && cgr.expanded ? cgMembersCol.implicitHeight + Style.space(8) : 0)
+            radius: Style.space(10)
+            color: Util.alpha(root.foreground, cgHover.hovered ? 0.06 : 0)
+            HoverHandler { id: cgHover }
+
+            CashewIcon {
+              id: cgIcon
+              anchors { left: parent.left; leftMargin: Style.space(8); top: parent.top; topMargin: Style.space(13) }
+              width: Style.space(36)
+              icon: cgr.catInfo.icon
+              fill: cgr.catInfo.color
+            }
+            Item {
+              id: cgActions
+              anchors { right: parent.right; rightMargin: Style.space(8); top: parent.top; topMargin: Style.space(4) }
+              width: Style.space(215)
+              height: Style.space(54)
+              Rectangle {
+                id: cgTag
+                anchors { left: parent.left; top: parent.top }
+                width: Style.space(84)
+                height: Style.space(22)
+                radius: height / 2
+                color: cgr.st === "guessed" ? Util.alpha(Color.accent, 0.28)
+                  : cgr.st === "accepted" ? Util.alpha(root.creditColor, 0.28)
+                  : Util.alpha(root.foreground, 0.10)
+                Text {
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: cgr.st === "no-guess" ? "no guess" : cgr.st === "skipped-touched" ? "edited" : cgr.st
+                  color: cgr.st === "guessed" ? Color.accent : cgr.st === "accepted" ? root.creditColor : cashewWin.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.bold: cgr.st === "guessed" || cgr.st === "accepted"
+                }
+              }
+              CashewBtn {
+                id: cgExpand
+                visible: cgr.isGroup
+                anchors { left: cgTag.right; leftMargin: Style.space(6); top: parent.top }
+                label: cgr.expanded ? "Hide" : "Members"
+                onClicked: cgr.expanded = !cgr.expanded
+              }
+              CashewBtn {
+                id: cgRevert
+                anchors { right: parent.right; bottom: parent.bottom }
+                label: cgr.isGroup ? "Revert all" : "Revert"
+                visible: cgr.anyGuessed
+                onClicked: {
+                  var ids = cgr.isGroup ? cgr.members.map(function (mm) { return mm.rawId }) : [cgr.rawId]
+                  root.cashewRevertGuessRows(ids)
+                }
+              }
+              CashewBtn {
+                id: cgAccept
+                anchors { right: cgRevert.left; rightMargin: Style.space(6); bottom: parent.bottom }
+                label: cgr.isGroup ? "Apply to all " + cgr.count : "Accept"
+                primary: true
+                visible: cgr.anyGuessed
+                onClicked: {
+                  var ids = cgr.isGroup ? cgr.members.map(function (mm) { return mm.rawId }) : [cgr.rawId]
+                  root.cashewAcceptGuessRows(ids)
+                }
+              }
+            }
+            Text {
+              id: cgAmount
+              anchors { right: cgActions.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(8) }
+              width: Style.space(100)
+              horizontalAlignment: Text.AlignRight
+              elide: Text.ElideRight
+              textFormat: Text.PlainText
+              text: Model.cashewMoney(cgr.amount)
+              color: cgr.isCredit ? root.creditColor : root.debitColor
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Text {
+              id: cgTitle
+              anchors { left: cgIcon.right; leftMargin: Style.space(12); right: cgAmount.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(8) }
+              elide: Text.ElideRight
+              textFormat: Text.PlainText
+              text: cgr.title + (cgr.isGroup ? "  ·  " + cgr.count + " transactions" : "")
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              font.underline: cgTitleMouse.containsMouse
+              MouseArea {
+                id: cgTitleMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: { var ri = cgr.idx; cashewWin.revealRow(ri) }
+              }
+            }
+            Row {
+              id: cgChipsRow
+              anchors { left: cgTitle.left; top: parent.top; topMargin: Style.space(34) }
+              spacing: Style.space(6)
+              CashewChip {
+                maxWidth: Style.space(220)
+                tint: cgr.beforeInfo.color
+                text: cgr.beforeCat + (cgr.beforeSub !== "" && cgr.beforeSub !== "Unknown" ? "  ›  " + cgr.beforeSub : "")
+              }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: "››"
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              CashewChip {
+                visible: cgr.hasGuess
+                maxWidth: Style.space(300)
+                tint: cgr.catInfo.color
+                text: "✦ " + cgr.guessCat + (cgr.guessSub !== "" ? "  ›  " + cgr.guessSub : "")
+              }
+              Text {
+                visible: !cgr.hasGuess
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: cgr.st === "pending" ? "waiting for the model" : cgr.st === "skipped-touched" ? "you edited this row"
+                  : cgr.st === "mixed" ? "mixed - open Members" : "no guess"
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            // One line per actual transaction in the group - the per-row
+            // accept/revert/view still work here, so dropping into a group
+            // to handle one member differently never loses that ability.
+            Column {
+              id: cgMembersCol
+              visible: cgr.isGroup && cgr.expanded
+              anchors { left: cgIcon.right; leftMargin: Style.space(12); right: parent.right; rightMargin: Style.space(8); top: parent.top; topMargin: Style.space(62) }
+              spacing: Style.space(4)
+              Repeater {
+                model: cgr.isGroup ? cgr.members : []
+                delegate: Row {
+                  id: cgMember
+                  required property var modelData
+                  width: cgMembersCol.width
+                  height: Style.space(24)
+                  spacing: Style.space(8)
+                  Text {
+                    width: Style.space(80)
+                    anchors.verticalCenter: parent.verticalCenter
+                    horizontalAlignment: Text.AlignRight
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: Model.cashewMoney(cgMember.modelData.amount)
+                    color: cgMember.modelData.amount.charAt(0) !== "-" ? root.creditColor : root.debitColor
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                  Text {
+                    width: Style.space(90)
+                    anchors.verticalCenter: parent.verticalCenter
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: cgMember.modelData.st === "no-guess" ? "no guess" : cgMember.modelData.st === "skipped-touched" ? "edited" : cgMember.modelData.st
+                    color: cgMember.modelData.st === "guessed" ? Color.accent : cgMember.modelData.st === "accepted" ? root.creditColor : cashewWin.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                  TextAction {
+                    label: "View"
+                    onTriggered: cashewWin.revealRow(cgMember.modelData.idx)
+                  }
+                  CashewBtn {
+                    label: "Accept"
+                    primary: true
+                    visible: cgMember.modelData.st === "guessed"
+                    onClicked: { var rid = cgMember.modelData.rawId; root.cashewAcceptGuessRows([rid]) }
+                  }
+                  CashewBtn {
+                    label: "Revert"
+                    visible: cgMember.modelData.st === "guessed"
+                    onClicked: { var rid = cgMember.modelData.rawId; root.cashewRevertGuessRows([rid]) }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        Text {
+          visible: !cashewWin.resultsRaw && cgRows.count === 0
+          anchors.centerIn: cgList
+          textFormat: Text.PlainText
+          text: "No rows here."
+          color: cashewWin.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.body
+        }
+
+        Flickable {
+          id: cgRawFlick
+          visible: cashewWin.resultsRaw
+          anchors.fill: cgList
+          clip: true
+          contentWidth: width
+          contentHeight: cgRawText.implicitHeight
+          boundsBehavior: Flickable.StopAtBounds
+          Text {
+            id: cgRawText
+            width: cgRawFlick.width
+            wrapMode: Text.WrapAnywhere
+            textFormat: Text.PlainText
+            text: root.cashewGuessRaw.length > 0 ? root.cashewGuessRaw.join("\n") : "No output yet."
+            color: Qt.darker(root.foreground, 1.2)
+            font.family: "monospace"
+            font.pixelSize: Style.font.caption
+          }
+        }
+      }
+
+      // ---- left pane: the drafts
+      Item {
+        id: cwLeft
+        anchors { top: cwOptions.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors.topMargin: Style.space(10)
+        anchors.rightMargin: Style.space(12)
+
+        // Title + the categorisation toolbar: the "Needs category" filter,
+        // the manual "Categorise next" stepper, and the AI "✦ AI categories"
+        // guess trigger all sit here together, above the list they act on.
+        // The audit found the AI guess button living only in the header
+        // (small, same style as Options/Close, labelled just "✦ Guess") while
+        // the manual flow lived down here with zero cross-reference — a user
+        // could find one and never notice the other. Putting both categorise
+        // paths in one row, in the pane that is the actual work area, fixes
+        // both the "where is the AI feature" complaint and that disconnect.
+        Item {
+          id: cwLeftTitle
+          width: parent.width
+          height: cwLeftTitleCol.implicitHeight
+
+          Column {
+            id: cwLeftTitleCol
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text {
+              textFormat: Text.PlainText
+              text: cashewWin.needOnly ? "ROWS WITH NO CATEGORY" : "TRANSACTIONS"
+              color: cashewWin.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+
+              CashewBtn {
+                label: root.cashewNeedCount > 0 ? "Needs category  ·  " + root.cashewNeedCount : "All categorised"
+                primary: root.cashewNeedCount > 0
+                active: cashewWin.needOnly
+                tint: root.cashewNeedCount > 0 ? "transparent" : root.creditColor
+                enabled: root.cashewNeedCount > 0 || cashewWin.needOnly
+                onClicked: cashewWin.needOnly = !cashewWin.needOnly
+              }
+              CashewBtn {
+                visible: root.cashewNeedCount > 0
+                label: "Categorise next  (N)"
+                onClicked: cashewWin.askStart()
+              }
+              // One slot, three states: a run in progress (Stop), guesses waiting for the
+              // user (Confirm + Review, no start button), or the start button.
+              CashewBtn {
+                visible: root.cashewGuessing
+                big: true
+                active: true
+                label: root.cashewStopArmed ? "■ Click again to stop" : "■ Stop"
+                onClicked: root.cashewStopClick()
+              }
+              CashewBtn {
+                visible: !root.cashewGuessing && root.cashewGuessedCount > 0
+                big: true
+                primary: true
+                label: "✓ Confirm " + root.cashewGuessedCount + " AI categories"
+                onClicked: root.cashewAcceptGuesses()
+              }
+              CashewBtn {
+                visible: !root.cashewGuessing && root.cashewGuessedCount > 0
+                label: "Review"
+                onClicked: {
+                  if (root.cashewGuessLog.length === 0) { root.cashewGuessedOnly = true; return }
+                  cashewWin.resultsFilter = "guessed"; cashewWin.resultsOpen = true
+                }
+              }
+              CashewBtn {
+                visible: !root.cashewGuessing && root.cashewGuessedCount === 0 && root.cashewGuessCount > 0
+                big: true
+                primary: true
+                enabled: !root.cashewLoading
+                label: "✦ AI categories  ·  " + root.cashewGuessCount
+                onClicked: root.cashewGuessStart()
+              }
+            }
+          }
+        }
+
+        Text {
+          visible: root.cashewLoading || root.cashewError !== "" || (root.cashewShown.length === 0)
+          anchors.centerIn: parent
+          width: parent.width - Style.space(40)
+          horizontalAlignment: Text.AlignHCenter
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          text: root.cashewError !== "" ? root.cashewError : (root.cashewLoading ? "Reading…" : "Nothing to track here.")
+          color: root.cashewError !== "" ? root.debitColor : cashewWin.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.body
+        }
+
+        ListView {
+          id: cwList
+          anchors { top: cwLeftTitle.bottom; bottom: parent.bottom; left: parent.left; right: parent.right }
+          anchors.topMargin: Style.space(8)
+          clip: true
+          spacing: Style.space(2)
+          boundsBehavior: Flickable.StopAtBounds
+          model: cwRows
+          reuseItems: false
+
+          section.property: "day"
+          section.criteria: ViewSection.FullString
+          section.delegate: Item {
+            id: cdHead
+            required property string section
+            width: cwList.width
+            height: Style.space(40)
+            Text {
+              anchors { left: parent.left; leftMargin: Style.space(4); bottom: parent.bottom; bottomMargin: Style.space(6) }
+              textFormat: Text.PlainText
+              text: Model.cashewDayLabel(cdHead.section)
+              color: cashewWin.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+            }
+            Text {
+              anchors { right: parent.right; rightMargin: Style.space(10); bottom: parent.bottom; bottomMargin: Style.space(6) }
+              textFormat: Text.PlainText
+              text: cashewWin.dayTotals[cdHead.section] || ""
+              color: cashewWin.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+            }
+          }
+
+          delegate: Rectangle {
+            id: crow
+            required property int idx
+            required property int partner      // the in leg of a transfer pair shown as one card, else -1
+            readonly property var d: root.cashewDrafts[crow.idx] || ({})
+            readonly property var d2: crow.partner >= 0 ? (root.cashewDrafts[crow.partner] || ({})) : ({})
+            readonly property bool isTransfer: crow.d.kind === "transfer"
+            readonly property bool paired: crow.isTransfer && crow.partner >= 0
+            readonly property bool warn: (crow.d.warn || "") !== "" || crow.d.category === "Uncategorized"
+            readonly property bool needs: Model.cashewNeedsCategory(crow.d)
+            readonly property bool isCredit: String(crow.d.amount || "").charAt(0) !== "-"
+            readonly property var cat: cashewWin.catMap[crow.d.category] || ({ icon: "❓", color: "#5A2A2E" })
+            readonly property color kindColor: crow.isCredit ? root.creditColor : root.debitColor
+            width: cwList.width
+            height: crow.isTransfer ? (crow.paired ? Style.space(112) : Style.space(80)) : Style.space(68)
+            radius: Style.space(12)
+            color: crow.idx === cashewWin.flashIdx ? Util.alpha(Color.accent, 0.22) : Util.alpha(root.foreground, crowHover.hovered ? 0.06 : 0)
+            HoverHandler { id: crowHover }
+
+            Loader {
+              anchors.fill: parent
+              sourceComponent: crow.isTransfer ? cardBody : rowBody
+            }
+
+            // A plain transaction: icon, title, chips and the note at the left, amount and date at the right.
+            Component {
+              id: rowBody
+              Item {
+                anchors { fill: parent; leftMargin: Style.space(8); rightMargin: Style.space(10) }
+                opacity: crow.d.include ? 1 : 0.5
+
+                CashewCheck {
+                  id: crowCheck
+                  anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+                  checked: !!crow.d.include
+                  onToggled: root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { include: !crow.d.include }))
+                }
+                CashewIcon {
+                  id: crowIcon
+                  anchors { left: crowCheck.right; leftMargin: Style.space(10); verticalCenter: parent.verticalCenter }
+                  icon: crow.cat.icon
+                  fill: crow.cat.color
+                  warn: crow.warn
+                  MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: cashewWin.openPicker("category", crow.idx) }
+                }
+
+                // right column: amount, then the date
+                CashewCell {
+                  id: cAmount
+                  anchors { right: parent.right; top: parent.top; topMargin: Style.space(9) }
+                  width: Style.space(170)
+                  implicitHeight: Style.space(26)
+                  kind: "amount"
+                  alignRight: true
+                  bold: true
+                  pixelSize: Style.font.body + 2
+                  value: crow.d.amount || ""
+                  display: (crow.isCredit ? "▴ " : "▾ ") + Model.cashewMoney(crow.d.amount)
+                  color: crow.kindColor
+                  onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { amount: v }), true) }
+                }
+                CashewCell {
+                  id: cDate
+                  anchors { right: parent.right; top: cAmount.bottom; topMargin: Style.space(5) }
+                  width: Style.space(110)
+                  alignRight: true
+                  kind: "date"
+                  value: crow.d.date || ""
+                  color: cashewWin.muted
+                  onCommit: function (v) {
+                    root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { date: v }), true)
+                    Qt.callLater(cashewWin.syncRows)
+                  }
+                }
+
+                // title, then the chips and the note
+                CashewCell {
+                  id: cTitle
+                  anchors { left: crowIcon.right; leftMargin: Style.space(14); right: cAmount.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(9) }
+                  implicitHeight: Style.space(26)
+                  pixelSize: Style.font.body + 1
+                  value: crow.d.title || ""
+                  color: root.foreground
+                  onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { title: v }), true) }
+                }
+                CashewChip {
+                  id: cAcct
+                  anchors { left: cTitle.left; top: cTitle.bottom; topMargin: Style.space(5) }
+                  maxWidth: Style.space(120)
+                  tint: "#455A64"
+                  text: (crow.d.account || "") !== "" ? crow.d.account : "No account"
+                  warn: (crow.d.account || "") === ""
+                  onClicked: cashewWin.openPicker("account", crow.idx)
+                }
+                CashewChip {
+                  id: cCat
+                  anchors { left: cAcct.right; leftMargin: Style.space(6); verticalCenter: cAcct.verticalCenter }
+                  maxWidth: Style.space(220)
+                  tint: crow.cat.color
+                  text: crow.needs ? "Choose category" : (crow.d.guessed ? "✦ " : "") + (crow.d.category || "—") + ((crow.d.subcategory || "") !== "" ? "  ›  " + crow.d.subcategory : "")
+                  selected: crow.needs
+                  warn: crow.warn && !crow.needs
+                  onClicked: cashewWin.openPicker("category", crow.idx)
+                }
+                Item {
+                  id: cStar
+                  visible: crow.d.guessed === true
+                  anchors { left: cCat.left; verticalCenter: cCat.verticalCenter }
+                  width: Style.space(22)
+                  height: cCat.height
+                  HoverHandler { id: starHover }
+                }
+                Rectangle {
+                  visible: crow.d.guessed === true && starHover.hovered
+                  z: 5
+                  anchors { left: cCat.left; bottom: cCat.top; bottomMargin: Style.space(2) }
+                  width: guessTipText.implicitWidth + Style.space(16)
+                  height: guessTipText.implicitHeight + Style.space(8)
+                  radius: Style.space(6)
+                  color: Color.popups.background
+                  border.width: 1
+                  border.color: Util.alpha(root.foreground, 0.25)
+                  Text {
+                    id: guessTipText
+                    anchors.centerIn: parent
+                    textFormat: Text.PlainText
+                    text: "Guessed by the local model: check it"
+                    color: root.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+                CashewNote {
+                  id: cNotes
+                  anchors { left: cCat.right; leftMargin: Style.space(8); right: cDate.left; rightMargin: Style.space(8); verticalCenter: cAcct.verticalCenter }
+                  text: crow.d.notes || ""
+                  hot: crowHover.hovered
+                  onClicked: cashewWin.openPicker("note", crow.idx)
+                }
+              }
+            }
+
+            // A transfer pair as one card, like Cashew: the title once, then a line per leg.
+            Component {
+              id: cardBody
+              Item {
+                anchors { fill: parent; leftMargin: Style.space(8); rightMargin: Style.space(10) }
+                opacity: crow.d.include ? 1 : 0.5
+
+                CashewCheck {
+                  id: cardCheck
+                  anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+                  checked: !!crow.d.include
+                  onToggled: root.cashewEdit(Model.cashewPatchMany(root.cashewDrafts, [crow.idx, crow.partner], { include: !crow.d.include }))
+                }
+                CashewIcon {
+                  id: cardIcon
+                  anchors { left: cardCheck.right; leftMargin: Style.space(10); verticalCenter: parent.verticalCenter }
+                  icon: crow.cat.icon
+                  fill: crow.cat.color
+                  warn: crow.warn
+                }
+                CashewCell {
+                  id: cardDate
+                  anchors { right: parent.right; top: parent.top; topMargin: Style.space(7) }
+                  width: Style.space(110)
+                  alignRight: true
+                  kind: "date"
+                  value: crow.d.date || ""
+                  color: cashewWin.muted
+                  onCommit: function (v) {
+                    // the in leg follows unless it has a date of its own
+                    var legs = (crow.paired && crow.d2.date === crow.d.date) ? [crow.idx, crow.partner] : [crow.idx]
+                    root.cashewEdit(Model.cashewPatchMany(root.cashewDrafts, legs, { date: v }), true)
+                    Qt.callLater(cashewWin.syncRows)
+                  }
+                }
+                CashewCell {
+                  id: cardTitle
+                  anchors { left: cardIcon.right; leftMargin: Style.space(14); right: cardDate.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(7) }
+                  implicitHeight: Style.space(26)
+                  pixelSize: Style.font.body + 1
+                  value: crow.d.title || ""
+                  color: root.foreground
+                  onCommit: function (v) { root.cashewEdit(Model.cashewPatchMany(root.cashewDrafts, [crow.idx, crow.partner], { title: v }), true) }
+                }
+                Column {
+                  anchors { left: cardTitle.left; right: parent.right; top: cardTitle.bottom; topMargin: Style.space(4) }
+                  spacing: Style.space(4)
+                  CashewLeg {
+                    width: parent.width
+                    idx: crow.idx
+                    cardDate: crow.d.date || ""
+                    hot: crowHover.hovered
+                  }
+                  CashewLeg {
+                    visible: crow.paired
+                    width: parent.width
+                    idx: crow.partner
+                    cardDate: crow.d.date || ""
+                    hot: crowHover.hovered
+                  }
+                }
+              }
+            }
+          }
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        }
+        ScrollWheelArea { anchors.fill: cwList; target: cwList }
+
+        // The day list itself can go empty from the filters (Needs category,
+        // Guessed only) while cashewShown still has rows, which used to leave
+        // a blank pane with no clue why. Say so, with a one-tap way out.
+        Column {
+          visible: !root.cashewLoading && root.cashewError === "" && root.cashewShown.length > 0 && cwRows.count === 0
+          anchors.centerIn: cwList
+          spacing: Style.space(10)
+          Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: cwLeft.width - Style.space(40)
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            text: "No rows match the current filters."
+            color: cashewWin.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+          }
+          CashewBtn {
+            anchors.horizontalCenter: parent.horizontalCenter
+            label: "Clear filters"
+            onClicked: {
+              cashewWin.needOnly = false
+              root.cashewGuessedOnly = false
+            }
+          }
+        }
+      }
+
+      // ---- in-card picker (no popup)
+      Item {
+        id: cwPicker
+        anchors.fill: parent
+        visible: cashewWin.pickKind !== ""
+        z: 20
+        Rectangle {
+          anchors.fill: parent
+          radius: Style.cornerRadius
+          color: Qt.rgba(0, 0, 0, 0.5)
+          MouseArea { anchors.fill: parent; onClicked: cashewWin.closePicker() }
+        }
+        Rectangle {
+          id: cwPickBox
+          anchors.centerIn: parent
+          width: Math.min(parent.width - Style.space(40), Style.space(560))
+          height: Math.min(parent.height - Style.space(40), Style.space(440))
+          radius: Style.space(12)
+          color: Color.popups.background
+          MouseArea { anchors.fill: parent; onClicked: {} }
+          Rectangle { anchors.fill: parent; radius: parent.radius; color: Util.alpha(root.foreground, 0.07) }
+
+          Text {
+            id: cwPickTitle
+            anchors { top: parent.top; left: parent.left; right: parent.right; margins: Style.space(14) }
+            elide: Text.ElideRight
+            textFormat: Text.PlainText
+            text: (cashewWin.pickKind === "category" ? "Category for " : (cashewWin.pickKind === "note" ? "Note for " : "Account for ")) + (cashewWin.pickDraft.title || "")
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+
+          // category: main column | subcategory column
+          Row {
+            visible: cashewWin.pickKind === "category"
+            anchors { top: cwPickTitle.bottom; bottom: cwPickFoot.top; left: parent.left; right: parent.right; margins: Style.space(14) }
+            spacing: Style.space(10)
+
+            ListView {
+              id: cwMainList
+              width: (parent.width - parent.spacing) / 2
+              height: parent.height
+              clip: true
+              spacing: Style.space(2)
+              boundsBehavior: Flickable.StopAtBounds
+              model: cashewWin.pickCats
+              delegate: CashewPickRow {
+                required property var modelData
+                width: cwMainList.width
+                text: modelData.name
+                icon: (cashewWin.catMap[modelData.name] || ({})).icon || ""
+                iconFill: (cashewWin.catMap[modelData.name] || ({})).color || "#37474F"
+                selected: modelData.name === cashewWin.pickMain
+                onPicked: {
+                  var subs = modelData.subcategories || []
+                  var name = modelData.name
+                  if (subs.length === 0) cashewWin.pickCategory(name, "")
+                  else cashewWin.pickMain = name
+                }
+              }
+              ScrollWheelArea { anchors.fill: parent; target: cwMainList }
+            }
+
+            Flickable {
+              id: cwSubFlick
+              width: (parent.width - parent.spacing) / 2
+              height: parent.height
+              clip: true
+              contentWidth: width
+              contentHeight: cwSubFlow.height
+              boundsBehavior: Flickable.StopAtBounds
+              Flow {
+                id: cwSubFlow
+                width: parent.width
+                spacing: Style.space(6)
+                CashewChip {
+                  visible: cashewWin.pickMain !== "" && cashewWin.pickSubs.length > 0
+                  maxWidth: cwSubFlow.width
+                  text: "No subcategory"
+                  tint: "#455A64"
+                  selected: cashewWin.pickMain === cashewWin.pickDraft.category && (cashewWin.pickDraft.subcategory || "") === ""
+                  onClicked: cashewWin.pickCategory(cashewWin.pickMain, "")
+                }
+                Repeater {
+                  model: cashewWin.pickSubs
+                  delegate: CashewChip {
+                    required property string modelData
+                    maxWidth: cwSubFlow.width
+                    text: modelData
+                    tint: (cashewWin.catMap[cashewWin.pickMain] || ({})).color || "#455A64"
+                    selected: modelData === cashewWin.pickDraft.subcategory && cashewWin.pickMain === cashewWin.pickDraft.category
+                    onClicked: cashewWin.pickCategory(cashewWin.pickMain, modelData)
+                  }
+                }
+              }
+              ScrollWheelArea { anchors.fill: parent; target: cwSubFlick }
+            }
+          }
+
+          // account list
+          ListView {
+            id: cwAcctList
+            visible: cashewWin.pickKind === "account"
+            anchors { top: cwPickTitle.bottom; bottom: cwPickFoot.top; left: parent.left; right: parent.right; margins: Style.space(14) }
+            clip: true
+            spacing: Style.space(2)
+            boundsBehavior: Flickable.StopAtBounds
+            model: cashewWin.pickKind === "account" ? root.cashewAccountNames : []
+            delegate: CashewPickRow {
+              required property string modelData
+              width: cwAcctList.width
+              text: modelData
+              selected: modelData === cashewWin.pickDraft.account
+              onPicked: cashewWin.pickAccount(modelData)
+            }
+            ScrollWheelArea { anchors.fill: parent; target: cwAcctList }
+          }
+
+          // note: multi-line editor, saved with the button or Ctrl+Enter
+          Item {
+            id: cwNoteBox
+            visible: cashewWin.pickKind === "note"
+            anchors { top: cwPickTitle.bottom; bottom: parent.bottom; left: parent.left; right: parent.right; margins: Style.space(14) }
+            Rectangle {
+              anchors { top: parent.top; bottom: cwNoteBtns.top; bottomMargin: Style.space(8); left: parent.left; right: parent.right }
+              radius: Style.space(8)
+              color: Util.alpha(root.foreground, 0.08)
+              Loader {
+                id: cwNoteLoader
+                anchors { fill: parent; margins: Style.space(8) }
+                active: cashewWin.pickKind === "note"
+                sourceComponent: CashewNoteEditor {}
+              }
+            }
+            Row {
+              id: cwNoteBtns
+              anchors { bottom: parent.bottom; left: parent.left }
+              spacing: Style.space(8)
+              CashewBtn { label: "Save"; primary: true; onClicked: cashewWin.saveNote(cwNoteLoader.item ? cwNoteLoader.item.text : "") }
+              CashewBtn { label: "Cancel"; onClicked: cashewWin.closePicker() }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: cwNoteLoader.item ? cwNoteLoader.item.count + " / 500" : ""
+                color: cwNoteLoader.item && cwNoteLoader.item.count > 500 ? root.debitColor : cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+
+          Row {
+            id: cwPickFoot
+            visible: cashewWin.pickKind === "account" || (cashewWin.pickKind === "category" && cashewWin.pickDraft.kind !== "transfer")
+            anchors { bottom: parent.bottom; left: parent.left; margins: Style.space(14) }
+            height: Style.space(30)
+            spacing: Style.space(8)
+            CashewCheck {
+              anchors.verticalCenter: parent.verticalCenter
+              checked: cashewWin.pickRemember
+              onToggled: cashewWin.pickRemember = !cashewWin.pickRemember
+            }
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: cashewWin.pickKind === "account"
+                ? "Use for every ••" + (cashewWin.pickDraft.last4 || "") + " row"
+                : "Remember for this merchant"
+              color: cashewWin.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Quiet tonal button, like the filter chips.
+  component CashewBtn: BorderSurface {
+    id: cb
+    property string label: ""
+    property bool primary: false
+    property bool active: false
+    // Visually prominent variant: taller, filled solid with the accent
+    // colour, bordered, body-sized text. Used for the AI-guess trigger so it
+    // reads as a distinct, important action rather than another small
+    // header toggle like Options/Close (audit: not visually distinct).
+    property bool big: false
+    property color tint: "transparent"      // a set colour (e.g. green for "All categorised")
+    signal clicked()
+    readonly property bool _hot: cbMouse.containsMouse || cb.activeFocus
+    height: cb.big ? Style.space(34) : Style.space(28)
+    width: cbText.implicitWidth + (cb.big ? Style.space(30) : Style.space(22))
+    radius: Style.space(8)
+    opacity: !cb.enabled ? 0.4 : (cbMouse.pressed ? 0.7 : 1)
+    color: cb.tint.a > 0 ? Util.alpha(cb.tint, cb._hot ? 0.34 : 0.26)
+      : cb.big ? Util.alpha(Color.accent, cb._hot ? 0.58 : 0.44)
+      : (cb.primary || cb.active) ? Util.alpha(Color.accent, cb._hot ? 0.28 : 0.20)
+      : Util.alpha(root.foreground, cb._hot ? 0.13 : 0.06)
+    borderSpec: cb.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent)
+      : (cb.big ? Border.controlSpec("normal", Color.accent, Color.accent) : Border.none())
+    activeFocusOnTab: cb.visible && cb.enabled
+    Keys.onReturnPressed: if (cb.enabled) cb.clicked()
+    Keys.onEnterPressed: if (cb.enabled) cb.clicked()
+    Keys.onSpacePressed: if (cb.enabled) cb.clicked()
+    Text {
+      id: cbText
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: cb.label
+      color: cb.tint.a > 0 ? cb.tint
+        : (cb.big || cb.primary || cb.active) ? Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75)) : root.foreground
+      font.family: Style.font.family
+      font.pixelSize: cb.big ? Style.font.body : Style.font.caption
+      font.bold: cb.big || cb.primary || cb.active || cb.tint.a > 0
+    }
+    MouseArea {
+      id: cbMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      enabled: cb.enabled
+      cursorShape: Qt.PointingHandCursor
+      onClicked: cb.clicked()
+    }
+  }
+
+  component CashewCheck: Rectangle {
+    id: cc
+    property bool checked: false
+    signal toggled()
+    width: Style.space(18)
+    height: width
+    radius: Style.space(5)
+    color: cc.checked ? Util.alpha(Color.accent, 0.55) : Util.alpha(root.foreground, 0.14)
+    activeFocusOnTab: cc.visible
+    Keys.onSpacePressed: cc.toggled()
+    Keys.onReturnPressed: cc.toggled()
+    Rectangle {
+      anchors.fill: parent
+      radius: parent.radius
+      color: "transparent"
+      border.width: cc.activeFocus ? 2 : 0
+      border.color: Color.accent
+    }
+    Text {
+      anchors.centerIn: parent
+      visible: cc.checked
+      textFormat: Text.PlainText
+      text: "✓"
+      color: root.foreground
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+    MouseArea { anchors.fill: parent; anchors.margins: -Style.space(4); cursorShape: Qt.PointingHandCursor; onClicked: cc.toggled() }
+  }
+
+  // Category, account or sub-category chip: a tonal pill, no border.
+  component CashewChip: Rectangle {
+    id: ch
+    property string text: ""
+    property bool warn: false
+    property bool selected: false
+    property color tint: "transparent"     // transparent = neutral
+    property real maxWidth: 200
+    signal clicked()
+    readonly property bool _hot: chMouse.containsMouse || ch.activeFocus
+    readonly property bool hovered: chMouse.containsMouse
+    height: Style.space(24)
+    width: Math.min(ch.maxWidth, chText.implicitWidth + Style.space(18))
+    radius: height / 2
+    color: ch.selected ? Util.alpha(Color.accent, ch._hot ? 0.40 : 0.32)
+      : ch.warn ? Util.alpha(root.pendingColor, ch._hot ? 0.34 : 0.24)
+      : ch.tint.a > 0 ? Util.alpha(ch.tint, ch._hot ? 0.80 : 0.62)
+      : Util.alpha(root.foreground, ch._hot ? 0.18 : 0.10)
+    activeFocusOnTab: ch.visible
+    Keys.onReturnPressed: ch.clicked()
+    Keys.onEnterPressed: ch.clicked()
+    Keys.onSpacePressed: ch.clicked()
+    Text {
+      id: chText
+      anchors { verticalCenter: parent.verticalCenter; left: parent.left; right: parent.right; leftMargin: Style.space(9); rightMargin: Style.space(9) }
+      elide: Text.ElideRight
+      textFormat: Text.PlainText
+      text: ch.text
+      color: root.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: ch.selected
+    }
+    MouseArea { id: chMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: ch.clicked() }
+  }
+
+  // Round category icon: a flat colour with the emoji on it.
+  component CashewIcon: Rectangle {
+    id: ci
+    property string icon: ""
+    property color fill: "#37474F"
+    property bool warn: false
+    width: Style.space(44)
+    height: width
+    radius: width / 2
+    // Border only: a ring and a thin glyph in one tone, lightened so the
+    // category colours (dark on dark) stay readable.
+    readonly property color tone: Qt.lighter(ci.fill, 1.9)
+    color: "transparent"
+    border.width: 1.5
+    border.color: ci.tone
+    Text {
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: ci.icon
+      color: ci.tone
+      font.family: "JetBrainsMono Nerd Font"
+      font.pixelSize: Math.round(ci.width * 0.48)
+    }
+    Rectangle {
+      visible: ci.warn
+      anchors { right: parent.right; top: parent.top }
+      width: Math.round(ci.width * 0.26)
+      height: width
+      radius: width / 2
+      color: root.pendingColor
+      border.width: 2
+      border.color: Color.popups.background
+    }
+  }
+
+  // One leg of a transfer card: [account chip] ---- [date] [note] ▾/▴ amount.
+  component CashewLeg: Item {
+    id: lg
+    property int idx: -1
+    property string cardDate: ""
+    property bool hot: false
+    readonly property var d: root.cashewDrafts[lg.idx] || ({})
+    readonly property bool credit: String(lg.d.amount || "").charAt(0) !== "-"
+    height: Style.space(26)
+
+    CashewChip {
+      id: lgAcct
+      anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+      maxWidth: Style.space(150)
+      tint: "#455A64"
+      text: (lg.d.account || "") !== "" ? lg.d.account : "No account"
+      warn: (lg.d.account || "") === ""
+      onClicked: cashewWin.openPicker("account", lg.idx)
+    }
+    CashewCell {
+      id: lgAmount
+      anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+      width: Style.space(150)
+      implicitHeight: Style.space(26)
+      kind: "amount"
+      alignRight: true
+      bold: true
+      pixelSize: Style.font.body + 1
+      value: lg.d.amount || ""
+      display: (lg.credit ? "▴ " : "▾ ") + Model.cashewMoney(lg.d.amount)
+      color: lg.credit ? root.creditColor : root.debitColor
+      onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, lg.idx, { amount: v }), true) }
+    }
+    CashewNote {
+      id: lgNote
+      compact: true
+      anchors { right: lgAmount.left; rightMargin: Style.space(4); verticalCenter: parent.verticalCenter }
+      text: lg.d.notes || ""
+      hot: lg.hot
+      onClicked: cashewWin.openPicker("note", lg.idx)
+    }
+    CashewCell {
+      id: lgDate
+      visible: (lg.d.date || "") !== lg.cardDate        // only a leg dated differently shows its date
+      anchors { right: lgNote.left; rightMargin: Style.space(6); verticalCenter: parent.verticalCenter }
+      width: Style.space(96)
+      alignRight: true
+      kind: "date"
+      value: lg.d.date || ""
+      color: cashewWin.muted
+      onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, lg.idx, { date: v }), true) }
+    }
+    Rectangle {
+      anchors { left: lgAcct.right; leftMargin: Style.space(8); right: lgDate.visible ? lgDate.left : lgNote.left; rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
+      height: 1
+      color: Util.alpha(root.foreground, 0.16)
+    }
+  }
+
+  // The note of a draft: a small note icon (plus the first line when there is room)
+  // only when a note exists; a muted "+ note" while the row is hovered otherwise.
+  component CashewNote: Item {
+    id: cn
+    property string text: ""
+    property bool hot: false
+    property bool compact: false          // icon only
+    signal clicked()
+    readonly property bool has: cn.text !== ""
+    implicitHeight: Style.space(24)
+    implicitWidth: cn.has ? Style.space(26) : (cn.hot ? Style.space(52) : 0)
+    width: cn.compact ? cn.implicitWidth : implicitWidth
+    height: implicitHeight
+    Rectangle {
+      id: cnIcon
+      visible: cn.has
+      anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+      width: Style.space(22)
+      height: Style.space(20)
+      radius: Style.space(6)
+      color: Util.alpha("#5C7C9C", cnMouse.containsMouse ? 0.95 : 0.8)
+      Text {
+        anchors.centerIn: parent
+        textFormat: Text.PlainText
+        text: "≡"
+        color: "#EAF1F8"
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption + 2
+        font.bold: true
+      }
+    }
+    Text {
+      visible: cn.has && !cn.compact
+      anchors { left: cnIcon.right; leftMargin: Style.space(8); right: parent.right; verticalCenter: parent.verticalCenter }
+      elide: Text.ElideRight
+      textFormat: Text.PlainText
+      text: cn.text.split("\n")[0]
+      color: cashewWin.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    Text {
+      visible: !cn.has && cn.hot
+      anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+      textFormat: Text.PlainText
+      text: "+ note"
+      color: Qt.darker(root.foreground, cnMouse.containsMouse ? 1.1 : 1.5)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    MouseArea {
+      id: cnMouse
+      anchors.fill: parent
+      enabled: cn.has || cn.hot
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: cn.clicked()
+    }
+  }
+
+  // Multi-line note editor, created only while the note picker is open.
+  component CashewNoteEditor: Flickable {
+    id: ne
+    readonly property alias text: neArea.text
+    readonly property int count: neArea.length
+    clip: true
+    contentWidth: width
+    contentHeight: Math.max(height, neArea.implicitHeight)
+    boundsBehavior: Flickable.StopAtBounds
+    TextArea.flickable: TextArea {
+      id: neArea
+      wrapMode: TextEdit.Wrap
+      selectByMouse: true
+      color: root.foreground
+      selectionColor: Util.alpha(Color.accent, 0.4)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.body
+      background: null
+      Component.onCompleted: {
+        neArea.text = cashewWin.pickDraft.notes || ""
+        neArea.forceActiveFocus()
+        neArea.cursorPosition = neArea.length
+      }
+      Keys.onEscapePressed: function (event) { event.accepted = true; cashewWin.closePicker() }
+      Keys.onPressed: function (event) {
+        if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
+          event.accepted = true
+          cashewWin.saveNote(neArea.text)
+        }
+      }
+    }
+  }
+
+  component CashewPickRow: Rectangle {
+    id: pr
+    property string text: ""
+    property bool selected: false
+    property bool dim: false
+    property string icon: ""
+    property color iconFill: "#37474F"
+    signal picked()
+    height: pr.icon !== "" ? Style.space(34) : Style.space(28)
+    radius: Style.space(8)
+    color: pr.selected ? Util.alpha(pr.icon !== "" ? pr.iconFill : Color.accent, pr.icon !== "" ? 0.50 : 0.24) : Util.alpha(root.foreground, prMouse.containsMouse || pr.activeFocus ? 0.12 : 0.0)
+    activeFocusOnTab: pr.visible
+    Keys.onReturnPressed: pr.picked()
+    Keys.onEnterPressed: pr.picked()
+    Keys.onSpacePressed: pr.picked()
+    CashewIcon {
+      id: prIcon
+      visible: pr.icon !== ""
+      anchors { verticalCenter: parent.verticalCenter; left: parent.left; leftMargin: Style.space(6) }
+      width: Style.space(26)
+      icon: pr.icon
+      fill: pr.iconFill
+    }
+    Text {
+      anchors { verticalCenter: parent.verticalCenter; left: pr.icon !== "" ? prIcon.right : parent.left; right: parent.right; leftMargin: Style.space(pr.icon !== "" ? 8 : 10); rightMargin: Style.space(10) }
+      elide: Text.ElideRight
+      textFormat: Text.PlainText
+      text: pr.text
+      color: pr.dim ? Qt.darker(root.foreground, 1.2) : root.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: pr.selected
+    }
+    MouseArea { id: prMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: pr.picked() }
+  }
+
+  // One editable value in a draft row. Click (or Enter) edits; Enter or
+  // leaving the field commits, Esc aborts. Everything is read before the
+  // editor is switched off, because switching it off destroys the TextField.
+  component CashewCell: Item {
+    id: cell
+    property string value: ""
+    property string kind: "text"          // text | date | amount
+    property string placeholder: ""
+    property bool alignRight: false
+    property bool bold: false
+    property int pixelSize: Style.font.caption
+    property string display: ""           // shown instead of value when not editing
+    property color color: root.foreground
+    property bool editing: false
+    property bool bad: false
+    signal commit(string value)
+    implicitHeight: Style.space(22)
+    height: implicitHeight
+    activeFocusOnTab: !cell.editing
+    Keys.onReturnPressed: cell.startEditing()
+    Keys.onEnterPressed: cell.startEditing()
+
+    function startEditing() {
+      cell.bad = false
+      cell.editing = true
+    }
+    function normalised(typed) {
+      if (cell.kind === "date") return Model.cashewValidDate(typed) ? typed.trim() : null
+      if (cell.kind === "amount") return Model.cashewNormAmount(typed)
+      return typed.trim()
+    }
+    function finish(refocus) {
+      if (!cell.editing || !edLoader.item) return
+      var typed = edLoader.item.text
+      var next = cell.normalised(typed)
+      if (next === null) { cell.bad = true; return }
+      var changed = next !== cell.value
+      cell.editing = false
+      if (refocus) cashewCard.forceActiveFocus()
+      if (changed) cell.commit(next)
+    }
+
+    Rectangle {
+      anchors.fill: parent
+      radius: Style.space(5)
+      color: Util.alpha(root.foreground, cell.activeFocus ? 0.12 : (cellMouse.containsMouse ? 0.07 : 0))
+    }
+    Text {
+      visible: !cell.editing
+      anchors { fill: parent; leftMargin: Style.space(4); rightMargin: Style.space(4) }
+      verticalAlignment: Text.AlignVCenter
+      horizontalAlignment: cell.alignRight ? Text.AlignRight : Text.AlignLeft
+      elide: Text.ElideRight
+      textFormat: Text.PlainText
+      text: cell.value !== "" ? (cell.display !== "" ? cell.display : cell.value) : cell.placeholder
+      color: cell.value !== "" ? cell.color : Qt.darker(root.foreground, 1.6)
+      font.family: Style.font.family
+      font.pixelSize: cell.pixelSize
+      font.bold: cell.bold
+    }
+    MouseArea {
+      id: cellMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      visible: !cell.editing
+      cursorShape: Qt.IBeamCursor
+      onClicked: cell.startEditing()
+    }
+    Loader {
+      id: edLoader
+      anchors.fill: parent
+      active: cell.editing
+      sourceComponent: TextField {
+        text: cell.value
+        horizontalAlignment: cell.alignRight ? TextInput.AlignRight : TextInput.AlignLeft
+        color: cell.bad ? root.debitColor : root.foreground
+        font.family: Style.font.family
+        font.pixelSize: cell.pixelSize
+        topPadding: 0
+        bottomPadding: 0
+        background: Rectangle {
+          radius: Style.space(5)
+          color: Util.alpha(Color.accent, 0.12)
+          border.width: 1
+          border.color: cell.bad ? root.debitColor : Util.alpha(Color.accent, 0.6)
+        }
+        Component.onCompleted: { forceActiveFocus(); selectAll() }
+        onTextChanged: cell.bad = false
+        onAccepted: cell.finish(true)
+        onEditingFinished: cell.finish(false)
+        Keys.onEscapePressed: function (event) {
+          event.accepted = true
+          cell.editing = false
+          cashewCard.forceActiveFocus()
+        }
+      }
+    }
+  }
+
+  // Text button for the RECENT selection controls, drawn with the same
+  // surface and border as the other controls in this widget.
+  component TextAction: BorderSurface {
+    id: action
+    property string label: ""
+    signal triggered()
+
+    readonly property bool _hot: actionMouse.containsMouse || action.activeFocus
+
+    width: actionText.implicitWidth + Style.space(18)
+    height: Style.space(26)
+    radius: Style.cornerRadius
+    color: Style.controlFill(action.activeFocus, action._hot, Color.accent, Color.accent)
+    borderSpec: Border.controlSpec(action.activeFocus ? "focus" : (action._hot ? "hover-cursor" : "normal"), Color.accent, Color.accent)
+
+    // Tab-stop only while actually shown — every call site's `visible`
+    // already means "selectionMode on AND relevant" (see selectionRow),
+    // so this can't stay a live tab stop once the row it's in is hidden.
+    activeFocusOnTab: action.visible
+    Keys.onReturnPressed: action.triggered()
+    Keys.onEnterPressed: action.triggered()
+    Keys.onSpacePressed: action.triggered()
+    Keys.onDownPressed: root.focusNext(action, true)
+    Keys.onUpPressed: root.focusNext(action, false)
+
+    Text {
+      id: actionText
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: action.label
+      color: Color.accent
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+
+    MouseArea {
+      id: actionMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      preventStealing: true
+      onClicked: action.triggered()
+    }
+  }
+
+  // Three small dots: how sure the match is (filled = accent, empty = faint).
+  component PipMeter: Row {
+    id: pm
+    property int count: 0
+    property int total: 3
+    spacing: Style.space(3)
+    Repeater {
+      model: pm.total
+      delegate: Rectangle {
+        required property int index
+        width: Style.space(6)
+        height: width
+        radius: width / 2
+        color: index < pm.count ? Color.accent : Util.alpha(Color.accent, 0.25)
+      }
+    }
+  }
+
+  // A small rounded tag ("SAME REFERENCE", "NEW").
+  component TagPill: Rectangle {
+    id: tp
+    property string label: ""
+    property color tone: Color.accent
+    property bool solid: false
+    radius: Style.space(4)
+    color: tp.solid ? tp.tone : Util.alpha(tp.tone, 0.22)
+    implicitWidth: tpText.implicitWidth + Style.space(10)
+    implicitHeight: tpText.implicitHeight + Style.space(4)
+    Text {
+      id: tpText
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: tp.label
+      color: tp.solid ? Color.popups.background : tp.tone
+      font.family: Style.font.family
+      font.bold: true
+      font.pixelSize: Style.font.caption
+    }
+  }
+
+  // A small text button for the transaction edit panel.
+  component TxnBtn: BorderSurface {
+    id: tb
+    property string label: ""
+    property bool primary: false
+    signal clicked()
+    height: Style.space(26)
+    width: tbText.implicitWidth + Style.space(18)
+    radius: Style.space(7)
+    opacity: !tb.enabled ? 0.4 : (tbMouse.pressed ? 0.7 : 1)
+    color: tb.primary ? Util.alpha(Color.accent, tbMouse.containsMouse ? 0.34 : 0.24)
+      : Util.alpha(root.foreground, tbMouse.containsMouse ? 0.14 : 0.07)
+    borderSpec: Border.none()
+    Text {
+      id: tbText
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: tb.label
+      color: root.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    MouseArea {
+      id: tbMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: tb.clicked()
+    }
+  }
+
+  // The "i" button at the far right of a card.
+  component InfoButton: PanelActionButton {
+    id: ib
+    property bool infoShown: false
+    size: Style.space(24)
+    iconText: "󰋽"
+    tooltipText: "Explain"
+    foreground: ib.infoShown ? Color.accent : root.foreground
+    bordered: false
+    focusable: false
+  }
+
+  // An AcctPill in a frame; a side that is not in the data gets a dashed amber frame.
+  component PillSlot: Item {
+    id: ps
+    required property var txn
+    property real maxWidth: 100000
+    implicitWidth: psPill.implicitWidth + Style.space(8)
+    implicitHeight: psPill.implicitHeight + Style.space(6)
+    width: implicitWidth
+    height: implicitHeight
+    Canvas {
+      anchors.fill: parent
+      visible: !!ps.txn.ghost
+      onWidthChanged: requestPaint()
+      onHeightChanged: requestPaint()
+      onVisibleChanged: requestPaint()
+      onPaint: {
+        var g = getContext("2d")
+        g.reset()
+        g.strokeStyle = root.pendingColor
+        g.lineWidth = 1
+        g.setLineDash([3, 2])
+        g.strokeRect(0.5, 0.5, width - 1, height - 1)
+      }
+    }
+    AcctPill {
+      id: psPill
+      anchors.centerIn: parent
+      txn: ps.txn
+      maxWidth: ps.maxWidth - Style.space(8)
+    }
+  }
+
+  // The "i" panel: a bordered box inside the card (never a Popup, which would
+  // draw outside the widget). `info` comes from Model.transferExplain / txnExplain.
+  component InfoSection: Item {
+    id: inf
+    property var info: null
+    property bool open: false
+    readonly property bool shown: inf.open && !!inf.info
+    visible: inf.shown
+    implicitHeight: inf.shown ? infBox.implicitHeight + Style.space(6) : 0
+    height: implicitHeight
+
+    Rectangle {
+      id: infBox
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(6)
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.leftMargin: Style.spacing.rowPaddingX
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      radius: Style.space(6)
+      color: Util.alpha(root.foreground, 0.06)
+      border.width: 1
+      border.color: Util.alpha(root.foreground, 0.18)
+      implicitHeight: infCol.implicitHeight + Style.space(16)
+
+      Column {
+        id: infCol
+        x: Style.space(8)
+        y: Style.space(8)
+        width: parent.width - Style.space(16)
+        spacing: Style.space(4)
+
+        Row {
+          spacing: Style.space(6)
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: inf.info ? inf.info.glyph : ""
+            color: Color.accent
+            font.pixelSize: Style.font.body
+          }
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: inf.info ? inf.info.title : ""
+            color: root.foreground
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.caption
+          }
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: !!inf.info && inf.info.certainty !== ""
+            textFormat: Text.PlainText
+            text: inf.info ? "·  " + inf.info.certainty : ""
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+        Repeater {
+          model: inf.info ? inf.info.rows : []
+          delegate: Item {
+            id: infRow
+            required property var modelData
+            width: infCol.width
+            height: Math.max(infKey.implicitHeight, infVal.implicitHeight)
+            Text {
+              id: infKey
+              width: Style.space(84)
+              textFormat: Text.PlainText
+              text: infRow.modelData.k
+              color: Qt.darker(root.foreground, 1.5)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              id: infVal
+              anchors.left: infKey.right
+              anchors.right: parent.right
+              textFormat: Text.PlainText
+              wrapMode: Text.WrapAnywhere
+              text: infRow.modelData.v
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
+        Text {
+          visible: !!inf.info && inf.info.why !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          text: inf.info ? "Why: " + inf.info.why : ""
+          color: Qt.darker(root.foreground, 1.2)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          visible: !!inf.info && inf.info.next !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          text: inf.info ? "Next step: " + inf.info.next : ""
+          color: root.pendingColor
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+  }
+
+  // A bank logo + the account tag ("HDFC ••7367"), the way a transaction card
+  // draws the account its row sits in.
+  component AcctPill: Row {
+    id: ap
+    required property var txn
+    // The most this chip (logo + tag) may take; the tag's text is elided to fit
+    // rather than running under whatever sits beside it.
+    property real maxWidth: 100000
+    spacing: Style.space(6)
+    readonly property bool isSavings: ap.txn.accountType === "checking" && (ap.txn.bank === "AXIS" || ap.txn.bank === "SBI")
+    readonly property string accountName: ap.txn.ghost ? "" : Model.accountChipText(ap.txn, store.cardOverviews, store.accountNameOverrides)
+
+    BrandMark {
+      network: Model.cardNetwork(ap.txn, store.cardOverviews)
+      markHeight: Style.spaceReal(9)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+    HdfcLogo {
+      variant: "icon"
+      visible: ap.txn.accountType === "checking" && ap.txn.bank === "HDFC"
+      markSize: Style.spaceReal(9)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+    AxisLogo {
+      visible: ap.txn.accountType === "checking" && ap.txn.bank === "AXIS"
+      markSize: Style.spaceReal(9)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+    SbiLogo {
+      visible: ap.txn.accountType === "checking" && ap.txn.bank === "SBI"
+      markSize: Style.spaceReal(9)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+    Rectangle {
+      radius: Style.space(4)
+      color: Util.alpha(root.foreground, 0.12)
+      implicitWidth: Math.min(apText.implicitWidth + Style.space(10), Math.max(Style.space(36), ap.maxWidth - Style.space(26)))
+      implicitHeight: apText.implicitHeight + Style.space(4)
+      Text {
+        id: apText
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: Style.space(5)
+        anchors.rightMargin: Style.space(5)
+        elide: Text.ElideRight
+        textFormat: Text.PlainText
+        text: ap.txn.ghost ? (ap.txn.bank || "Other account") : ap.accountName
+        // A side that is not in your statements: the bank's name, dimmed and
+        // in italics instead of a ••last4 (which is not known).
+        color: ap.txn.ghost ? Qt.darker(root.foreground, 1.4) : root.foreground
+        font.family: Style.font.family
+        font.italic: !!ap.txn.ghost
+        font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
+  // Money that moved between two of your own accounts, drawn as ONE card in
+  // its own colour with a TRANSFER tag and "from -> to": both sides of it
+  // (the debit in one bank, the credit in the other) are folded together by
+  // txdb/transfers.py. Click to track both sides; open it (chevron, circle or
+  // the arrow keys) to look at each side - its own statement text, date,
+  // amount and balance - and, if the pairing is wrong, split it back into two
+  // ordinary transactions.
+  component TransferCard: BorderSurface {
+    id: xc
+    required property var transfer
+    // This row's index in the virtualized RECENT ListView (txnList), -1
+    // when not inside it (there is no other caller right now, but the
+    // default keeps the component usable standalone). Lets Up/Down
+    // force the neighbouring row to exist before walking the focus
+    // chain onto it — see root.focusNextInList.
+    property int rowIndex: -1
+    property bool expanded: false
+    readonly property var outLeg: xc.transfer.out
+    readonly property var inLeg: xc.transfer.in
+    readonly property color tone: Color.accent
+    readonly property bool _hot: xHover.hovered || xc.activeFocus
+    readonly property int collapsedHeight: Style.space(56)
+    readonly property var amountLeg: xc.transfer.oneSided ? xc.transfer.real : xc.outLeg
+    readonly property var legsList: xc.transfer.oneSided ? [xc.transfer.real] : [xc.outLeg, xc.inLeg]
+    readonly property var meta: Model.transferMeta(Model.transferKind(xc.transfer))
+    readonly property string infoId: "t:" + xc.transfer.id
+    readonly property bool infoOpen: root.infoOpenId === xc.infoId
+    function toggleInfo() { root.infoOpenId = xc.infoOpen ? "" : xc.infoId }
+
+    implicitHeight: xc.collapsedHeight + xInfo.height + (xc.expanded ? xDetails.implicitHeight + Style.space(12) : 0)
+    radius: Style.cornerRadius
+    opacity: xMouse.pressed ? 0.75 : 1.0
+    color: xc.transfer.tracked ? Util.alpha(xc.tone, 0.18)
+      : (xc._hot ? Util.alpha(xc.tone, 0.14) : Util.alpha(xc.tone, 0.07))
+    borderSpec: xc.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.flat(Util.alpha(xc.tone, 0.45), 1)
+
+    Behavior on implicitHeight { NumberAnimation { duration: 120 } }
+    Behavior on color { ColorAnimation { duration: 100 } }
+    Behavior on opacity { NumberAnimation { duration: 80 } }
+
+    HoverHandler { id: xHover }
+
+    function toggleTracked() { store.setTrackedMany(xc.legsList, !xc.transfer.tracked) }
+
+    activeFocusOnTab: true
+    Keys.onReturnPressed: xc.toggleTracked()
+    Keys.onEnterPressed: xc.toggleTracked()
+    Keys.onSpacePressed: xc.toggleTracked()
+    Keys.onUpPressed: root.focusNextInList(xc, false)
+    Keys.onDownPressed: root.focusNextInList(xc, true)
+    Keys.onLeftPressed: xc.expanded = false
+    Keys.onRightPressed: xc.expanded = true
+    Keys.onPressed: function (event) {
+      if (event.key === Qt.Key_I) { xc.toggleInfo(); event.accepted = true }
+      else if (event.key === Qt.Key_Escape && xc.infoOpen) { root.infoOpenId = ""; event.accepted = true }
+    }
+
+    Item {
+      id: xRow
+      anchors.top: parent.top
+      anchors.left: parent.left
+      anchors.right: parent.right
+      height: xc.collapsedHeight
+
+      MouseArea {
+        id: xMouse
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: xc.toggleTracked()
+      }
+
+      Rectangle {
+        id: xAvatar
+        width: Style.space(36)
+        height: width
+        radius: width / 2
+        color: Util.alpha(xc.tone, 0.28)
+        anchors.left: parent.left
+        anchors.leftMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+
+        MouseArea {
+          anchors.fill: parent
+          anchors.margins: -Style.space(4)
+          cursorShape: Qt.PointingHandCursor
+          onClicked: xc.expanded = !xc.expanded
+        }
+        Text {
+          anchors.centerIn: parent
+          textFormat: Text.PlainText
+          text: xc.meta.glyph
+          color: xc.tone
+          font.pixelSize: Style.font.subtitle
+        }
+      }
+
+      Column {
+        anchors.left: xAvatar.right
+        anchors.leftMargin: Style.space(10)
+        anchors.right: xAmount.left
+        anchors.rightMargin: Style.space(8)
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(4)
+
+        Row {
+          id: xTitle
+          width: parent.width
+          spacing: Style.space(8)
+          clip: true
+          Text {
+            // Gives way (elides) before the tag, the dots or the NEW mark do.
+            width: Math.max(0, Math.min(implicitWidth, xTitle.width - xTag.width - xPips.width - xNew.width
+              - (xPips.visible ? xTitle.spacing : 0) - (xNew.visible ? xTitle.spacing : 0) - xTitle.spacing))
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            text: "Transfer"
+            color: root.foreground
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.subtitle
+          }
+          TagPill {
+            id: xTag
+            anchors.verticalCenter: parent.verticalCenter
+            label: xc.meta.tag
+            tone: root.toneColor(xc.meta.tone)
+          }
+          PipMeter {
+            id: xPips
+            visible: xc.meta.pips > 0
+            anchors.verticalCenter: parent.verticalCenter
+            count: xc.meta.pips
+          }
+          TagPill {
+            id: xNew
+            visible: !!xc.transfer.isNew
+            anchors.verticalCenter: parent.verticalCenter
+            label: "NEW"
+            tone: Color.accent
+            solid: true
+          }
+        }
+
+        Row {
+          id: xFlow
+          width: parent.width
+          spacing: Style.space(6)
+          clip: true
+          PillSlot { txn: xc.outLeg; maxWidth: (xFlow.width - xArrow.width - 2 * xFlow.spacing) / 2; anchors.verticalCenter: parent.verticalCenter }
+          Text {
+            id: xArrow
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: "→"
+            color: xc.tone
+            font.bold: true
+            font.pixelSize: Style.font.body
+          }
+          PillSlot { txn: xc.inLeg; maxWidth: (xFlow.width - xArrow.width - 2 * xFlow.spacing) / 2; anchors.verticalCenter: parent.verticalCenter }
+        }
+      }
+
+      InfoButton {
+        id: xInfoBtn
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+        infoShown: xc.infoOpen
+        onClicked: xc.toggleInfo()
+      }
+
+      Column {
+        id: xAmount
+        anchors.right: xInfoBtn.left
+        anchors.rightMargin: Style.space(4)
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(2)
+
+        Text {
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          // Neutral: money that only moved between your own accounts has no +/-.
+          text: Model.currencySymbol(xc.amountLeg.currency) + Model.formatGrouped(Math.abs(xc.amountLeg.amount))
+          color: root.foreground
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.subtitle
+        }
+      }
+    }
+
+    InfoSection {
+      id: xInfo
+      anchors.top: xRow.bottom
+      anchors.left: parent.left
+      anchors.right: parent.right
+      open: xc.infoOpen
+      info: xc.infoOpen ? Model.transferExplain(xc.transfer, { lastFetched: store.lastFetched }) : null
+    }
+
+    Column {
+      id: xDetails
+      visible: xc.expanded
+      anchors.top: xInfo.bottom
+      anchors.topMargin: Style.space(6)
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.leftMargin: Style.spacing.rowPaddingX + Style.space(46)
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      spacing: Style.space(6)
+
+      Rectangle { width: parent.width; height: Style.spacing.hairline; color: Util.alpha(xc.tone, 0.5) }
+
+      Repeater {
+        model: [
+          { role: "OUT", leg: xc.outLeg, color: root.debitColor },
+          { role: "IN", leg: xc.inLeg, color: root.creditColor },
+        ]
+        delegate: Column {
+          id: legCol
+          required property var modelData
+          width: parent.width
+          spacing: Style.space(3)
+
+          Row {
+            spacing: Style.space(8)
+            Rectangle {
+              anchors.verticalCenter: parent.verticalCenter
+              radius: Style.space(4)
+              color: Util.alpha(legCol.modelData.color, 0.22)
+              implicitWidth: legTag.implicitWidth + Style.space(10)
+              implicitHeight: legTag.implicitHeight + Style.space(4)
+              Text {
+                id: legTag
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: legCol.modelData.role
+                color: legCol.modelData.color
+                font.family: Style.font.family
+                font.bold: true
+                font.pixelSize: Style.font.caption
+              }
+            }
+            AcctPill { txn: legCol.modelData.leg; anchors.verticalCenter: parent.verticalCenter }
+            Text {
+              visible: !legCol.modelData.leg.ghost
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: Model.formatAmount(legCol.modelData.leg)
+              color: legCol.modelData.color
+              font.family: Style.font.family
+              font.bold: true
+              font.pixelSize: Style.font.caption
+            }
+          }
+          Text {
+            visible: !!legCol.modelData.leg.ghost
+            width: parent.width
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            text: "This side is not in your statements - it is older than what is fetched, or another account. "
+              + "The amount is the same."
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          Text {
+            visible: !legCol.modelData.leg.ghost
+            width: parent.width
+            textFormat: Text.PlainText
+            wrapMode: Text.WrapAnywhere
+            text: Model.formatFullDate(legCol.modelData.leg.date) + "  ·  " + legCol.modelData.leg.merchant
+            color: Qt.darker(root.foreground, 1.3)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          Text {
+            visible: !legCol.modelData.leg.ghost && legCol.modelData.leg.balance !== null && legCol.modelData.leg.balance !== undefined
+            textFormat: Text.PlainText
+            text: "balance after: " + Model.currencySymbol(legCol.modelData.leg.currency)
+              + Model.formatGrouped(legCol.modelData.leg.balance)
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+      }
+
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        text: "Not counted as spending or income."
+        color: Qt.darker(root.foreground, 1.5)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      Flow {
+        width: parent.width
+        spacing: Style.space(10)
+        TextAction {
+          label: xc.transfer.oneSided ? (xc.transfer.tracked ? "Untrack" : "Track") : (xc.transfer.tracked ? "Untrack both" : "Track both")
+          onTriggered: xc.toggleTracked()
+        }
+        TextAction {
+          label: "Not a transfer"
+          onTriggered: root.txdb(["transfer-split"].concat(xc.legsList.map(function (l) { return l.id })))
+        }
+      }
+    }
+  }
+
+  // One RECENT row, card-style: a circular direction icon, merchant name +
+  // account pill, amount on the right — clicking the row toggles "tracked"
+  // (shown as a tinted background instead of a switch), and hovering
+  // reveals an edit pencil that swaps the row for an inline TextField to
+  // rename this UPI counterparty's displayed merchant (the raw scraped
+  // text is often an ugly UPI string). The rename is keyed by
+  // Model.transactionGroupKey — not the transaction's own id — so it
+  // applies to every past AND future transaction from the same
+  // counterparty, not just this one row. Shown wherever a matching
+  // transaction appears (RECENT, the bills) — it never changes the
+  // underlying data, only the display.
+  component TransactionCard: BorderSurface {
+    id: card
+    required property var txn
+    // See TransferCard.rowIndex above — same purpose.
+    property int rowIndex: -1
+
+    property bool editing: false
+    // RECENT rows get a checkbox in selection mode.
+    property bool selectable: false
+    readonly property bool selected: !!root.selectedIds[card.txn.id]
+    // Expanded detail panel (raw merchant text, full date, full account,
+    // explicit tracked state) below the collapsed row — separate from the
+    // row-click/Enter/Space "toggle tracked" action so neither takes over
+    // the other: click/Enter/Space still toggles tracked same as always,
+    // the chevron (or Left/Right) is the only way to expand.
+    property bool expanded: false
+    readonly property bool showDetails: card.expanded && !card.editing
+    readonly property string groupKey: Model.transactionGroupKey(txn)
+    readonly property string displayMerchant: Model.transactionDisplayName(txn, store.transactionNameOverrides)
+    readonly property bool isAxisSavings: card.txn.accountType === "checking" && card.txn.bank === "AXIS"
+    readonly property bool isSbiSavings: card.txn.accountType === "checking" && card.txn.bank === "SBI"
+    // Same rule as a BILLS row: a rename shows as typed, and the network
+    // word is only stripped from the bank's own card name.
+    readonly property string accountName: Model.accountChipText(txn, store.cardOverviews, store.accountNameOverrides)
+    readonly property string note: Model.transactionNote(txn)
+    readonly property string userNote: store.txnNotes[card.txn.id] || ""
+    // Content slides left by this much while the pointer is over the row, which
+    // reveals the "i" and edit buttons at the right edge.
+    property real slide: (card._hot || card.infoOpen) && !card.editing ? Style.space(62) : 0
+    Behavior on slide { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+    function saveEdit() {
+      store.setTransactionName(card.groupKey, editField.text)
+      if (noteArea.text.trim() !== card.userNote) store.setTxnNote(card.txn.id, noteArea.text)
+      card.editing = false
+      Qt.callLater(function () { card.forceActiveFocus() })
+    }
+    // The bill filed against this transaction, if any - its note icon opens it.
+    readonly property var linkedReceipt: Model.linkedReceiptForTransaction(txn, store.receipts)
+    readonly property bool isDebit: txn.amount < 0
+    readonly property color directionColor: root.directionColor(txn)
+    readonly property bool _hot: rowHover.hovered || card.activeFocus
+    readonly property int collapsedHeight: Style.space(52)
+    readonly property string infoId: "x:" + card.txn.id
+    readonly property bool infoOpen: root.infoOpenId === card.infoId && !card.editing
+    function toggleInfo() { root.infoOpenId = root.infoOpenId === card.infoId ? "" : card.infoId }
+
+    implicitHeight: card.collapsedHeight + cInfo.height + (card.editing ? editPanel.implicitHeight + Style.space(10) : 0) + (card.showDetails ? detailsPanel.implicitHeight + Style.space(10) : 0)
+    radius: Style.cornerRadius
+    opacity: cardMouse.pressed ? 0.75 : 1.0
+    color: card.selected ? Util.alpha(Color.accent, 0.16)
+      : card.txn.tracked ? root.rowBg(card.txn)
+      : (card._hot ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent")
+    borderSpec: card.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+
+    Behavior on implicitHeight { NumberAnimation { duration: 120 } }
+    Behavior on color { ColorAnimation { duration: 100 } }
+    Behavior on opacity { NumberAnimation { duration: 80 } }
+
+    // Tracks hover over the whole card so the edit pencil and the hover
+    // tint above only activate when the pointer is actually over it (or,
+    // for keyboard users, when the card itself has focus — see `_hot`).
+    HoverHandler {
+      id: rowHover
+    }
+
+    activeFocusOnTab: !card.editing
+    Keys.onReturnPressed: if (!card.editing) store.setTracked(card.txn.id, !card.txn.tracked)
+    Keys.onEnterPressed: if (!card.editing) store.setTracked(card.txn.id, !card.txn.tracked)
+    Keys.onSpacePressed: {
+      if (card.editing) return
+      if (root.selectionMode && card.selectable) root.toggleSelected(card.txn.id)
+      else store.setTracked(card.txn.id, !card.txn.tracked)
+    }
+    // F2 for rename — Enter/Space already toggles tracked, so rename
+    // needs its own key (F2 is the standard rename shortcut elsewhere;
+    // confirmed no Hyprland keybind collision on this system).
+    // X toggles the row's selection (for keyboard users; the checkbox does the same).
+    Keys.onPressed: function (event) {
+      if (card.editing) return
+      if (event.key === Qt.Key_F2) { card.editing = true; event.accepted = true }
+      else if (event.key === Qt.Key_X && card.selectable && root.selectionMode) { root.toggleSelected(card.txn.id); event.accepted = true }
+      else if (event.key === Qt.Key_I) { card.toggleInfo(); event.accepted = true }
+      else if (event.key === Qt.Key_Escape && card.infoOpen) { root.infoOpenId = ""; event.accepted = true }
+    }
+    Keys.onUpPressed: if (!card.editing) root.focusNextInList(card, false)
+    Keys.onDownPressed: if (!card.editing) root.focusNextInList(card, true)
+    // Left/Right collapse/expand the detail panel — unused by this
+    // component otherwise (Up/Down already own row navigation).
+    Keys.onLeftPressed: if (!card.editing) card.expanded = false
+    Keys.onRightPressed: if (!card.editing) card.expanded = true
+
+    // Fixed-height collapsed row, pinned to the top — the card's own
+    // height grows downward below this when expanded, so this row's
+    // layout (every anchor below is relative to it, not to `card`) never
+    // has to account for the card's total height changing.
+    Item {
+      id: collapsedRow
+      anchors.top: parent.top
+      anchors.left: parent.left
+      anchors.right: parent.right
+      height: card.collapsedHeight
+
+      MouseArea {
+        id: cardMouse
+        anchors.fill: parent
+        enabled: !card.editing
+        cursorShape: Qt.PointingHandCursor
+        onClicked: store.setTracked(card.txn.id, !card.txn.tracked)
+      }
+
+      Rectangle {
+        id: checkBox
+        visible: card.selectable && root.selectionMode && !card.editing
+        width: Style.space(16)
+        height: width
+        radius: Style.space(3)
+        color: card.selected ? Style.controlFill(false, true, Color.accent, Color.accent) : "transparent"
+        border.width: 1
+        border.color: card.selected ? Color.accent : Qt.darker(root.foreground, 1.8)
+        anchors.left: parent.left
+        anchors.leftMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+
+        Behavior on color { ColorAnimation { duration: 120 } }
+
+        Text {
+          id: checkMark
+          anchors.centerIn: parent
+          text: ""
+          color: Color.accent
+          font.bold: true
+          font.pixelSize: Style.font.caption
+          scale: card.selected ? 1.0 : 0.0
+          opacity: card.selected ? 1.0 : 0.0
+          Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutBack } }
+          Behavior on opacity { NumberAnimation { duration: 120 } }
+        }
+
+        MouseArea {
+          anchors.fill: parent
+          anchors.margins: -Style.space(6)
+          cursorShape: Qt.PointingHandCursor
+          onClicked: { card.forceActiveFocus(); root.toggleSelected(card.txn.id) }
+        }
+      }
+
+      Rectangle {
+        id: avatar
+        visible: !card.editing
+        width: Style.space(36)
+        height: width
+        radius: width / 2
+        // Border only: a ring in the direction colour, nothing filled.
+        color: "transparent"
+        border.width: 1.5
+        border.color: Util.alpha(card.directionColor, 0.85)
+        anchors.left: parent.left
+        anchors.leftMargin: Style.spacing.rowPaddingX + (card.selectable && root.selectionMode ? Style.space(24) : 0)
+        anchors.verticalCenter: parent.verticalCenter
+
+        // The circle carries the category: its icon inside, the first three
+        // letters of the subcategory in a badge on the lower-right edge. The
+        // colour still says out / in / transfer. A transfer keeps its own
+        // mark; a row with no category shows its direction arrow, dimmed.
+        readonly property bool hasCategory: !root.isTransferLeg(card.txn) && !!card.txn.category
+        readonly property string categoryIcon: avatar.hasCategory ? Model.categoryIcon(card.txn.category, store.receiptCategories) : ""
+        readonly property string subIcon: avatar.hasCategory ? Model.subcategoryIcon(card.txn.category, card.txn.subcategory, store.receiptCategories) : ""
+
+        // Clicking the circle expands or collapses the details below.
+        MouseArea {
+          id: avatarMouse
+          anchors.fill: parent
+          anchors.margins: -Style.space(4)
+          hoverEnabled: true
+          enabled: !card.editing
+          cursorShape: Qt.PointingHandCursor
+          onClicked: card.expanded = !card.expanded
+        }
+
+        Text {
+          anchors.centerIn: parent
+          textFormat: Text.PlainText
+          text: root.isTransferLeg(card.txn) ? "⇄" : (avatar.categoryIcon !== "" ? avatar.categoryIcon : (card.isDebit ? "↓" : "↑"))
+          color: card.directionColor
+          opacity: root.isTransferLeg(card.txn) || avatar.hasCategory ? 1.0 : 0.6
+          font.family: avatar.categoryIcon !== "" ? "JetBrainsMono Nerd Font" : Style.font.family
+          font.bold: avatar.categoryIcon === ""
+          font.pixelSize: avatar.categoryIcon !== "" ? Style.font.title : Style.font.subtitle
+        }
+
+        // The subcategory's symbol, in a small ring on the lower-right edge.
+        Rectangle {
+          id: subBadgeRect
+          visible: avatar.subIcon !== ""
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          anchors.rightMargin: -Style.space(5)
+          anchors.bottomMargin: -Style.space(4)
+          width: Style.space(16)
+          height: width
+          radius: width / 2
+          color: Color.background
+          border.width: 1.5
+          border.color: Util.alpha(card.directionColor, 0.85)
+
+          Text {
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: avatar.subIcon
+            color: card.directionColor
+            font.family: "JetBrainsMono Nerd Font"
+            font.pixelSize: Style.space(10)
+          }
+        }
+
+        ToolTip.visible: avatarMouse.containsMouse && avatar.hasCategory
+        ToolTip.text: card.txn.category + (card.txn.subcategory ? "  ›  " + card.txn.subcategory : "")
+        ToolTip.delay: 300
+      }
+
+      Column {
+        id: titleCol
+        visible: !card.editing
+        anchors.left: avatar.right
+        anchors.leftMargin: Style.space(10)
+        // The stack, not the amount inside it: a grandchild is not a valid
+        // anchor target, and anchoring to one leaves this column with no
+        // right edge at all, so its text stops eliding.
+        anchors.right: amountStack.left
+        anchors.rightMargin: Style.space(8)
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(3)
+
+        Row {
+          width: parent.width
+          spacing: Style.space(6)
+          Text {
+            width: Math.min(implicitWidth, parent.width - (noteIconSlot.visible ? noteIconSlot.width + parent.spacing : 0))
+            textFormat: Text.PlainText
+            text: card.displayMerchant
+            color: root.foreground
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.subtitle
+            elide: Text.ElideRight
+          }
+          Item {
+            id: noteIconSlot
+            visible: !!card.linkedReceipt
+            width: Style.space(20)
+            height: Style.space(20)
+            anchors.verticalCenter: parent.verticalCenter
+              // A small note: this transaction has a bill. Click it to open the bill.
+              Rectangle {
+                visible: !!card.linkedReceipt
+                anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(20)
+                height: width
+                radius: Style.space(5)
+                color: noteMouse.containsMouse ? Util.alpha(root.creditColor, 0.32) : Util.alpha(root.creditColor, 0.16)
+                Text {
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: "󰎞"
+                  color: root.creditColor
+                  font.pixelSize: Style.font.caption
+                }
+                MouseArea {
+                  id: noteMouse
+                  anchors.fill: parent
+                  anchors.margins: -Style.space(3)
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  preventStealing: true
+                  onClicked: root.openReceiptDetail(card.linkedReceipt)
+                }
+                ToolTip.visible: noteMouse.containsMouse
+                ToolTip.text: "Bill: " + Model.receiptTitle(card.linkedReceipt || {}) + " — open"
+                ToolTip.delay: 300
+              }
+          }
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(6)
+          clip: true          // never runs under the amount / balance on the right
+
+          BrandMark {
+            network: Model.cardNetwork(card.txn, store.cardOverviews)
+            markHeight: Style.spaceReal(9)
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          HdfcLogo {
+            variant: "icon"
+            visible: card.txn.accountType === "checking" && card.txn.bank === "HDFC"
+            markSize: Style.spaceReal(9)
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          AxisLogo {
+            visible: card.txn.accountType === "checking" && card.txn.bank === "AXIS"
+            markSize: Style.spaceReal(9)
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          SbiLogo {
+            visible: card.isSbiSavings
+            markSize: Style.spaceReal(9)
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          // One side of a transfer between your own accounts whose other side is
+          // not in this view (an account filter, a search): it says so instead of
+          // passing for an ordinary credit. The "i" panel names the other bank.
+          TagPill {
+            visible: !!card.txn.transferId
+            anchors.verticalCenter: parent.verticalCenter
+            label: Model.transferMeta("lone").tag
+            tone: root.toneColor("dim")
+          }
+
+          Rectangle {
+            radius: Style.space(4)
+            color: Util.alpha(root.foreground, 0.12)
+            implicitWidth: pillText.implicitWidth + Style.space(10)
+            implicitHeight: pillText.implicitHeight + Style.space(4)
+
+            Text {
+              id: pillText
+              anchors.centerIn: parent
+              textFormat: Text.PlainText
+              // Axis and SBI savings show the bank's logo beside the number, not the name.
+              text: card.accountName
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          // The raw UPI remark used to sit here, beside the account pill.
+          // It was noise next to the balance the row now carries — often a
+          // bank code or "Pay" — so it lives in the expanded card only.
+        }
+      }
+
+      // The amount, and under it the balance the statement showed after
+      // this transaction — the same stacked shape the bill rows use, and
+      // dim, because it is context rather than the number you came for. A
+      // credit card has no running balance, and rows saved before the
+      // balance was scraped have none either: the line then disappears and
+      // the amount centres on its own.
+      Column {
+        id: amountStack
+        visible: !card.editing
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX + card.slide
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(2)
+
+        Text {
+          id: amountText
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          text: root.isTransferLeg(card.txn)
+            ? Model.currencySymbol(card.txn.currency) + Model.formatGrouped(Math.abs(card.txn.amount))
+            : Model.formatAmount(card.txn)
+          color: card.directionColor
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.subtitle
+        }
+
+        Text {
+          id: balanceText
+          visible: card.txn.balance !== null && card.txn.balance !== undefined
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          text: "bal " + Model.currencySymbol(card.txn.currency) + Model.formatGrouped(card.txn.balance)
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+
+      InfoButton {
+        id: cInfoBtn
+        visible: !card.editing && (card._hot || card.infoOpen)
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+        infoShown: card.infoOpen
+        onClicked: card.toggleInfo()
+      }
+
+      // Revealed when the row slides left (hover or keyboard focus). Opens the edit
+      // panel: name, note, and the two bill actions.
+      PanelActionButton {
+        id: editBtn
+        visible: !card.editing && (card._hot || card.infoOpen)
+        anchors.right: cInfoBtn.left
+        anchors.rightMargin: Style.space(4)
+        anchors.verticalCenter: parent.verticalCenter
+        size: Style.space(24)
+        iconText: "✎"
+        tooltipText: "Edit name, add a note or a bill"
+        foreground: root.foreground
+        bordered: false
+        focusable: false
+        onClicked: card.editing = true
+      }
+
+      TextField {
+        id: editField
+        visible: card.editing
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.margins: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+        text: card.displayMerchant
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        onVisibleChanged: if (visible) { text = card.displayMerchant; selectAll(); forceActiveFocus() }
+        onAccepted: card.saveEdit()
+        // card.editing = false hides this field, but a hidden item keeps
+        // activeFocus until something else explicitly takes it (QtQuick
+        // doesn't reassign focus just because the focused item went
+        // invisible) — without restoring it to the card, the row's own
+        // Up/Down/Enter/F2/X/Left/Right stop responding after a rename
+        // until the user clicks or Tabs away and back. Deferred via
+        // callLater for the same reason searchField's own Escape handler
+        // defers it below — handing focus to a different item from inside
+        // the currently-focused item's own key/edit event doesn't reliably
+        // stick otherwise.
+        Keys.onEscapePressed: {
+          card.editing = false
+          Qt.callLater(function () { card.forceActiveFocus() })
+        }
+      }
+    }
+
+    // Expanded detail panel: raw (pre-rename) merchant text, full date +
+    // full account name, and an explicit tracked checkbox — separate from
+    // the row-click/Enter/Space toggle above, so expanding never changes
+    // tracked state by itself.
+    InfoSection {
+      id: cInfo
+      anchors.top: collapsedRow.bottom
+      anchors.left: parent.left
+      anchors.right: parent.right
+      open: card.infoOpen
+      info: !card.infoOpen ? null
+        : (card.txn.transferId
+          ? Model.transferExplain(card.txn, { accountTag: card.accountName })
+          : Model.txnExplain(card.txn, { accountTag: card.accountName,
+              receiptMerchant: card.linkedReceipt ? (card.linkedReceipt.merchant || Model.receiptTitle(card.linkedReceipt)) : "" }))
+    }
+
+    // Edit panel: shows while editing. Name is the field in the row above.
     Column {
       id: editPanel
       visible: card.editing
