@@ -3028,6 +3028,16 @@ Panel {
     // receipt opens, below. Zoom is a scale factor: at 1.0 the photo just
     // fits the pane, same as before this existed.
     property real photoZoom: 1.0
+    // How far past "fits the pane" zoom can go. A linked bill's photo is
+    // often the compressed copy receipt-ledger-stitcher leaves behind (long
+    // side shrunk to 1600px) once the original is deleted, but an unlinked
+    // bill's photo is still the original, full-resolution phone shot (often
+    // 3000-4000px on the long side) — a flat 5x used to sit right around, or
+    // just under, the point where a full-res photo reaches 1:1 pixel
+    // density, so zoom seemed to "stop working" just as more detail would
+    // have appeared. 8x clears that for typical phone photos while still
+    // stopping well short of zooming into pure upscaled noise.
+    property real maxPhotoZoom: 8.0
     property int extraRotation: 0
     // Looked up by id from the live receiptList every time either
     // changes, rather than a snapshot captured at open time — so a
@@ -3225,8 +3235,19 @@ Panel {
               rotation: ((receiptFullScreen.r.rotation || 0) + receiptFullScreen.extraRotation + 360) % 360
               fillMode: Image.PreserveAspectFit
               asynchronous: true
+              smooth: true
               cache: false
-              sourceSize.height: Style.spaceReal(1400)
+              // Decode at the size the photo is actually shown at, not a
+              // fixed cap. A fixed sourceSize decodes the JPEG once, at that
+              // resolution, no matter how far zoomed in — so every zoom
+              // level past it just stretches the same small decoded bitmap,
+              // going blurrier the further in you go. Binding this to the
+              // Image's own width/height (which already grow with
+              // photoZoom) makes Qt re-decode at a bigger size as you zoom
+              // in, right up to the source file's own resolution — past
+              // that Qt does not invent pixels, it just stops growing.
+              sourceSize.width: Math.ceil(width)
+              sourceSize.height: Math.ceil(height)
             }
           }
 
@@ -3249,7 +3270,7 @@ Panel {
               var delta = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y
               if (delta !== 0) {
                 var factor = delta > 0 ? 1.2 : (1 / 1.2)
-                receiptFullScreen.photoZoom = Math.max(1.0, Math.min(5.0, receiptFullScreen.photoZoom * factor))
+                receiptFullScreen.photoZoom = Math.max(1.0, Math.min(receiptFullScreen.maxPhotoZoom, receiptFullScreen.photoZoom * factor))
               }
               event.accepted = true
             }
@@ -3292,8 +3313,8 @@ Panel {
               tooltipText: "Zoom in"
               foreground: "#ffffff"
               focusable: false
-              enabled: receiptFullScreen.photoZoom < 5.0
-              onClicked: receiptFullScreen.photoZoom = Math.min(5.0, receiptFullScreen.photoZoom * 1.3)
+              enabled: receiptFullScreen.photoZoom < receiptFullScreen.maxPhotoZoom
+              onClicked: receiptFullScreen.photoZoom = Math.min(receiptFullScreen.maxPhotoZoom, receiptFullScreen.photoZoom * 1.3)
             }
             PanelActionButton {
               size: Style.space(24)
