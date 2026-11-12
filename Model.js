@@ -696,6 +696,15 @@ function billParts(overviewEntry) {
     hasBreakdown ? overviewEntry.unbilled_purchases : overviewEntry.unbilled_amount)
     + parseCurrencyString(overviewEntry.unsettled_amount))
   var payNow = _money(outstanding - nextBill)
+  // A bank page that does not report credits (SBI) keeps asking for a bill
+  // that was paid. Take the payments the card's own transactions show since
+  // the bill closed off it. The bank rounds a bill up to the rupee (588.82
+  // shown as 589.00), so a leftover under 1 rupee counts as paid.
+  var paidSince = Number(overviewEntry.paidSinceBill) || 0
+  if (!overviewEntry.unbilled_credits && paidSince > 0 && payNow > 0) {
+    payNow = _money(payNow - paidSince)
+    if (payNow > 0 && payNow < 1) payNow = 0
+  }
 
   return {
     billThisMonth: hasBreakdown ? _money(parseCurrencyString(overviewEntry.last_statement_amount)) : 0,

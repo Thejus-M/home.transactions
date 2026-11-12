@@ -391,3 +391,18 @@ class BillOrderAndCycleTests(unittest.TestCase):
         self.assertGreaterEqual(c["days"], 0)
         self.assertLessEqual(c["days"], 31)
         self.assertFalse(self.run_js("cycleClose({})", {})["known"])
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class PaidSinceBillTests(unittest.TestCase):
+    def test_sbi_payment_in_transactions_clears_the_bill(self):
+        sbi = {"total_outstanding": "₹ 11082.04", "unbilled_amount": "₹ 10,493.04", "unbilled_purchases": "₹ 10,493.04",
+               "last_statement_amount": "₹ 589.00", "unbilled_credits": "", "unsettled_amount": "",
+               "payment_status": "AMOUNT DUE", "paidSinceBill": 588.82}
+        script = ('const fs=require("fs"),vm=require("vm");const c={};vm.createContext(c);'
+                  'vm.runInContext(fs.readFileSync(process.argv[1],"utf8"),c);c.d=JSON.parse(process.argv[2]);'
+                  'console.log(JSON.stringify(vm.runInContext("billParts(d)",c)))')
+        out = json.loads(subprocess.run([NODE, "-e", script, str(ROOT / "Model.js"), json.dumps(sbi)],
+                                        capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["payNow"], 0)
+        self.assertEqual(out["nextBill"], 10493.04)

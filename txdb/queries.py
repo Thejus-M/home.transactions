@@ -89,6 +89,11 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         **{f: r[f] or "" for f in OVERVIEW_FIELDS},
         "billingDay": r["statement_day"], "statementDate": r["statement_date"] or "",
         "nextStatementDate": r["next_statement_date"] or "", "dueDate": r["due_date"] or "",
+        # Money paid into the card since its last bill closed, from the card's own transactions.
+        # SBI's page does not net a payment off the bill (588.82 paid, "AMOUNT DUE 589.00" kept).
+        "paidSinceBill": from_paise(conn.execute(
+            "SELECT COALESCE(SUM(amount_paise), 0) FROM transactions WHERE account_id = ? AND amount_paise > 0 "
+            "AND date >= ?", (r["account_id"], r["statement_date"] or "9999")).fetchone()[0]),
     } for r in conn.execute(
         "SELECT c.*, a.last4, a.bank, a.network, d.statement_day, d.statement_date, d.next_statement_date, "
         "d.due_date "
