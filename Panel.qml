@@ -781,6 +781,35 @@ Panel {
   property var txdbQueue: []
   property bool refreshPending: false
 
+  // Commands whose caller already applies an optimistic patch (trackedOverrides,
+  // receiptOverrides, billOverrides, accountNameOverrides, transactionNameOverrides
+  // — see store.setTracked/setTrackedMany/setBillPaid/setAccountName/
+  // setTransactionName and every store.*Receipt* function) before calling
+  // root.txdb(). For these, the UI already shows the right result; the write's
+  // own .changed touch (see dbChangedFile below) would just force a redundant
+  // full snapshot reload a few hundred ms later, throwing the optimistic state
+  // away and rebuilding everything (a visible double-rebuild). See selfWriteCredits.
+  // transfer-split / transfer-restore / transfers-mark-seen are deliberately left
+  // out: they have no optimistic patch and still need the real reload.
+  readonly property var _optimisticWriteCmds: ({
+    "set-tracked": true, "set-tracked-many": true,
+    "bill-paid": true, "bill-notified": true,
+    "account-name": true, "rename": true,
+    "receipt-link": true, "receipt-unlink": true, "receipt-cash": true, "receipt-ignore": true,
+    "receipt-remove": true, "receipt-review": true, "receipt-edit": true, "receipt-edit-item": true,
+    "receipt-add-item": true, "receipt-delete-item": true, "receipt-edit-tax": true,
+    "receipt-add-fee": true, "receipt-edit-fee": true, "receipt-delete-fee": true,
+    "receipt-add-tax": true, "receipt-recalc": true, "receipt-use-computed": true,
+    "receipt-set-category": true,
+  })
+  // One credit per optimistic write we have queued but whose matching
+  // dbChangedFile touch has not arrived yet. dbChangedFile.onFileChanged
+  // consumes one credit (and skips its reload) instead of treating that
+  // touch as a change from some OTHER process (bank fetchers, the receipt
+  // reader) that really does need a full reload.
+  property int selfWriteCredits: 0
+  property bool _lastWriteOptimistic: false
+
   function refreshData() {
     if (snapshotProc.running || txdbWriteProc.running || txdbQueue.length > 0) {
       refreshPending = true
@@ -791,6 +820,7 @@ Panel {
 
   // Queues one write; writes run one at a time, in order.
   function txdb(args) {
+    if (root._optimisticWriteCmds[args[0]] === true) root.selfWriteCredits++
     txdbQueue = txdbQueue.concat([args])
     runNextWrite()
   }
@@ -801,6 +831,7 @@ Panel {
       if (refreshPending) { refreshPending = false; refreshData() }
       return
     }
+    root._lastWriteOptimistic = root._optimisticWriteCmds[txdbQueue[0][0]] === true
     txdbWriteProc.command = ["python3", root.txdbBin].concat(txdbQueue[0])
     txdbQueue = txdbQueue.slice(1)
     txdbWriteProc.running = true
@@ -809,7 +840,13 @@ Panel {
   Process {
     id: txdbWriteProc
     onExited: function (exitCode) {
-      if (exitCode !== 0) console.warn("txdb write failed (" + exitCode + "): " + command.slice(2).join(" "))
+      if (exitCode !== 0) {
+        console.warn("txdb write failed (" + exitCode + "): " + command.slice(2).join(" "))
+        // No touch is coming for this one (txdb/db.py only touches .changed
+        // after a successful commit) — give back the credit so a later,
+        // real external change is not mistaken for this failed self-write.
+        if (root._lastWriteOptimistic && root.selfWriteCredits > 0) root.selfWriteCredits--
+      }
       root.runNextWrite()
     }
   }
@@ -831,7 +868,14 @@ Panel {
     path: root.widgetDir + "/data/.changed"
     watchChanges: true
     printErrors: false
-    onFileChanged: root.refreshData()
+    // Skip the reload this touch would trigger when we already know it is
+    // the one our own optimistic write just caused (see selfWriteCredits
+    // above) — the UI already shows the result. A touch with no credit
+    // outstanding is from some other process and still reloads as before.
+    onFileChanged: {
+      if (root.selfWriteCredits > 0) { root.selfWriteCredits--; return }
+      root.refreshData()
+    }
   }
 
   // Photos are never deleted. Once a bill is linked its photo is compressed

@@ -67,8 +67,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from . import cashew, ingest, migrate, portfolio, queries, receipts
 from .db import DB_PATH, connect, now, write
+
+# cashew, ingest, migrate, portfolio, queries, receipts are imported lazily,
+# only inside the branch of main() (or _cashew()) that actually needs them —
+# a cheap single-row write like set-tracked only needs .db, not every
+# subcommand's module, so skipping the unused imports shaves the fixed
+# interpreter/import tax off it.
 
 
 def _account(conn, ref: str) -> str:
@@ -107,6 +112,7 @@ def backup(conn, keep: int = 14) -> Path:
 
 def _cashew(cmd: str, args: list[str]) -> int:
     """The Cashew commands never write: the database is opened read only."""
+    from . import cashew
     state_path = None
     if "--state" in args:
         i = args.index("--state")
@@ -154,6 +160,7 @@ def main(argv: list[str]) -> int:
         return _cashew(cmd, args)
     conn = connect()
     if cmd == "snapshot":
+        from . import queries
         json.dump(queries.snapshot(conn), sys.stdout, ensure_ascii=False, separators=(",", ":"))
         sys.stdout.write("\n")
     elif cmd == "set-tracked":
@@ -182,29 +189,55 @@ def main(argv: list[str]) -> int:
         with write(conn):
             conn.execute("UPDATE accounts SET closed_at = ? WHERE id = ?", (closed_at, ref[0]))
         print(json.dumps({"id": ref[0], "closedAt": closed_at}))
-    elif cmd == "receipt-link":
-        receipts.set_link(conn, args[0], transaction_id=args[1], state="linked",
-                          matched_by="manual")
-    elif cmd == "receipt-unlink":
-        receipts.clear_link(conn, args[0])
-    elif cmd in ("receipt-cash", "receipt-ignore"):
-        receipts.set_link(conn, args[0], transaction_id=None,
-                          state="cash" if cmd == "receipt-cash" else "ignored",
-                          matched_by="manual")
-    elif cmd == "receipt-review":
-        receipts.set_review(conn, args[0], args[1] == "1")
-    elif cmd == "receipt-forget":
-        receipts.forget(conn, args[0])
-    elif cmd == "receipt-edit":
-        receipts.edit_field(conn, args[0], args[1], " ".join(args[2:]))
-    elif cmd == "receipt-edit-item":
-        receipts.edit_item_field(conn, args[0], args[1], args[2], " ".join(args[3:]))
-    elif cmd == "receipt-add-item":
-        receipts.add_item(conn, args[0], args[1], *(args[2:7] + [None] * (5 - len(args[2:7]))))
-    elif cmd == "receipt-delete-item":
-        receipts.delete_item(conn, args[0], args[1])
-    elif cmd == "receipt-edit-tax":
-        receipts.edit_tax_field(conn, args[0], args[1], args[2], " ".join(args[3:]))
+    elif cmd.startswith("receipt-"):
+        from . import receipts
+        if cmd == "receipt-link":
+            receipts.set_link(conn, args[0], transaction_id=args[1], state="linked",
+                              matched_by="manual")
+        elif cmd == "receipt-unlink":
+            receipts.clear_link(conn, args[0])
+        elif cmd in ("receipt-cash", "receipt-ignore"):
+            receipts.set_link(conn, args[0], transaction_id=None,
+                              state="cash" if cmd == "receipt-cash" else "ignored",
+                              matched_by="manual")
+        elif cmd == "receipt-review":
+            receipts.set_review(conn, args[0], args[1] == "1")
+        elif cmd == "receipt-forget":
+            receipts.forget(conn, args[0])
+        elif cmd == "receipt-edit":
+            receipts.edit_field(conn, args[0], args[1], " ".join(args[2:]))
+        elif cmd == "receipt-edit-item":
+            receipts.edit_item_field(conn, args[0], args[1], args[2], " ".join(args[3:]))
+        elif cmd == "receipt-add-item":
+            receipts.add_item(conn, args[0], args[1], *(args[2:7] + [None] * (5 - len(args[2:7]))))
+        elif cmd == "receipt-delete-item":
+            receipts.delete_item(conn, args[0], args[1])
+        elif cmd == "receipt-edit-tax":
+            receipts.edit_tax_field(conn, args[0], args[1], args[2], " ".join(args[3:]))
+        elif cmd == "receipt-add-fee":
+            receipts.add_fee(conn, args[0], args[1], args[2], *(args[3:5]))
+        elif cmd == "receipt-edit-fee":
+            receipts.edit_fee(conn, args[0], args[1], args[2], " ".join(args[3:]))
+        elif cmd == "receipt-delete-fee":
+            receipts.delete_fee(conn, args[0], args[1])
+        elif cmd == "receipt-add-tax":
+            receipts.add_tax(conn, args[0], args[1], args[2], args[3])
+        elif cmd == "receipt-set-category":
+            receipts.set_category(conn, args[0], args[1] if len(args) > 1 else "", args[2] if len(args) > 2 else "")
+        elif cmd == "receipt-use-computed":
+            receipts.use_computed_total(conn, args[0])
+        elif cmd == "receipt-recalc":
+            receipts.recalc_totals(conn, args[0], clear_flags=len(args) > 1 and args[1] == "verify")
+        elif cmd == "receipt-remove":
+            for rel in receipts.remove_receipt(conn, args[0]):
+                (DB_PATH.parent / rel).unlink(missing_ok=True)
+        elif cmd == "receipt-image-export":
+            ok = receipts.export_image(conn, args[0], args[1])
+            print("written" if ok else "no saved copy of that photo")
+            return 0 if ok else 1
+        else:
+            print(f"Unknown command {cmd!r}\n{__doc__}", file=sys.stderr)
+            return 2
     elif cmd == "transfers-verify":
         from . import transfers
         json.dump(transfers.verify(conn), sys.stdout)
@@ -220,27 +253,6 @@ def main(argv: list[str]) -> int:
         with write(conn):
             for tid in args:
                 conn.execute("DELETE FROM transfer_splits WHERE txn_id = ?", (tid,))
-    elif cmd == "receipt-add-fee":
-        receipts.add_fee(conn, args[0], args[1], args[2], *(args[3:5]))
-    elif cmd == "receipt-edit-fee":
-        receipts.edit_fee(conn, args[0], args[1], args[2], " ".join(args[3:]))
-    elif cmd == "receipt-delete-fee":
-        receipts.delete_fee(conn, args[0], args[1])
-    elif cmd == "receipt-add-tax":
-        receipts.add_tax(conn, args[0], args[1], args[2], args[3])
-    elif cmd == "receipt-set-category":
-        receipts.set_category(conn, args[0], args[1] if len(args) > 1 else "", args[2] if len(args) > 2 else "")
-    elif cmd == "receipt-use-computed":
-        receipts.use_computed_total(conn, args[0])
-    elif cmd == "receipt-recalc":
-        receipts.recalc_totals(conn, args[0], clear_flags=len(args) > 1 and args[1] == "verify")
-    elif cmd == "receipt-remove":
-        for rel in receipts.remove_receipt(conn, args[0]):
-            (DB_PATH.parent / rel).unlink(missing_ok=True)
-    elif cmd == "receipt-image-export":
-        ok = receipts.export_image(conn, args[0], args[1])
-        print("written" if ok else "no saved copy of that photo")
-        return 0 if ok else 1
     elif cmd in ("bill-paid", "bill-notified"):
         aid = _account(conn, args[0])
         column, value = ("marked_paid", 1 if args[1] == "1" else 0) if cmd == "bill-paid" else ("notified_date", args[1])
@@ -251,6 +263,7 @@ def main(argv: list[str]) -> int:
         r = conn.execute("SELECT * FROM fetch_runs WHERE bank = ? ORDER BY id DESC LIMIT 1", (args[0].upper(),)).fetchone()
         print(json.dumps(dict(r) if r else {}, ensure_ascii=False))
     elif cmd == "migrate-json":
+        from . import migrate
         print(json.dumps(migrate.run(conn), indent=2, ensure_ascii=False))
     elif cmd == "export-json":
         folder = Path(args[0])
@@ -262,6 +275,7 @@ def main(argv: list[str]) -> int:
     elif cmd == "backup":
         print(backup(conn))
     elif cmd == "check":
+        from . import portfolio, queries
         print("integrity:", conn.execute("PRAGMA integrity_check").fetchone()[0])
         print("schema:", conn.execute("PRAGMA user_version").fetchone()[0])
         problems = queries.reconcile(conn)
@@ -274,14 +288,19 @@ def main(argv: list[str]) -> int:
         for table in [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]:
             print(f"  {table}: {conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]}")
     elif cmd == "derive-balances":
+        from . import ingest
         print(f"filled {ingest.derive_balances(conn, args[0] if args else None)} balances")
     elif cmd == "reconcile":
+        from . import queries
         print(json.dumps(queries.reconcile(conn, args[0] if args else None), indent=2))
     elif cmd == "portfolio-derive":
+        from . import portfolio
         print(f"{portfolio.derive_activity(conn)} activity rows worked out from the snapshots")
     elif cmd == "portfolio-check":
+        from . import portfolio
         print(json.dumps(portfolio.reconcile(conn), indent=2))
     elif cmd == "portfolio-ingest":
+        from . import portfolio
         snap = json.loads(Path(args[0]).read_text(encoding="utf-8"))
         saved = portfolio.record_snapshot(conn, snap)
         print(f"{saved} holdings saved for {snap['as_of']}, "
