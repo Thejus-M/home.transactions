@@ -51,6 +51,7 @@ ACCOUNT_MAP = {
     "HDFC|credit|0220": "HDFC ₹",
     "HDFC|credit|7462": "HDFC CC",
     "ICICI|credit|2004": "ICICI ₹",
+    "ICICI|credit|4002": "ICICI 🌳",
     "SBI|credit|5896": "SBI ₹",
 }
 BANK_NAMES = {"HDFC": "HDFC", "SBI": "SBI", "AXIS": "Axis", "ICICI": "ICICI"}
