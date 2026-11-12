@@ -122,7 +122,7 @@ class Prompt(unittest.TestCase):
         for s in ("Food Out: Breakfast", "UPI-ZOMATO-9", "dinner", "DEBIT 250.00", "HDFC checking",
                   '"Zomato" -> Food Out / Delivery', "Friend Settlement", "Uncategorized"):
             self.assertIn(s, p)
-        debit_part = p.split("CREDIT categories")[0]
+        debit_part = p.split("Money in")[0]
         self.assertNotIn("Salary", debit_part)
 
     def test_taught_max_20(self):
@@ -149,7 +149,7 @@ class Cli(unittest.TestCase):
         self.assertEqual(len(res[1]["results"]), 2)
         fin = lines[-1]
         self.assertTrue(fin["finished"])
-        self.assertEqual((fin["done"], fin["total"], fin["model"]), (5, 5, "qwen2.5:3b"))
+        self.assertEqual((fin["done"], fin["total"], fin["model"]), (5, 5, "gemma4:e2b"))
         self.assertIn("seconds", fin)
 
     def test_parallel_is_faster(self):

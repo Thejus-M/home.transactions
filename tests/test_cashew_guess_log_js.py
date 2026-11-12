@@ -90,15 +90,15 @@ class GuessLogTests(unittest.TestCase):
         v = run("cashewGuessLogView(input.log, input.drafts, 'all')", {"log": log, "drafts": drafts})
         self.assertEqual(v[0]["st"], "skipped-touched")
         v = run("cashewGuessLogView(input.log, input.drafts, 'none')", {"log": log, "drafts": drafts})
-        self.assertEqual([r["gid"] for r in v], ["b"])
+        self.assertEqual([r["gid"] for r in v], ["x:b"])
         v = run("cashewGuessLogView(input.log, input.drafts, 'guessed')", {"log": log, "drafts": drafts})
-        self.assertEqual([r["gid"] for r in v], ["a"])
+        self.assertEqual([r["gid"] for r in v], ["x:a"])
 
     def test_raw_cap_and_summary(self):
         lines = run("(function(){var l=[];for(var i=0;i<250;i++) l=cashewGuessRawPush(l,'x'+i,200);return l})()")
         self.assertEqual(len(lines), 200)
         self.assertEqual(lines[-1], "x249")
-        self.assertEqual(run("cashewGuessSummary(81, 11, 91.2, 'qwen2.5:3b')"), "81 rows in 11 batches · 91 s · qwen2.5:3b")
+        self.assertEqual(run("cashewGuessSummary(81, 11, 91.2, 'gemma4:e2b')"), "81 rows in 11 batches · 91 s · gemma4:e2b")
         self.assertEqual(run("cashewGuessSummary(1, 1, 0, '')"), "1 row in 1 batch · running")
 
 
@@ -120,17 +120,23 @@ class GuessScopeTests(unittest.TestCase):
         return [r["id"] for r in rows]
 
     def test_only_noted_uncategorised_rows_are_sent(self):
+        # A row with a real title/merchant but no note is sent too (fixed
+        # 2026-11-12): cashew_guess.py's own prompt already treats merchant
+        # text as its own clue, so requiring a note on top of that excluded
+        # most real "needs category" rows, which are bare card/POS
+        # transactions with a merchant name and no UPI remark.
         drafts = [
-            _d("a", notes="dinner with Ravi"),                       # sent
-            _d("b", notes="   "),                                    # blank note: asked, not sent
+            _d("a", notes="dinner with Ravi"),                       # sent: has a note
+            _d("b", notes="   "),                                    # blank note, but a real title: sent
             _d("c", category="Food Out", subcategory="", notes="x"),  # has a category: never sent
             _d("d", category="Food Out", notes="x", warn="no category"),  # warn: sent
             _d("e", notes="x", kind="transfer"),
             _d("f", notes="x", touched=True),
             _d("g", notes="x", guessed=True, category="Food Out"),
             _d("h", category="Friend Settlement", subcategory="Friend", notes="rent"),
+            _d("i", title="", notes="   "),                          # title, merchant and notes all blank: not sent
         ]
-        self.assertEqual(self.ids(drafts), ["a", "d"])
+        self.assertEqual(self.ids(drafts), ["a", "b", "d"])
 
     def test_note_is_trimmed_in_the_row(self):
         rows = run("cashewGuessRows(input, [0])", [_d("a", notes="  hi  ")])

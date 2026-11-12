@@ -49,8 +49,8 @@
                                          accountFrom,accountTo,ids}],"warnings":[...]}
   txdb cashew-links --untracked [--state PATH]   bulk links, then "# transfer pages" and one transfer link per
                                          line, on stdout; a summary on stderr (read only)
-  txdb cashew-guess [FILE|-] [--model qwen2.5:3b] [--workers 3] [--batch 8] [--url http://127.0.0.1:11434]
-                    [--timeout 120]
+  txdb cashew-guess [FILE|-] [--model gemma4:e2b] [--workers 3] [--batch 8] [--url http://127.0.0.1:11434]
+                    [--timeout 300]
                                          read {"rows":[{id,title,merchant,notes,amount,kind,bank,accountType}],
                                          "taught":{key:{category,subcategory}}} and ask the local Ollama model for a
                                          Cashew category per row; batches run in parallel; one NDJSON line per

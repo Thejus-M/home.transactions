@@ -27,17 +27,51 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from . import cashew
 
 DEFAULT_URL = "http://127.0.0.1:11434"
-DEFAULT_MODEL = "qwen2.5:3b"
+# qwen2.5:3b was dropped (2026-11-12): it answered every batch with the same
+# hallucinated boilerplate list of categories regardless of the actual row,
+# and separately echoed the prompt's own "DEBIT"/"CREDIT" section labels back
+# as the category itself. gemma4:e2b is the one model already proven
+# reliable in this project (also the default bill reader), so it is the
+# default here too - one less model Ollama ever has to load.
+DEFAULT_MODEL = "gemma4:e2b"
 DEFAULT_WORKERS = 3
 DEFAULT_BATCH = 8
-DEFAULT_TIMEOUT = 120
+# gemma4:e2b thinks before answering (see _thinks below); generous enough
+# for an 8-row batch's reasoning plus JSON answer on a CPU-only machine.
+DEFAULT_TIMEOUT = 300
+DEFAULT_NUM_PREDICT = 3000
 TAUGHT_MAX = 20
 FIELD_MAX = 300
+
+_THINKS: dict[str, bool] = {}
+
+
+def _thinks(url: str, model: str) -> bool:
+    """Whether `model` thinks before answering (ollama capability
+    "thinking") - asked once per model via POST /api/show, cached, False
+    when it cannot be asked. gemma4:e2b has it; thinking is requested
+    explicitly ("think": true) rather than relied on as ollama's default."""
+    if model not in _THINKS:
+        req = urllib.request.Request(
+            url.rstrip("/") + "/api/show", data=json.dumps({"model": model}).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                info = json.loads(r.read())
+            _THINKS[model] = "thinking" in (info.get("capabilities") or [])
+        except (urllib.error.URLError, OSError, ValueError):
+            _THINKS[model] = False
+    return _THINKS[model]
 
 SYSTEM = (
     "You label Indian bank transactions (UPI, debit and credit cards, net banking). "
     "For each numbered row choose ONE Cashew category and subcategory from THIS list only. "
-    "Debits use the DEBIT list, credits use the CREDIT list. "
+    "Money-out rows must use a category from the \"Money out\" list below; money-in rows "
+    "must use a category from the \"Money in\" list below. "
+    'The words "Money out" and "Money in" are only section labels, never answers: '
+    'your "category" value must always be one of the exact category names written in '
+    'those lists (for example "Food Out" or "Friend Settlement"), never the words '
+    '"Money out", "Money in", "DEBIT" or "CREDIT" themselves. '
     "A UPI payment to or from a person (a personal name, no shop) is Friend Settlement. "
     "Use the merchant text, the UPI remark and the notes as clues. "
     "If you are not sure use Uncategorized / Unknown. Never invent a category."
@@ -112,14 +146,16 @@ def taught_lines(taught: dict | None) -> str:
 
 def build_prompt(rows: list[dict], categories: list[dict], taught: dict | None = None) -> str:
     """One prompt for one batch of rows."""
-    parts = [SYSTEM, "", "DEBIT categories (Category: subcategories):", category_lines(categories, True),
-             "", "CREDIT categories:", category_lines(categories, False)]
+    parts = [SYSTEM, "", "Money out (category: subcategories):", category_lines(categories, True),
+             "", "Money in (category: subcategories):", category_lines(categories, False)]
     shots = taught_lines(taught)
     if shots:
         parts += ["", "Examples the user already confirmed:", shots]
     parts += ["", "Rows:"] + [row_line(i + 1, r) for i, r in enumerate(rows)]
     parts += ["", 'Reply with JSON only: {"results":[{"i":<row number>,"category":"...","subcategory":"..."}]}',
-              "One result for each row."]
+              'One result for each row. Example for a money-out row with merchant text '
+              '"SWIGGY BANGALORE": {"results":[{"i":1,"category":"Food Out","subcategory":"Lunch"}]} '
+              '- note "category" is a real name from the lists above, never "Money out"/"Money in".']
     return "\n".join(parts)
 
 
@@ -168,8 +204,11 @@ def parse_results(text: str, rows: list[dict], categories: list[dict]) -> list[d
 # ------------------------------------------------------------------ ollama
 
 def generate(url: str, model: str, prompt: str, timeout: float) -> str:
-    body = json.dumps({"model": model, "prompt": prompt, "format": "json", "stream": False,
-                       "options": {"temperature": 0}}).encode()
+    payload = {"model": model, "prompt": prompt, "format": "json", "stream": False,
+              "options": {"temperature": 0, "num_predict": DEFAULT_NUM_PREDICT}}
+    if _thinks(url, model):
+        payload["think"] = True
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(url.rstrip("/") + "/api/generate", data=body,
                                  headers={"Content-Type": "application/json"})
     try:
