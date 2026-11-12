@@ -7461,10 +7461,6 @@ Panel {
     property bool oldestFirst: false
     property bool optionsOpen: false          // the Options row; persists across reopens
     property bool needOnly: false             // the list shows only rows with no category; persists across reopens
-    property bool pendingOnly: false          // the list shows only pending (not yet settled) rows
-    readonly property int pendingCount: root.cashewDrafts.filter(function (d) { return d && d.pending === true }).length
-    onPendingCountChanged: if (cashewWin.pendingOnly && cashewWin.pendingCount === 0) cashewWin.pendingOnly = false
-    onPendingOnlyChanged: cashewWin.syncRows()
     property bool askActive: false            // the ask-me sequence is running
     // The guess results panel (an in-card overlay).
     property bool resultsOpen: false
@@ -7528,10 +7524,6 @@ Panel {
       var rows = Model.cashewRowOrder(root.cashewDrafts, root.cashewShown, !cashewWin.oldestFirst)
       if (cashewWin.needOnly) rows = rows.filter(function (r) {
         return Model.cashewNeedsCategory(root.cashewDrafts[r.idx])
-      })
-      if (cashewWin.pendingOnly) rows = rows.filter(function (r) {
-        var a = root.cashewDrafts[r.idx], b = r.partner >= 0 ? root.cashewDrafts[r.partner] : null
-        return !!((a && a.pending) || (b && b.pending))
       })
       if (root.cashewGuessedOnly) rows = rows.filter(function (r) {
         var a = root.cashewDrafts[r.idx], b = r.partner >= 0 ? root.cashewDrafts[r.partner] : null
@@ -8561,12 +8553,6 @@ Panel {
                 onClicked: cashewWin.needOnly = !cashewWin.needOnly
               }
               CashewBtn {
-                visible: cashewWin.pendingCount > 0 || cashewWin.pendingOnly
-                label: "Pending  ·  " + cashewWin.pendingCount
-                active: cashewWin.pendingOnly
-                onClicked: cashewWin.pendingOnly = !cashewWin.pendingOnly
-              }
-              CashewBtn {
                 visible: root.cashewNeedCount > 0
                 label: "Categorise next  (N)"
                 onClicked: cashewWin.askStart()
@@ -8970,7 +8956,6 @@ Panel {
             label: "Clear filters"
             onClicked: {
               cashewWin.needOnly = false
-              cashewWin.pendingOnly = false
               root.cashewGuessedOnly = false
             }
           }
