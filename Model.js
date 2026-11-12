@@ -623,7 +623,9 @@ function cycleClose(overviewEntry) {
   function iso(d) { return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2) }
   var next = on(t.getFullYear(), t.getMonth())
   if (next < t) next = on(t.getFullYear(), t.getMonth() + 1)
-  return { known: true, closesOn: iso(next), days: Math.round((next - t) / 86400000), today: next.getTime() === t.getTime() }
+  // The closing day itself is still "next": the bill is made later that day.
+  var prev = on(next.getFullYear(), next.getMonth() - 1)
+  return { known: true, closesOn: iso(next), lastClosed: iso(prev), days: Math.round((next - t) / 86400000), today: next.getTime() === t.getTime() }
 }
 
 // "bill closes 12 Dec · 30 days left" / "bill closes today" / "".

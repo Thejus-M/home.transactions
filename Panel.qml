@@ -5153,21 +5153,35 @@ Panel {
             markHeight: Style.spaceReal(9)
           }
 
+          // The name shrinks and elides; the last four digits never do.
           Text {
             id: nameText
+            readonly property string full: Model.accountChipText({ bank: billRow.bank, accountType: "credit", last4: billRow.overview.last4 }, store.cardOverviews, store.accountNameOverrides)
             anchors.left: billBrandMark.visible ? billBrandMark.right : parent.left
             anchors.leftMargin: billBrandMark.visible ? Style.space(6) : 0
-            anchors.right: parent.right
+            width: Math.min(nameText.implicitWidth,
+                            parent.width - (billBrandMark.visible ? billBrandMark.width + Style.space(6) : 0)
+                            - last4Text.implicitWidth - Style.space(4))
             textFormat: Text.PlainText
-            text: Model.accountChipText({ bank: billRow.bank, accountType: "credit", last4: billRow.overview.last4 }, store.cardOverviews, store.accountNameOverrides)
+            text: nameText.full.replace(/\s*••\d+$/, "")
             color: root.foreground
             font.family: Style.font.family
             font.bold: true
-            // One step down from subtitle: 16 characters plus the network
-            // mark fit the name column with room to spare, so the last4 is
-            // never the thing that elides.
             font.pixelSize: Style.font.body
             elide: Text.ElideRight
+          }
+
+          Text {
+            id: last4Text
+            anchors.left: nameText.right
+            anchors.leftMargin: Style.space(4)
+            anchors.verticalCenter: nameText.verticalCenter
+            textFormat: Text.PlainText
+            text: "••" + billRow.overview.last4
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.caption
           }
         }
 
@@ -5314,7 +5328,7 @@ Panel {
 
       Repeater {
         model: [
-          { label: "Bill this month", value: billRow.parts.hasBreakdown ? billRow.overview.last_statement_amount : "" },
+          { label: "Last bill", value: billRow.parts.hasBreakdown ? billRow.overview.last_statement_amount : "" },
           // paidIn is only known once the Outstanding Summary has been
           // scraped; until then the same money shows as this cycle's credits.
           { label: "Paid into card", value: billRow.parts.paidIn > 0
@@ -5328,7 +5342,7 @@ Panel {
               ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.payNow) : "" },
           { label: "In credit", value: billRow.parts.inCredit
               ? Model.currencySymbol("INR") + Model.formatGrouped(Math.abs(billRow.parts.payNow)) : "" },
-          { label: "Last bill closed", value: Model.formatShortDate(billRow.overview.statementDate, true) },
+          { label: "Last bill closed", value: Model.cycleClose(billRow.overview).known ? Model.formatShortDate(Model.cycleClose(billRow.overview).lastClosed, true) : Model.formatShortDate(billRow.overview.statementDate, true) },
           { label: "Pay by", value: billRow.overview.dueDate
               ? Model.formatShortDate(billRow.overview.dueDate, true) + "  ·  " + Model.dueCountdown(billRow.overview.dueDate) : "" },
           { label: "Next bill closes", value: Model.cycleClose(billRow.overview).known ? Model.formatShortDate(Model.cycleClose(billRow.overview).closesOn, true) : "" },
@@ -5366,7 +5380,11 @@ Panel {
 
           Text {
             id: valueText
+            anchors.left: labelText.right
+            anchors.leftMargin: Style.space(10)
             anchors.right: parent.right
+            horizontalAlignment: Text.AlignRight
+            wrapMode: Text.Wrap
             textFormat: Text.PlainText
             text: modelData.value
             color: root.foreground
