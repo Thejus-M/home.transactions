@@ -2827,16 +2827,20 @@ Panel {
           }
         }
 
-        // Opens the Cashew verify window for every untracked, settled row.
+        // Opens the Cashew verify window. Stays visible (just dimmed, with an
+        // explanatory tooltip) even once nothing is untracked, instead of
+        // vanishing outright — a count of 0 used to mean the whole AI
+        // categorisation / link-copy feature disappeared from the bar with
+        // no way back in (audit: "invisible-entry-point problem").
         BorderSurface {
           id: cashewBtn
-          visible: root.tab === "bank" && root.cashewCount > 0
+          visible: root.tab === "bank"
           height: Style.space(28)
           width: cashewBtnText.implicitWidth + Style.space(22)
           radius: Style.space(8)
           readonly property bool _hot: cashewBtnMouse.containsMouse || cashewBtn.activeFocus
-          opacity: cashewBtnMouse.pressed ? 0.7 : 1
-          color: Util.alpha(Color.accent, cashewBtn._hot ? 0.26 : 0.16)
+          opacity: cashewBtnMouse.pressed ? 0.7 : (root.cashewCount > 0 ? 1 : 0.55)
+          color: Util.alpha(Color.accent, cashewBtn._hot ? 0.26 : (root.cashewCount > 0 ? 0.16 : 0.08))
           borderSpec: cashewBtn.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
 
           activeFocusOnTab: cashewBtn.visible
@@ -2850,7 +2854,7 @@ Panel {
             id: cashewBtnText
             anchors.centerIn: parent
             textFormat: Text.PlainText
-            text: "Cashew  ·  " + root.cashewCount
+            text: root.cashewCount > 0 ? "Cashew  ·  " + root.cashewCount : "Cashew"
             color: Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75))
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -2863,6 +2867,9 @@ Panel {
             cursorShape: Qt.PointingHandCursor
             onClicked: root.cashewOpen = true
           }
+          ToolTip.visible: root.cashewCount === 0 && cashewBtnMouse.containsMouse
+          ToolTip.text: "All caught up. Open to review categories, AI guesses, or past links."
+          ToolTip.delay: 400
         }
 
         // Selection controls get their own line under RECENT's header, so a
@@ -7133,11 +7140,16 @@ Panel {
     property int pickIdx: -1
     property string pickMain: ""
     property bool pickRemember: true
-    property bool linksCollapsed: false
+    // Starts collapsed: links are logically step 2, after categorising, so
+    // the pane doesn't compete with the categorisation work for ~40% of the
+    // card width before there is anything to copy yet (audit: LINKS pane
+    // dominance). Not reset on reopen (see onVisibleChanged below), so a
+    // user's own choice to expand it still carries across reopens.
+    property bool linksCollapsed: true
     property bool confirmMark: false
     property bool oldestFirst: false
-    property bool optionsOpen: false          // the Options row; not persisted
-    property bool needOnly: false             // the list shows only rows with no category
+    property bool optionsOpen: false          // the Options row; persists across reopens
+    property bool needOnly: false             // the list shows only rows with no category; persists across reopens
     property bool askActive: false            // the ask-me sequence is running
     // The guess results panel (an in-card overlay).
     property bool resultsOpen: false
@@ -7157,12 +7169,17 @@ Panel {
     }
 
     onVisibleChanged: {
+      // optionsOpen and needOnly are deliberately NOT reset here any more —
+      // they are plain view preferences (which filter row is showing), cheap
+      // to keep, and resetting them every reopen was pure friction (audit:
+      // "nothing persists across a close/reopen"). Everything else below is
+      // tied to a specific in-progress interaction (a picker, a confirm, the
+      // ask-sequence, the results overlay) and still resets, since those
+      // reference draft rows that get reloaded fresh on every open.
       cashewWin.pickKind = ""
       cashewWin.confirmMark = false
       cashewWin.resultsOpen = false
       cashewWin.resultsRaw = false
-      cashewWin.optionsOpen = false
-      cashewWin.needOnly = false
       cashewWin.askActive = false
       if (cashewWin.visible) {
         root.cashewLoad()
@@ -7381,28 +7398,19 @@ Panel {
           }
         }
 
+        // "Needs category" and the AI guess trigger moved down to the left
+        // pane's title row, next to "Categorise next" — so the two ways to
+        // categorise sit side by side instead of one living in the header
+        // and the other in the list below (audit: disconnected flows). Only
+        // one "Results" affordance is kept (was duplicated here and in
+        // Options, with two different labels for the same panel).
         Row {
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
           spacing: Style.space(6)
           CashewBtn {
-            label: root.cashewNeedCount > 0 ? "Needs category  ·  " + root.cashewNeedCount : "All categorised"
-            primary: root.cashewNeedCount > 0
-            active: cashewWin.needOnly
-            tint: root.cashewNeedCount > 0 ? "transparent" : root.creditColor
-            enabled: root.cashewNeedCount > 0 || cashewWin.needOnly
-            onClicked: cashewWin.needOnly = !cashewWin.needOnly
-          }
-          CashewBtn {
-            label: root.cashewGuessing ? "Stop" : "✦ Guess" + (root.cashewGuessCount > 0 ? "  ·  " + root.cashewGuessCount : "")
-            primary: !root.cashewGuessing
-            active: root.cashewGuessing
-            enabled: root.cashewGuessing || (root.cashewGuessCount > 0 && !root.cashewLoading)
-            onClicked: root.cashewGuessing ? root.cashewGuessStop() : root.cashewGuessStart()
-          }
-          CashewBtn {
             visible: root.cashewGuessLog.length > 0
-            label: root.cashewGuessCounts.guessed + " / " + root.cashewGuessCounts.sent
+            label: "Results  ·  " + root.cashewGuessCounts.guessed + " guessed / " + root.cashewGuessCounts.sent + " sent"
             active: cashewWin.resultsOpen
             onClicked: cashewWin.resultsOpen = !cashewWin.resultsOpen
           }
@@ -7443,12 +7451,6 @@ Panel {
             label: "Accept guesses  ·  " + root.cashewGuessedCount
             onClicked: root.cashewAcceptGuesses()
           }
-          CashewBtn {
-            visible: root.cashewGuessLog.length > 0
-            label: "Results  ·  " + root.cashewGuessCounts.guessed + " guessed / " + root.cashewGuessCounts.sent + " sent"
-            active: cashewWin.resultsOpen
-            onClicked: cashewWin.resultsOpen = !cashewWin.resultsOpen
-          }
         }
       }
 
@@ -7460,7 +7462,7 @@ Panel {
         height: cashewWin.linksCollapsed ? 0 : Style.space(18)
         spacing: Style.space(6)
         Repeater {
-          model: ["1 Categorise", "›", "2 Copy the links", "›", "3 Mark as tracked"]
+          model: ["1 Categorise (manual or AI)", "›", "2 Copy the links", "›", "3 Mark as tracked"]
           delegate: Text {
             required property string modelData
             required property int index
@@ -8063,24 +8065,65 @@ Panel {
         anchors.topMargin: Style.space(10)
         anchors.rightMargin: Style.space(12)
 
+        // Title + the categorisation toolbar: the "Needs category" filter,
+        // the manual "Categorise next" stepper, and the AI "✦ AI categories"
+        // guess trigger all sit here together, above the list they act on.
+        // The audit found the AI guess button living only in the header
+        // (small, same style as Options/Close, labelled just "✦ Guess") while
+        // the manual flow lived down here with zero cross-reference — a user
+        // could find one and never notice the other. Putting both categorise
+        // paths in one row, in the pane that is the actual work area, fixes
+        // both the "where is the AI feature" complaint and that disconnect.
         Item {
           id: cwLeftTitle
           width: parent.width
-          height: Style.space(28)
-          Text {
-            anchors.verticalCenter: parent.verticalCenter
-            textFormat: Text.PlainText
-            text: cashewWin.needOnly ? "ROWS WITH NO CATEGORY" : "TRANSACTIONS"
-            color: cashewWin.muted
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            font.bold: true
-          }
-          CashewBtn {
-            visible: root.cashewNeedCount > 0
-            anchors { right: parent.right; verticalCenter: parent.verticalCenter }
-            label: "Categorise next  (N)"
-            onClicked: cashewWin.askStart()
+          height: cwLeftTitleCol.implicitHeight
+
+          Column {
+            id: cwLeftTitleCol
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text {
+              textFormat: Text.PlainText
+              text: cashewWin.needOnly ? "ROWS WITH NO CATEGORY" : "TRANSACTIONS"
+              color: cashewWin.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+
+              CashewBtn {
+                label: root.cashewNeedCount > 0 ? "Needs category  ·  " + root.cashewNeedCount : "All categorised"
+                primary: root.cashewNeedCount > 0
+                active: cashewWin.needOnly
+                tint: root.cashewNeedCount > 0 ? "transparent" : root.creditColor
+                enabled: root.cashewNeedCount > 0 || cashewWin.needOnly
+                onClicked: cashewWin.needOnly = !cashewWin.needOnly
+              }
+              CashewBtn {
+                visible: root.cashewNeedCount > 0
+                label: "Categorise next  (N)"
+                onClicked: cashewWin.askStart()
+              }
+              CashewBtn {
+                big: true
+                label: (root.cashewGuessing ? "■ Stop" : "✦ AI categories") + (root.cashewGuessCount > 0 ? "  ·  " + root.cashewGuessCount : "")
+                primary: !root.cashewGuessing
+                active: root.cashewGuessing
+                enabled: root.cashewGuessing || (root.cashewGuessCount > 0 && !root.cashewLoading)
+                onClicked: root.cashewGuessing ? root.cashewGuessStop() : root.cashewGuessStart()
+              }
+              CashewBtn {
+                visible: root.cashewGuessedCount > 0
+                label: "Accept guesses  ·  " + root.cashewGuessedCount
+                onClicked: root.cashewAcceptGuesses()
+              }
+            }
           }
         }
 
@@ -8557,17 +8600,24 @@ Panel {
     property string label: ""
     property bool primary: false
     property bool active: false
+    // Visually prominent variant: taller, filled solid with the accent
+    // colour, bordered, body-sized text. Used for the AI-guess trigger so it
+    // reads as a distinct, important action rather than another small
+    // header toggle like Options/Close (audit: not visually distinct).
+    property bool big: false
     property color tint: "transparent"      // a set colour (e.g. green for "All categorised")
     signal clicked()
     readonly property bool _hot: cbMouse.containsMouse || cb.activeFocus
-    height: Style.space(28)
-    width: cbText.implicitWidth + Style.space(22)
+    height: cb.big ? Style.space(34) : Style.space(28)
+    width: cbText.implicitWidth + (cb.big ? Style.space(30) : Style.space(22))
     radius: Style.space(8)
     opacity: !cb.enabled ? 0.4 : (cbMouse.pressed ? 0.7 : 1)
     color: cb.tint.a > 0 ? Util.alpha(cb.tint, cb._hot ? 0.34 : 0.26)
+      : cb.big ? Util.alpha(Color.accent, cb._hot ? 0.58 : 0.44)
       : (cb.primary || cb.active) ? Util.alpha(Color.accent, cb._hot ? 0.28 : 0.20)
       : Util.alpha(root.foreground, cb._hot ? 0.13 : 0.06)
-    borderSpec: cb.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+    borderSpec: cb.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent)
+      : (cb.big ? Border.controlSpec("normal", Color.accent, Color.accent) : Border.none())
     activeFocusOnTab: cb.visible && cb.enabled
     Keys.onReturnPressed: if (cb.enabled) cb.clicked()
     Keys.onEnterPressed: if (cb.enabled) cb.clicked()
@@ -8578,10 +8628,10 @@ Panel {
       textFormat: Text.PlainText
       text: cb.label
       color: cb.tint.a > 0 ? cb.tint
-        : (cb.primary || cb.active) ? Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75)) : root.foreground
+        : (cb.big || cb.primary || cb.active) ? Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75)) : root.foreground
       font.family: Style.font.family
-      font.pixelSize: Style.font.caption
-      font.bold: cb.primary || cb.active || cb.tint.a > 0
+      font.pixelSize: cb.big ? Style.font.body : Style.font.caption
+      font.bold: cb.big || cb.primary || cb.active || cb.tint.a > 0
     }
     MouseArea {
       id: cbMouse
