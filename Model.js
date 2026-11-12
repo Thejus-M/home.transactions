@@ -195,6 +195,69 @@ function flattenGroups(groups) {
   return out
 }
 
+// Shallow-ish equality for two flattenGroups rows: same own keys, same
+// values, except nested objects (a transfer row's `out`/`in`/`real` legs)
+// get a deep string compare since those are fresh objects every rebuild
+// even when their contents didn't change.
+function _flatRowEqual(a, b) {
+  var ak = Object.keys(a), bk = Object.keys(b)
+  if (ak.length !== bk.length) return false
+  for (var i = 0; i < ak.length; i++) {
+    var k = ak[i]
+    if (!b.hasOwnProperty(k)) return false
+    var av = a[k], bv = b[k]
+    if (av === bv) continue
+    if (av && bv && typeof av === "object" && typeof bv === "object") {
+      if (JSON.stringify(av) !== JSON.stringify(bv)) return false
+      continue
+    }
+    return false
+  }
+  return true
+}
+
+// Updates a QML ListModel in place to match `newRows` (a flattenGroups()
+// array, each row keyed by its stable `id` — a txn id, a transfer's
+// "a>b" transferId, or "self:<id>" for a one-sided transfer), instead of
+// replacing the model wholesale. Each ListModel element holds the row
+// under a single "modelData" role, so the existing txnList delegate
+// (`required property var modelData`) binds to it exactly like it did to
+// a plain-array model — this only changes how updates are applied.
+//
+// Walks old and new in lockstep: rows with matching ids at the same
+// position only get `.set()` when their content actually changed (no
+// delegate destroy/recreate, just a property rebind); a dropped id gets
+// `.remove()`; a new id gets `.insert()`. This is not a minimal diff for
+// heavy reordering, but tracking/filtering/renaming/etc. mostly inserts,
+// removes or updates rows in place without reordering survivors, which is
+// exactly what this is cheap for.
+function syncFlatRowsModel(listModel, newRows) {
+  var newIds = {}
+  for (var n = 0; n < newRows.length; n++) newIds[newRows[n].id] = true
+
+  var i = 0, j = 0
+  while (j < newRows.length) {
+    if (i < listModel.count) {
+      var oldRow = listModel.get(i).modelData
+      var newRow = newRows[j]
+      if (oldRow.id === newRow.id) {
+        if (!_flatRowEqual(oldRow, newRow)) listModel.set(i, { modelData: newRow })
+        i++; j++
+      } else if (!newIds.hasOwnProperty(oldRow.id)) {
+        listModel.remove(i)
+        // i stays put (next old row shifts into position i); j unchanged.
+      } else {
+        listModel.insert(i, { modelData: newRow })
+        i++; j++
+      }
+    } else {
+      listModel.append({ modelData: newRows[j] })
+      j++
+    }
+  }
+  while (listModel.count > i) listModel.remove(i)
+}
+
 // Resolves the display name for an account: a user-set override (from
 // ~/.local/state/omarchy/transactions-account-names.json, keyed by last4)
 // if one exists, else `fallback` (the card's real scraped name, or

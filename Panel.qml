@@ -639,6 +639,11 @@ Panel {
   // Flat, one-row-per-entry version of groupedTransactions for txnList (the
   // virtualized ListView below) — see Model.flattenGroups.
   readonly property var flatTransactionRows: Model.flattenGroups(root.groupedTransactions)
+  // Pushes flatTransactionRows into txnListModel (the ListModel actually
+  // backing txnList) incrementally — see Model.syncFlatRowsModel. Keeps
+  // rows' delegate Items alive across a filter/tracked/etc. change
+  // instead of the ListView seeing a brand-new array and resetting.
+  onFlatTransactionRowsChanged: Model.syncFlatRowsModel(txnListModel, root.flatTransactionRows)
 
   // Biggest bill first, then by card, so rows do not reshuffle between
   // snapshots. (Object.values alone put ••7462 before ••0220: JavaScript
@@ -957,7 +962,13 @@ Panel {
     }
   }
 
-  Component.onCompleted: { root.syncAccountChipOptions(); refreshData() }
+  Component.onCompleted: {
+    root.syncAccountChipOptions()
+    refreshData()
+    // Seeds txnListModel for whatever flatTransactionRows already is at
+    // startup (onFlatTransactionRowsChanged only fires on later changes).
+    Model.syncFlatRowsModel(txnListModel, root.flatTransactionRows)
+  }
   Component.onDestruction: { root.flushFilterSave(); root.flushCashewSave() }
 
   QtObject {
@@ -2926,39 +2937,39 @@ Panel {
           // each with its own nested Repeater of rows — no virtualization,
           // so ANY state change (tracking a row, clearing a filter, ...)
           // destroyed and rebuilt every single delegate, even the ones
-          // scrolled far off screen. txnList is a single flat, virtualized
-          // ListView instead (model: root.flatTransactionRows, see
-          // Model.flattenGroups): only rows actually on screen (plus
-          // cacheBuffer below) are ever instantiated, and it scrolls on
-          // its own once the list is taller than its cap. The date-header
-          // + day-total look is drawn by the delegate itself, keyed off
-          // each row's own sectionFirst/sectionLabel/sectionTotal fields,
-          // rather than by a separate Repeater per day.
+          // scrolled far off screen. A later attempt fixed that by giving
+          // this ListView a capped, internally-scrolling height nested
+          // inside the popup's own outer Flickable (`flick`) — that broke
+          // scrolling ("can't see all the transactions") and was reverted:
+          // height tracks contentHeight again below, so `flick` is the
+          // only scroll surface, same as the original Repeater layout.
+          //
+          // The actual rebuild cost was never "off-screen rows have
+          // delegates" (height == contentHeight means every row is
+          // "on screen" from the ListView's own point of view anyway) —
+          // it was "every row's delegate gets destroyed and recreated on
+          // every small change", because root.flatTransactionRows is a
+          // brand-new array each time, and reassigning `model:` to a new
+          // array is a full ListView reset. Fixed at the model layer
+          // instead, with zero change to scrolling: txnListModel is a
+          // QML ListModel populated once, then updated incrementally by
+          // Model.syncFlatRowsModel (see root.flatTransactionRows'
+          // onFlatTransactionRowsChanged above and root's
+          // Component.onCompleted) — only rows that actually changed get
+          // `.set()`/`.insert()`/`.remove()`, so an unrelated row's
+          // delegate Item is never torn down. The date-header + day-total
+          // look is drawn by the delegate itself, keyed off each row's
+          // own sectionFirst/sectionLabel/sectionTotal fields, rather
+          // than by a separate Repeater per day.
           ListView {
             id: txnList
             width: parent.width
-            // Sized to its own full content, not a fixed/capped viewport:
-            // a capped height here meant this list scrolled INSIDE itself,
-            // nested inside the popup's own outer Flickable (`flick`) —
-            // that nested-scroll interaction turned out to cut users off
-            // from part of the list (reported: "can't see all the
-            // transactions") and was never actually tested by hand before
-            // being committed. Letting height track contentHeight makes
-            // `flick` the only scroll surface again, exactly like the old
-            // plain-Repeater layout, so every row is reachable the same
-            // way it always was. This does give up some of the
-            // view-virtualization win (every row still gets a delegate,
-            // same as before), but ListView still reuses delegate
-            // instances more cheaply across a model update than the old
-            // nested Repeaters did, and the bigger wins (skipping the
-            // redundant snapshot reload; not rebuilding on every filter
-            // keystroke) are untouched by this.
             height: contentHeight
             clip: false
             interactive: false
             boundsBehavior: Flickable.StopAtBounds
             cacheBuffer: Style.space(2000)
-            model: root.flatTransactionRows
+            model: ListModel { id: txnListModel }
             Component.onCompleted: root.txnListRef = txnList
             Component.onDestruction: if (root.txnListRef === txnList) root.txnListRef = null
 
