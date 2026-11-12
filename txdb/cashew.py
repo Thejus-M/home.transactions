@@ -437,7 +437,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False) -> list[dict
         aid = r["account_id"]
         account = acct_over[aid] if aid in acct_over else ACCOUNT_MAP.get(aid, "")
         out.append({
-            "id": r["id"], "include": r["status"] == "settled", "pending": r["status"] != "settled", "date": r["date"], "title": title,
+            "id": r["id"], "include": True, "pending": r["status"] != "settled", "date": r["date"], "title": title,
             "amount": format_amount(r["amount_paise"]), "category": cat, "subcategory": sub,
             "account": account or "",
             "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title)),

@@ -8658,7 +8658,7 @@ Panel {
             // The popup is wide: columns stay put (no sliding). With the links pane
             // open the list is narrow and the row falls back to two lines.
             property bool infoOpen: false
-            readonly property bool wide: cwList.width > Style.space(900)
+            readonly property bool wide: false      // one layout at every width: two lines per row
             readonly property var srcTxn: crow.infoOpen ? store.transactions.find(function (t) { return t.id === crow.d.id }) : null
             height: crow.isTransfer ? (crow.paired ? Style.space(112) : Style.space(80)) : (crow.wide ? Style.space(60) : Style.space(68)) + (crow.infoOpen ? Style.space(22) : 0)
             radius: Style.space(12)
@@ -8747,8 +8747,7 @@ Panel {
                   alignRight: true
                   kind: "date"
                   value: crow.d.date || ""
-                  display: crow.d.pending === true ? ("pending · " + (crow.d.date || "")) : (crow.d.date || "")
-                  color: crow.d.pending === true ? root.pendingColor : cashewWin.muted
+                  color: cashewWin.muted
                   onCommit: function (v) {
                     root.cashewEdit(Model.cashewPatch(root.cashewDrafts, crow.idx, { date: v }), true)
                     Qt.callLater(cashewWin.syncRows)

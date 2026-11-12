@@ -181,8 +181,8 @@ class DraftTests(Base):
         ingest.upsert_rows(self.conn, self.card, [row(5, "2026-10-04", -9.99, "Card shop")])
         self.conn.execute("INSERT INTO tracked VALUES ('t-4', 'now')")
         ds = {d["id"]: d for d in self.drafts()}
-        self.assertEqual(set(ds), {"t-1", "t-2", "t-3", "t-5"})   # tracked left out; unsettled shown but not included
-        self.assertEqual((ds["t-3"]["pending"], ds["t-3"]["include"]), (True, False))
+        self.assertEqual(set(ds), {"t-1", "t-2", "t-3", "t-5"})   # tracked left out; unsettled shown like any other row
+        self.assertEqual((ds["t-3"]["pending"], ds["t-3"]["include"]), (True, True))
         d = ds["t-1"]
         self.assertEqual((d["amount"], d["date"], d["kind"], d["include"]), ("-250.00", "2026-10-02", "spend", True))
         self.assertEqual((d["category"], d["subcategory"], d["account"]), ("Food Out", "Delivery", "HDFC"))
