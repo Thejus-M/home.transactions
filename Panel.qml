@@ -6761,6 +6761,13 @@ Panel {
             onCleared: root.setFilterPart("transfers", "any")
           }
           FilterChip {
+            label: root.filter.pending === "hide" ? "Settled only" : "Pending"
+            active: root.filter.pending !== "any"
+            tip: "Click cycles any, pending only, settled only"
+            onClicked: root.cycleFilterPart("pending", ["any", "only", "hide"])
+            onCleared: root.setFilterPart("pending", "any")
+          }
+          FilterChip {
             visible: store.receipts.length > 0 || root.filter.bill !== "any"
             label: root.filter.bill === "none" ? "No bill" : (root.filter.bill === "has" ? "Has bill" : "Bill")
             active: root.filter.bill !== "any"

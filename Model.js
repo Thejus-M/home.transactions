@@ -1645,7 +1645,7 @@ function txnExplain(t, ctx) {
 // Pure functions only, so tests/test_filter_js.py can run them under node.
 
 function defaultFilter() {
-  return { q: "", accounts: [], dir: "any", tracked: "any", transfers: "any", bill: "any", min: null, max: null, month: "" }
+  return { q: "", accounts: [], dir: "any", tracked: "any", transfers: "any", bill: "any", pending: "any", min: null, max: null, month: "" }
 }
 
 function _pad2(n) { return (n < 10 ? "0" : "") + n }
@@ -1757,6 +1757,7 @@ function filterTransactions(rows, f, ctx) {
   var trackedWant = f.tracked === "any" ? null : f.tracked === "tracked"
   var transfersWant = f.transfers === "any" ? null : f.transfers === "only"
   var billWant = f.bill === "any" ? null : f.bill === "has"
+  var pendingWant = !f.pending || f.pending === "any" ? null : f.pending === "only"
   var out = []
   for (var i = 0; i < rows.length; i++) {
     var t = rows[i]
@@ -1771,6 +1772,7 @@ function filterTransactions(rows, f, ctx) {
     if (trackedWant !== null && trackedWant !== !!t.tracked) continue
     if (transfersWant !== null && transfersWant !== _isTransferRow(t)) continue
     if (billWant !== null && billWant !== !!linked[t.id]) continue
+    if (pendingWant !== null && pendingWant !== (t.status !== "settled")) continue
     if (hasMin || hasMax) {
       var abs = Math.abs(Number(t.amount))
       if (abs !== abs) continue               // NaN amount: never inside a range
@@ -1828,6 +1830,7 @@ function activeFilterChips(f, options) {
   if (f.dir === "out") chips.push({ id: "dir", label: "Out" })
   if (f.tracked !== "any") chips.push({ id: "tracked", label: f.tracked === "tracked" ? "Tracked" : "Not tracked" })
   if (f.transfers !== "any") chips.push({ id: "transfers", label: f.transfers === "only" ? "Transfers only" : "No transfers" })
+  if (f.pending && f.pending !== "any") chips.push({ id: "pending", label: f.pending === "only" ? "Pending" : "Settled only" })
   if (f.bill !== "any") chips.push({ id: "bill", label: f.bill === "has" ? "Has bill" : "No bill" })
   if (f.min !== null && f.min !== undefined && f.min > 0) chips.push({ id: "min", label: "≥ " + _amountText(f.min) })
   if (f.max !== null && f.max !== undefined) chips.push({ id: "max", label: "≤ " + _amountText(f.max) })
@@ -1848,6 +1851,7 @@ function removeFilterPart(f, id) {
   else if (id === "tracked") n.tracked = "any"
   else if (id === "transfers") n.transfers = "any"
   else if (id === "bill") n.bill = "any"
+  else if (id === "pending") n.pending = "any"
   else if (id === "min") n.min = null
   else if (id === "max") n.max = null
   else if (id === "month") n.month = ""

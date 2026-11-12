@@ -65,6 +65,12 @@ class Defaults(Harness):
 
 
 class Predicates(Harness):
+    def test_pending_filter(self):
+        rows = [row("a", status="settled"), row("b", status="unsettled")]
+        self.assertEqual(self.run_filter(rows, pending="only"), ["b"])
+        self.assertEqual(self.run_filter(rows, pending="hide"), ["a"])
+        self.assertEqual(self.run_filter(rows), ["a", "b"])
+
     def test_transfer_passes_when_its_peer_account_is_selected(self):
         axis_leg = row("x1", amount=-500, bank="AXIS", last4="2934", transferId="x1>s1")
         sbi_leg = row("s1", amount=500, transferId="x1>s1")
