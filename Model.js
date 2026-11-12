@@ -608,6 +608,45 @@ function billUrgency(overviewEntry, paid) {
   return n < 0 ? "overdue" : (n <= 3 ? "soon" : "")
 }
 
+// When the bill closes next, worked out from the billing day each time it is
+// asked, not at fetch time (txdb's statementDate freezes when the fetch ran,
+// so a card not fetched since its closing day kept showing the old date).
+// Returns { known, closesOn (YYYY-MM-DD), days, today } - `today` is true on
+// the closing day itself, when the spend is about to become a bill.
+function cycleClose(overviewEntry) {
+  var day = overviewEntry && Number(overviewEntry.billingDay)
+  if (!day) return { known: false, closesOn: "", days: 0, today: false }
+  var now = new Date()
+  var t = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  function on(y, mo) { return new Date(y, mo, Math.min(day, new Date(y, mo + 1, 0).getDate())) }
+  function iso(d) { return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2) }
+  var next = on(t.getFullYear(), t.getMonth())
+  if (next < t) next = on(t.getFullYear(), t.getMonth() + 1)
+  return { known: true, closesOn: iso(next), days: Math.round((next - t) / 86400000), today: next.getTime() === t.getTime() }
+}
+
+// "bill closes 12 Dec · 30 days left" / "bill closes today" / "".
+function cycleCloseLine(overviewEntry) {
+  var c = cycleClose(overviewEntry)
+  if (!c.known) return ""
+  if (c.today) return "bill closes today"
+  return "bill closes " + formatShortDate(c.closesOn) + "  ·  " + (c.days === 1 ? "tomorrow" : c.days + " days left")
+}
+
+// Most urgent first: a bill to pay (soonest due date first), then the card
+// with the biggest running spend.
+function billOrder(a, b) {
+  var pa = billParts(a), pb = billParts(b)
+  var da = pa.payNow > 0, db = pb.payNow > 0
+  if (da !== db) return da ? -1 : 1
+  if (da) {
+    var x = a.dueDate || "9999", y = b.dueDate || "9999"
+    if (x !== y) return x < y ? -1 : 1
+  }
+  if (pb.nextBill !== pa.nextBill) return pb.nextBill - pa.nextBill
+  return String(a.last4).localeCompare(String(b.last4))
+}
+
 // "Bill 12 Oct · Pay by 1 Nov · 18 days left" for an unpaid bill;
 // "" when the bill dates aren't known.
 function billDatesLine(overviewEntry) {

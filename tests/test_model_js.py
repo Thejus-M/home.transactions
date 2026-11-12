@@ -357,3 +357,37 @@ class AccountOptionTests(unittest.TestCase):
         transactions = [{"bank": "SBI", "accountType": "credit", "last4": "4821"}]
         overviews = {"4821": {"bank": "SBI", "last4": "4821", "name": "SimplyCLICK SBI Card"}}
         self.assertEqual(len(self.options(transactions, overviews)), 1)
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class BillOrderAndCycleTests(unittest.TestCase):
+    def run_js(self, expr, data):
+        script = ('const fs=require("fs"),vm=require("vm");const c={};vm.createContext(c);'
+                  'vm.runInContext(fs.readFileSync(process.argv[1],"utf8"),c);c.d=JSON.parse(process.argv[2]);'
+                  'console.log(JSON.stringify(vm.runInContext(process.argv[3],c)))')
+        out = subprocess.run([NODE, "-e", script, str(ROOT / "Model.js"), json.dumps(data), expr],
+                             capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_icici_shape_shows_spend_and_no_bill(self):
+        icici = {"total_outstanding": "₹13,903.82", "unbilled_amount": "₹13,903.82", "unbilled_purchases": "₹13,903.82",
+                 "last_statement_amount": "₹0", "payment_status": "NO DUES", "unsettled_amount": ""}
+        p = self.run_js("billParts(d)", icici)
+        self.assertEqual(p["nextBill"], 13903.82)
+        self.assertEqual(p["payNow"], 0)
+
+    def test_order_due_first_then_biggest_spend(self):
+        cards = [
+            {"last4": "1", "total_outstanding": "₹100", "unbilled_amount": "₹100", "unbilled_purchases": "₹100", "last_statement_amount": "₹0"},
+            {"last4": "2", "total_outstanding": "₹700", "unbilled_amount": "₹100", "unbilled_purchases": "₹100", "last_statement_amount": "₹600", "dueDate": "2026-12-01"},
+            {"last4": "3", "total_outstanding": "₹900", "unbilled_amount": "₹100", "unbilled_purchases": "₹100", "last_statement_amount": "₹800", "dueDate": "2026-11-20"},
+            {"last4": "4", "total_outstanding": "₹500", "unbilled_amount": "₹500", "unbilled_purchases": "₹500", "last_statement_amount": "₹0"},
+        ]
+        self.assertEqual([c["last4"] for c in self.run_js("d.slice().sort(billOrder)", cards)], ["3", "2", "4", "1"])
+
+    def test_cycle_close_is_never_in_the_past(self):
+        c = self.run_js("cycleClose({billingDay: 12})", {})
+        self.assertTrue(c["known"])
+        self.assertGreaterEqual(c["days"], 0)
+        self.assertLessEqual(c["days"], 31)
+        self.assertFalse(self.run_js("cycleClose({})", {})["known"])

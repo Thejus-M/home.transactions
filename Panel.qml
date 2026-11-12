@@ -675,10 +675,7 @@ Panel {
   // Biggest bill first, then by card, so rows do not reshuffle between
   // snapshots. (Object.values alone put ••7462 before ••0220: JavaScript
   // walks integer-like keys first, and "0220" is not one.)
-  readonly property var cardOverviewList: Object.values(store.cardOverviews).sort(function (a, b) {
-    var byAmount = Model.billParts(b).payNow - Model.billParts(a).payNow
-    return byAmount !== 0 ? byAmount : String(a.last4).localeCompare(String(b.last4))
-  })
+  readonly property var cardOverviewList: Object.values(store.cardOverviews).sort(Model.billOrder)
   // Two fixed columns for every bill row, so each row gets the same budget
   // for its card name and the figures line up down the popup. Sized from the
   // widest content either can hold: "IN CREDIT" at caption size, and
@@ -2350,22 +2347,23 @@ Panel {
             spacing: Style.space(6)
 
             Text {
+              visible: root.billsNextTotal > 0
               textFormat: Text.PlainText
-              text: root.billsDueTotal > 0
-                ? "to pay " + Model.currencySymbol("INR") + Model.formatGrouped(root.billsDueTotal)
-                : "all paid"
-              color: root.billsDueTotal > 0 ? root.debitColor : root.creditColor
+              text: "next " + Model.currencySymbol("INR") + Model.formatGrouped(Math.round(root.billsNextTotal))
+              color: root.foreground
               font.family: Style.font.family
               font.bold: true
               font.pixelSize: Style.font.caption
             }
 
             Text {
-              visible: root.billsNextTotal > 0
               textFormat: Text.PlainText
-              text: "·  next " + Model.currencySymbol("INR") + Model.formatGrouped(Math.round(root.billsNextTotal))
-              color: Qt.darker(root.foreground, 1.5)
+              text: root.billsDueTotal > 0
+                ? "·  billed " + Model.currencySymbol("INR") + Model.formatGrouped(root.billsDueTotal)
+                : "·  nothing billed"
+              color: root.billsDueTotal > 0 ? root.debitColor : root.creditColor
               font.family: Style.font.family
+              font.bold: root.billsDueTotal > 0
               font.pixelSize: Style.font.caption
             }
           }
@@ -5178,7 +5176,7 @@ Panel {
           text: billRow.parts.payNow > 0 && billRow.overview.dueDate
             ? "Due " + Model.formatShortDate(billRow.overview.dueDate)
               + " · " + Model.dueCountdown(billRow.overview.dueDate)
-            : Model.billPaidLine(billRow.overview)
+            : (Model.cycleCloseLine(billRow.overview) || Model.billPaidLine(billRow.overview))
           color: dueText.urgency !== "" ? root.debitColor : Qt.darker(root.foreground, 1.5)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
@@ -5200,26 +5198,7 @@ Panel {
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.space(3)
 
-        Text {
-          id: payNowText
-          anchors.right: parent.right
-          textFormat: Text.PlainText
-          width: parent.width
-          horizontalAlignment: Text.AlignRight
-          text: billRow.parts.payNow > 0
-            ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.payNow)
-            : (billRow.parts.inCredit
-                ? Model.currencySymbol("INR") + Model.formatGrouped(Math.abs(billRow.parts.payNow))
-                : "Nothing to pay")
-          color: billRow.parts.payNow > 0 || billRow.parts.inCredit
-            ? billRow.statusColor
-            : Qt.darker(root.foreground, 1.5)
-          font.family: Style.font.family
-          font.bold: billRow.parts.payNow > 0 || billRow.parts.inCredit
-          font.pixelSize: billRow.parts.payNow > 0 || billRow.parts.inCredit
-            ? Style.font.subtitle : Style.font.caption
-        }
-
+        // Top line: the running spend, which becomes the next bill.
         Text {
           id: nextBillText
           anchors.right: parent.right
@@ -5227,10 +5206,31 @@ Panel {
           width: parent.width
           horizontalAlignment: Text.AlignRight
           text: billRow.parts.nextBill > 0
-            ? "next " + Model.currencySymbol("INR") + Model.formatGrouped(Math.round(billRow.parts.nextBill))
+            ? Model.currencySymbol("INR") + Model.formatGrouped(Math.round(billRow.parts.nextBill))
             : "no spend yet"
-          color: Qt.darker(root.foreground, 1.5)
+          color: billRow.parts.nextBill > 0 ? root.foreground : Qt.darker(root.foreground, 1.5)
           font.family: Style.font.family
+          font.bold: billRow.parts.nextBill > 0
+          font.pixelSize: billRow.parts.nextBill > 0 ? Style.font.subtitle : Style.font.caption
+        }
+
+        // Below it: a bill already generated, with the amount left to pay.
+        Text {
+          id: payNowText
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          width: parent.width
+          horizontalAlignment: Text.AlignRight
+          text: billRow.parts.payNow > 0
+            ? "bill " + Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.payNow)
+            : (billRow.parts.inCredit
+                ? "credit " + Model.currencySymbol("INR") + Model.formatGrouped(Math.abs(billRow.parts.payNow))
+                : "no bill due")
+          color: billRow.parts.payNow > 0 || billRow.parts.inCredit
+            ? billRow.statusColor
+            : Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.bold: billRow.parts.payNow > 0 || billRow.parts.inCredit
           font.pixelSize: Style.font.caption
         }
       }
@@ -5315,10 +5315,10 @@ Panel {
               ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.payNow) : "" },
           { label: "In credit", value: billRow.parts.inCredit
               ? Model.currencySymbol("INR") + Model.formatGrouped(Math.abs(billRow.parts.payNow)) : "" },
-          { label: "Bill generated", value: Model.formatShortDate(billRow.overview.statementDate, true) },
+          { label: "Last bill closed", value: Model.formatShortDate(billRow.overview.statementDate, true) },
           { label: "Pay by", value: billRow.overview.dueDate
               ? Model.formatShortDate(billRow.overview.dueDate, true) + "  ·  " + Model.dueCountdown(billRow.overview.dueDate) : "" },
-          { label: "Next bill on", value: Model.formatShortDate(billRow.overview.nextStatementDate, true) },
+          { label: "Next bill closes", value: Model.cycleClose(billRow.overview).known ? Model.formatShortDate(Model.cycleClose(billRow.overview).closesOn, true) : "" },
           { label: "Next bill so far", value: billRow.parts.nextBill > 0
               ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.nextBill) : "" },
           { label: "Total outstanding", value: billRow.overview.total_outstanding },
