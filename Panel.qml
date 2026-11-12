@@ -370,6 +370,9 @@ Panel {
   // (merchant -> category, bank account -> Cashew name) is written here and
   // only read by Python.
   property bool cashewOpen: false
+  // True until the window has loaded its drafts, and again after every real close.
+  property bool cashewStale: true
+  onCashewOpenChanged: if (!root.cashewOpen) root.cashewStale = true
   property bool cashewLoading: false
   property string cashewError: ""
   property var cashewDrafts: []
@@ -481,6 +484,13 @@ Panel {
   // second click on "the button that seems to do nothing" used to cancel it.
   property bool cashewStopArmed: false
   Timer { id: cashewStopTimer; interval: 6000; onTriggered: root.cashewStopArmed = false }
+  // A desktop alert each time a run ends, so a 6 minute run can be left alone.
+  function cashewGuessNotify(title, body) {
+    Quickshell.execDetached([
+      Quickshell.env("OMARCHY_PATH") + "/bin/omarchy-notification-send",
+      "--app-name", "home.transactions", title, body
+    ])
+  }
   function cashewStopClick() {
     if (!root.cashewStopArmed) { root.cashewStopArmed = true; cashewStopTimer.restart(); return }
     root.cashewStopArmed = false
@@ -558,6 +568,7 @@ Panel {
       var answered = Number(m.answered) || 0
       root.cashewGuessDoneLine = Model.cashewGuessDoneText(answered, Number(m.total) || 0, Number(m.seconds) || 0)
       if (answered === 0 && root.cashewGuessError === "") root.cashewGuessError = "The AI gave no category for any row. See Results for the raw reply."
+      root.cashewGuessNotify(answered === 0 ? "AI categories: no answer" : "AI categories finished", root.cashewGuessDoneLine)
       root.cashewGuessLog = Model.cashewGuessLogFinish(root.cashewGuessLog)
       root.cashewGuessMeta = Object.assign({}, root.cashewGuessMeta, { seconds: Number(m.seconds) || 0, model: String(m.model || "") })
     }
@@ -620,6 +631,7 @@ Panel {
       if (exitCode !== 0 && !root.cashewGuessStopping) {
         var first = (cashewGuessErr.text || "").trim().split("\n").pop()
         root.cashewGuessError = "Guessing failed (" + exitCode + ")" + (first ? ": " + first : "")
+        root.cashewGuessNotify("AI categories failed", root.cashewGuessError)
       }
       root.cashewGuessStopping = false
     }
@@ -7377,7 +7389,10 @@ Panel {
         // live: happens on an unrelated window becoming active, even with
         // keyboardFocus set to OnDemand rather than Exclusive), must not
         // wipe the in-progress guess log/drafts out from under it.
-        if (!root.cashewGuessing) root.cashewLoad()
+        // Reload only after a real close (cashewStale), never because the compositor
+        // remapped the layer while the window stayed open: that wiped the guessed
+        // categories and sent the screen back to the start once a run had finished.
+        if (!root.cashewGuessing && root.cashewStale) { root.cashewStale = false; root.cashewLoad() }
         cashewCard.forceActiveFocus()
       }
     }
