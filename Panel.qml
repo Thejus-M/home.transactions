@@ -475,6 +475,18 @@ Panel {
   property int cashewGuessDone: 0
   property int cashewGuessTotal: 0
   property string cashewGuessError: ""
+  property var cashewGuessProgress: ({})       // last {batch, of, phase, tokens, elapsed} line
+  property string cashewGuessDoneLine: ""      // what the last finished run left
+  // "Stop" needs a second click within 6 s: the same button starts a run, and a
+  // second click on "the button that seems to do nothing" used to cancel it.
+  property bool cashewStopArmed: false
+  Timer { id: cashewStopTimer; interval: 6000; onTriggered: root.cashewStopArmed = false }
+  function cashewStopClick() {
+    if (!root.cashewStopArmed) { root.cashewStopArmed = true; cashewStopTimer.restart(); return }
+    root.cashewStopArmed = false
+    cashewStopTimer.stop()
+    root.cashewGuessStop()
+  }
   property string cashewGuessInput: ""
   // Result log of the last run: one entry per row sent (see Model.cashewGuessLogNew).
   property var cashewGuessLog: []
@@ -516,6 +528,9 @@ Panel {
     var requestRows = Model.cashewGuessRequestRows(groups)
     root.cashewGuessGroupMap = Model.cashewGuessGroupMap(groups)
     root.cashewGuessError = ""
+    root.cashewGuessProgress = ({})
+    root.cashewGuessDoneLine = ""
+    root.cashewStopArmed = false
     root.cashewGuessDone = 0
     root.cashewGuessTotal = requestRows.length
     root.cashewGuessStopping = false
@@ -538,7 +553,11 @@ Panel {
     var m
     try { m = JSON.parse(line) } catch (e) { return }
     if (m.error) root.cashewGuessError = String(m.error)
+    if (m.progress) { root.cashewGuessProgress = m.progress; return }
     if (m.finished) {
+      var answered = Number(m.answered) || 0
+      root.cashewGuessDoneLine = Model.cashewGuessDoneText(answered, Number(m.total) || 0, Number(m.seconds) || 0)
+      if (answered === 0 && root.cashewGuessError === "") root.cashewGuessError = "The AI gave no category for any row. See Results for the raw reply."
       root.cashewGuessLog = Model.cashewGuessLogFinish(root.cashewGuessLog)
       root.cashewGuessMeta = Object.assign({}, root.cashewGuessMeta, { seconds: Number(m.seconds) || 0, model: String(m.model || "") })
     }
@@ -7564,7 +7583,8 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
             text: root.cashewGuessError !== "" ? root.cashewGuessError
-              : root.cashewGuessing ? "Guessing " + root.cashewGuessDone + " / " + root.cashewGuessTotal
+              : root.cashewGuessing ? Model.cashewGuessProgressText(root.cashewGuessProgress, root.cashewGuessDone, root.cashewGuessTotal)
+              : root.cashewGuessDoneLine !== "" ? root.cashewGuessDoneLine
               : root.cashewShown.length + " rows  ·  " + (root.cashewNeedCount > 0 ? root.cashewNeedCount + " need a category" : "all categorised")
             color: root.cashewGuessError !== "" ? root.debitColor : cashewWin.muted
             font.family: Style.font.family
@@ -8402,11 +8422,11 @@ Panel {
               }
               CashewBtn {
                 big: true
-                label: (root.cashewGuessing ? "■ Stop" : "✦ AI categories") + (root.cashewGuessCount > 0 ? "  ·  " + root.cashewGuessCount : "")
+                label: (root.cashewGuessing ? (root.cashewStopArmed ? "■ Click again to stop" : "■ Stop") : "✦ AI categories") + (root.cashewGuessCount > 0 ? "  ·  " + root.cashewGuessCount : "")
                 primary: !root.cashewGuessing
                 active: root.cashewGuessing
                 enabled: root.cashewGuessing || (root.cashewGuessCount > 0 && !root.cashewLoading)
-                onClicked: root.cashewGuessing ? root.cashewGuessStop() : root.cashewGuessStart()
+                onClicked: root.cashewGuessing ? root.cashewStopClick() : root.cashewGuessStart()
               }
               CashewBtn {
                 visible: root.cashewGuessedCount > 0

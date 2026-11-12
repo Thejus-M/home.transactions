@@ -2666,3 +2666,23 @@ function subcategoryIcon(categoryName, sub, categories) {
   }
   return ""
 }
+
+
+// Header text while the AI guess runs: "Batch 2 / 3 · thinking · 480 tokens · 1:12".
+function cashewGuessProgressText(progress, done, total) {
+  if (!progress || !progress.batch) return "Starting \u00b7 " + done + " / " + total
+  var s = Math.max(0, Math.round(progress.elapsed || 0))
+  var clock = Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2)
+  var text = "Batch " + progress.batch + " / " + progress.of + " \u00b7 " + (progress.phase || "working")
+  if (progress.tokens > 0) text += " \u00b7 " + progress.tokens + " tokens"
+  return text + " \u00b7 " + clock + "  (" + done + " / " + total + " rows done)"
+}
+
+// The line a finished run leaves: "Done · 19 of 21 got a category · 2 had no answer · 6 min 10 s".
+function cashewGuessDoneText(answered, total, seconds) {
+  var s = Math.round(seconds || 0)
+  var took = s >= 60 ? Math.floor(s / 60) + " min " + (s % 60) + " s" : s + " s"
+  var text = "Done \u00b7 " + answered + " of " + total + " got a category"
+  if (total - answered > 0) text += " \u00b7 " + (total - answered) + " had no answer"
+  return text + " \u00b7 " + took
+}

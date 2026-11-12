@@ -70,8 +70,10 @@ def reply(*items):
 
 def cli(payload, *args, url=None, timeout=60):
     cmd = [sys.executable, str(ROOT / "bin" / "txdb"), "cashew-guess", "-", "--url", url, *args]
-    p = subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True, timeout=timeout,
+                       env={**os.environ, "TXDB_NO_RUN_LOG": "1"})
     lines = [json.loads(x) for x in p.stdout.splitlines() if x.strip()]
+    lines = [m for m in lines if "progress" not in m]   # live progress lines are tested on their own
     return p, lines
 
 
@@ -216,3 +218,24 @@ class NotesInPrompt(unittest.TestCase):
         p = g.build_prompt(rows, [{"name": "Food Out", "type": "expense", "subcategories": []}])
         for i in range(3):
             self.assertIn(f'notes: "remark number {i}"', p)
+
+
+class StreamingTests(unittest.TestCase):
+    def test_empty_reply_at_the_token_budget_is_split_not_repeated(self):
+        from txdb import cashew_guess as cg
+        calls = []
+
+        def fake_generate(url, model, prompt, timeout, num_predict=cg.DEFAULT_NUM_PREDICT, on_progress=None):
+            calls.append((prompt.count("\n- ") , num_predict))
+            if num_predict == cg.DEFAULT_NUM_PREDICT:
+                raise cg.Capped("capped")
+            return reply((1, "Food Out", "Lunch"))
+
+        orig = cg.generate
+        cg.generate = fake_generate
+        try:
+            out = cg.guess_batch(rows(2), __import__("txdb.cashew", fromlist=["x"]).load_categories(), {}, "http://x", "m", 5)
+        finally:
+            cg.generate = orig
+        self.assertEqual([c[1] for c in calls], [cg.DEFAULT_NUM_PREDICT, cg.CAPPED_NUM_PREDICT, cg.CAPPED_NUM_PREDICT])
+        self.assertEqual(len(out), 2)

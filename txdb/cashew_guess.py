@@ -203,23 +203,54 @@ def parse_results(text: str, rows: list[dict], categories: list[dict]) -> list[d
 
 # ------------------------------------------------------------------ ollama
 
-def generate(url: str, model: str, prompt: str, timeout: float) -> str:
-    payload = {"model": model, "prompt": prompt, "format": "json", "stream": False,
-              "options": {"temperature": 0, "num_predict": DEFAULT_NUM_PREDICT}}
+PROGRESS_EVERY = 2.0      # seconds between progress lines while a batch is running
+CAPPED_NUM_PREDICT = 6000  # budget of the retry that follows a reply cut off while thinking
+
+
+class Capped(GuessError):
+    """The reply ended at the token budget with no answer: thinking used it all."""
+
+
+def generate(url: str, model: str, prompt: str, timeout: float, num_predict: int = DEFAULT_NUM_PREDICT,
+             on_progress=None) -> str:
+    """Streams /api/generate. While it runs, `on_progress(phase, tokens, elapsed)` is called
+    about every PROGRESS_EVERY seconds, phase "thinking" until the answer starts."""
+    payload = {"model": model, "prompt": prompt, "format": "json", "stream": True,
+              "options": {"temperature": 0, "num_predict": num_predict}}
     if _thinks(url, model):
         payload["think"] = True
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url.rstrip("/") + "/api/generate", data=body,
                                  headers={"Content-Type": "application/json"})
+    started = last = time.monotonic()
+    answer, tokens, done_reason = [], 0, ""
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8")).get("response") or ""
+            for raw in resp:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                chunk = json.loads(raw.decode("utf-8"))
+                if chunk.get("response"):
+                    answer.append(chunk["response"])
+                tokens += 1 if (chunk.get("response") or chunk.get("thinking")) else 0
+                if chunk.get("done"):
+                    done_reason = chunk.get("done_reason") or ""
+                    tokens = chunk.get("eval_count") or tokens
+                now = time.monotonic()
+                if on_progress and now - last >= PROGRESS_EVERY:
+                    last = now
+                    on_progress("answer" if answer else "thinking", tokens, now - started)
     except urllib.error.HTTPError as e:
         if e.code in (404, 400):
             raise RuntimeError(f"Ollama refused the request ({e.code}); is the model {model!r} installed?")
         raise GuessError(f"Ollama answered HTTP {e.code}")
     except (TimeoutError, OSError, ValueError) as e:      # includes socket.timeout, URLError
         raise GuessError(f"Ollama call failed: {e}")
+    text = "".join(answer)
+    if not text.strip() and done_reason == "length":
+        raise Capped(f"the model used all {num_predict} tokens thinking and gave no answer")
+    return text
 
 
 def reachable(url: str, timeout: float = 5) -> bool:
@@ -233,15 +264,34 @@ def reachable(url: str, timeout: float = 5) -> bool:
 
 
 def guess_batch(rows: list[dict], categories: list[dict], taught: dict | None, url: str,
-                model: str, timeout: float) -> list[dict]:
-    """One batch, with one retry on a timeout or an unreadable reply."""
+                model: str, timeout: float, on_progress=None) -> list[dict]:
+    """One batch. A timeout or an unreadable reply gets one retry. A reply cut off while thinking
+    is never retried as it was (same request, same result): the batch is split in two and each
+    half gets a bigger budget."""
     prompt = build_prompt(rows, categories, taught)
     last: Exception | None = None
     for _ in range(2):
         try:
-            return parse_results(generate(url, model, prompt, timeout), rows, categories)
+            return parse_results(generate(url, model, prompt, timeout, on_progress=on_progress), rows, categories)
+        except Capped as e:
+            last = e
+            break
         except GuessError as e:
             last = e
+    if isinstance(last, Capped):
+        half = max(1, (len(rows) + 1) // 2)
+        parts = [rows[:half], rows[half:]] if len(rows) > 1 else [rows]
+        out: list[dict] = []
+        for part in parts:
+            if not part:
+                continue
+            part_prompt = build_prompt(part, categories, taught)
+            try:
+                out += parse_results(generate(url, model, part_prompt, timeout, CAPPED_NUM_PREDICT, on_progress),
+                                     part, categories)
+            except GuessError:
+                out += [{"id": r.get("id"), "category": "", "subcategory": ""} for r in part]
+        return out
     raise GuessError(str(last))
 
 
@@ -250,6 +300,18 @@ def guess_batch(rows: list[dict], categories: list[dict], taught: dict | None, u
 def _emit(obj: dict) -> None:
     sys.stdout.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
     sys.stdout.flush()
+
+
+def _log_run(entry: dict) -> None:
+    """One JSON line per run, so a slow or empty run can be explained later. Never fails a run."""
+    try:
+        path = os.path.join(os.environ.get("HOME", "."), ".local", "state", "omarchy", "transactions-guess-runs.jsonl")
+        if os.environ.get("TXDB_NO_RUN_LOG"):
+            return
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def _die(*_a) -> None:
@@ -268,9 +330,26 @@ def run(payload: dict, model: str = DEFAULT_MODEL, workers: int = DEFAULT_WORKER
         return 0
     batches = [rows[i:i + batch] for i in range(0, total, max(1, batch))]
     done = 0
+    answered = 0
+    batch_seconds: list[float] = []
     if batches:
         pool = ThreadPoolExecutor(max_workers=max(1, workers))
-        futures = {pool.submit(guess_batch, b, categories, taught, url, model, timeout): b for b in batches}
+        counter = {"n": 0}
+
+        def work(b):
+            counter["n"] += 1
+            number = counter["n"]
+            batch_started = time.monotonic()
+            _emit({"progress": {"batch": number, "of": len(batches), "phase": "reading prompt", "tokens": 0, "elapsed": 0}})
+
+            def progress(phase, tokens, elapsed):
+                _emit({"progress": {"batch": number, "of": len(batches), "phase": phase, "tokens": tokens,
+                                    "elapsed": round(elapsed)}})
+            try:
+                return guess_batch(b, categories, taught, url, model, timeout, progress)
+            finally:
+                batch_seconds.append(round(time.monotonic() - batch_started, 1))
+        futures = {pool.submit(work, b): b for b in batches}
         for fut in as_completed(futures):
             b = futures[fut]
             try:
@@ -279,10 +358,14 @@ def run(payload: dict, model: str = DEFAULT_MODEL, workers: int = DEFAULT_WORKER
                 _emit({"error": str(e)})
                 results = [{"id": r.get("id"), "category": "", "subcategory": ""} for r in b]
             done += len(b)
+            answered += sum(1 for r in results if r.get("category"))
             _emit({"results": results, "done": done, "total": total})
         pool.shutdown(wait=False)
-    _emit({"finished": True, "done": done, "total": total,
-           "seconds": round(time.monotonic() - started, 2), "model": model})
+    seconds = round(time.monotonic() - started, 2)
+    _emit({"finished": True, "done": done, "total": total, "seconds": seconds, "model": model,
+           "answered": answered})
+    _log_run({"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "model": model, "rows": total, "batches": len(batches),
+              "answered": answered, "seconds": seconds, "batch_seconds": batch_seconds if batches else []})
     return 0
 
 

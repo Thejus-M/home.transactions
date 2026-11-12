@@ -155,3 +155,13 @@ class GuessScopeTests(unittest.TestCase):
     def test_closed_account_rows_are_not_shown(self):
         drafts = [_d("a"), _d("b")]
         self.assertEqual(run("cashewShownIndexes(input, false, null, {b: true})", drafts), [0])
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class GuessProgressTextTests(unittest.TestCase):
+    def test_progress_and_done_text(self):
+        self.assertEqual(run("cashewGuessProgressText({batch:2,of:3,phase:'thinking',tokens:480,elapsed:72}, 8, 21)"),
+                         "Batch 2 / 3 · thinking · 480 tokens · 1:12  (8 / 21 rows done)")
+        self.assertEqual(run("cashewGuessProgressText({}, 0, 21)"), "Starting · 0 / 21")
+        self.assertEqual(run("cashewGuessDoneText(19, 21, 370)"), "Done · 19 of 21 got a category · 2 had no answer · 6 min 10 s")
+        self.assertEqual(run("cashewGuessDoneText(3, 3, 41)"), "Done · 3 of 3 got a category · 41 s")
