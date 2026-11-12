@@ -373,6 +373,8 @@ Panel {
   // True until the window has loaded its drafts, and again after every real close.
   property bool cashewStale: true
   onCashewOpenChanged: if (!root.cashewOpen) root.cashewStale = true
+  // Every AI category confirmed: the review UI has done its job.
+  onCashewGuessedCountChanged: if (root.cashewGuessedCount === 0 && !root.cashewGuessing) cashewWin.resultsOpen = false
   property bool cashewLoading: false
   property string cashewError: ""
   property var cashewDrafts: []
@@ -404,7 +406,17 @@ Panel {
     return set
   }
 
+  // Unconfirmed AI categories are lost when the window closes (they are saved only
+  // when accepted), so the first Close click with some left only arms this.
+  property bool cashewCloseArmed: false
+  Timer { id: cashewCloseTimer; interval: 6000; onTriggered: root.cashewCloseArmed = false }
   function closeCashew() {
+    if (root.cashewGuessedCount > 0 && !root.cashewCloseArmed) {
+      root.cashewCloseArmed = true
+      cashewCloseTimer.restart()
+      return
+    }
+    root.cashewCloseArmed = false
     root.flushCashewSave()
     root.cashewOpen = false
   }
@@ -569,6 +581,8 @@ Panel {
       root.cashewGuessDoneLine = Model.cashewGuessDoneText(answered, Number(m.total) || 0, Number(m.seconds) || 0)
       if (answered === 0 && root.cashewGuessError === "") root.cashewGuessError = "The AI gave no category for any row. See Results for the raw reply."
       root.cashewGuessNotify(answered === 0 ? "AI categories: no answer" : "AI categories finished", root.cashewGuessDoneLine)
+      // Keep the review UI in front until every guess is confirmed (accepted or reverted).
+      if (answered > 0) { cashewWin.resultsFilter = "guessed"; cashewWin.resultsOpen = true }
       root.cashewGuessLog = Model.cashewGuessLogFinish(root.cashewGuessLog)
       root.cashewGuessMeta = Object.assign({}, root.cashewGuessMeta, { seconds: Number(m.seconds) || 0, model: String(m.model || "") })
     }
@@ -7562,7 +7576,7 @@ Panel {
       Keys.onEscapePressed: function (event) {
         cashewWin.askActive = false
         if (cashewWin.pickKind !== "") cashewWin.closePicker()
-        else if (cashewWin.resultsOpen) cashewWin.resultsOpen = false
+        else if (cashewWin.resultsOpen && root.cashewGuessedCount === 0) cashewWin.resultsOpen = false
         else root.closeCashew()
         event.accepted = true
       }
@@ -7599,6 +7613,7 @@ Panel {
             textFormat: Text.PlainText
             text: root.cashewGuessError !== "" ? root.cashewGuessError
               : root.cashewGuessing ? Model.cashewGuessProgressText(root.cashewGuessProgress, root.cashewGuessDone, root.cashewGuessTotal)
+              : root.cashewGuessedCount > 0 ? "✦ " + root.cashewGuessedCount + " AI categories wait for your confirmation"
               : root.cashewGuessDoneLine !== "" ? root.cashewGuessDoneLine
               : root.cashewShown.length + " rows  ·  " + (root.cashewNeedCount > 0 ? root.cashewNeedCount + " need a category" : "all categorised")
             color: root.cashewGuessError !== "" ? root.debitColor : cashewWin.muted
@@ -7621,10 +7636,11 @@ Panel {
             visible: root.cashewGuessLog.length > 0
             label: "Results  ·  " + root.cashewGuessCounts.guessed + " guessed / " + root.cashewGuessCounts.sent + " sent"
             active: cashewWin.resultsOpen
-            onClicked: cashewWin.resultsOpen = !cashewWin.resultsOpen
+            onClicked: if (root.cashewGuessedCount === 0) cashewWin.resultsOpen = !cashewWin.resultsOpen
+            else cashewWin.resultsOpen = true
           }
           CashewBtn { label: cashewWin.optionsOpen ? "Options ▴" : "Options ▾"; active: cashewWin.optionsOpen; onClicked: cashewWin.optionsOpen = !cashewWin.optionsOpen }
-          CashewBtn { label: "Close"; onClicked: root.closeCashew() }
+          CashewBtn { label: root.cashewCloseArmed ? "Discard " + root.cashewGuessedCount + " unconfirmed? Click again" : "Close"; onClicked: root.closeCashew() }
         }
       }
 
@@ -8120,7 +8136,7 @@ Panel {
             onClicked: root.cashewRevertGuessRows(null)
           }
           CashewBtn { label: "Raw output"; active: cashewWin.resultsRaw; onClicked: cashewWin.resultsRaw = !cashewWin.resultsRaw }
-          CashewBtn { label: "Close"; onClicked: cashewWin.resultsOpen = false }
+          CashewBtn { visible: root.cashewGuessedCount === 0; label: "Close"; onClicked: cashewWin.resultsOpen = false }
         }
 
         ListView {
