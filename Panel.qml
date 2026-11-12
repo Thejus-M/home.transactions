@@ -7044,7 +7044,13 @@ Panel {
       function onCashewGuessedOnlyChanged() { cashewWin.syncRows() }
       function onCashewGuessLogChanged() { if (cashewWin.resultsOpen) cashewWin.syncGuessRows() }
       function onCashewDraftsChanged() { if (cashewWin.resultsOpen) cashewWin.syncGuessRows() }
-      function onCashewGuessedCountChanged() { if (root.cashewGuessedOnly) cashewWin.syncRows() }
+      function onCashewGuessedCountChanged() {
+        // Accepting/reverting every guess can empty this filter outright (same
+        // as needOnly below): turn it off instead of leaving a silent blank list.
+        if (!root.cashewGuessedOnly) return
+        if (root.cashewGuessedCount === 0) root.cashewGuessedOnly = false   // its change handler syncs
+        else cashewWin.syncRows()
+      }
       function onCashewNeedCountChanged() {
         if (!cashewWin.needOnly) return
         if (root.cashewNeedCount === 0) cashewWin.needOnly = false   // its change handler syncs
@@ -7433,10 +7439,15 @@ Panel {
                 required property int index
                 property bool copied: false
                 property bool showRaw: false
+                // Stays set once Open is tapped, so a page of several links
+                // keeps track of which ones are done after a scroll away.
+                property bool opened: false
                 width: cwLinksCol.width
                 height: lkCol.implicitHeight + Style.space(20)
                 radius: Style.space(8)
                 color: Util.alpha(root.foreground, 0.06)
+                border.width: lk.opened ? 1 : 0
+                border.color: Util.alpha(root.creditColor, 0.5)
                 Timer { id: lkCopiedTimer; interval: 1500; onTriggered: lk.copied = false }
 
                 Column {
@@ -7449,6 +7460,7 @@ Panel {
                     elide: Text.ElideRight
                     textFormat: Text.PlainText
                     text: Model.cashewLinkLabel(lk.index, root.cashewLinks.length, lk.modelData.count, lk.modelData.chars)
+                      + (lk.opened ? "  ·  opened" : "")
                     color: root.foreground
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
@@ -7488,7 +7500,10 @@ Panel {
                     }
                     CashewBtn {
                       label: "Open"
-                      onClicked: Quickshell.execDetached(["xdg-open", lk.modelData.url])
+                      onClicked: {
+                        Quickshell.execDetached(["xdg-open", lk.modelData.url])
+                        lk.opened = true
+                      }
                     }
                     CashewBtn {
                       label: "Raw JSON"
@@ -7554,10 +7569,13 @@ Panel {
                   id: tf
                   required property var modelData
                   property bool copied: false
+                  property bool opened: false
                   width: cwLinksCol.width
                   height: tfCol.implicitHeight + Style.space(20)
                   radius: Style.space(8)
                   color: Util.alpha(root.foreground, 0.06)
+                  border.width: tf.opened ? 1 : 0
+                  border.color: Util.alpha(root.creditColor, 0.5)
                   Timer { id: tfCopiedTimer; interval: 1500; onTriggered: tf.copied = false }
 
                   Column {
@@ -7568,7 +7586,7 @@ Panel {
                       width: parent.width
                       elide: Text.ElideRight
                       textFormat: Text.PlainText
-                      text: tf.modelData.title
+                      text: tf.modelData.title + (tf.opened ? "  ·  opened" : "")
                       color: root.foreground
                       font.family: Style.font.family
                       font.pixelSize: Style.font.caption
@@ -7597,7 +7615,10 @@ Panel {
                       }
                       CashewBtn {
                         label: "Open"
-                        onClicked: Quickshell.execDetached(["xdg-open", tf.modelData.url])
+                        onClicked: {
+                          Quickshell.execDetached(["xdg-open", tf.modelData.url])
+                          tf.opened = true
+                        }
                       }
                     }
                   }
@@ -8169,6 +8190,34 @@ Panel {
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
         }
         ScrollWheelArea { anchors.fill: cwList; target: cwList }
+
+        // The day list itself can go empty from the filters (Needs category,
+        // Guessed only) while cashewShown still has rows, which used to leave
+        // a blank pane with no clue why. Say so, with a one-tap way out.
+        Column {
+          visible: !root.cashewLoading && root.cashewError === "" && root.cashewShown.length > 0 && cwRows.count === 0
+          anchors.centerIn: cwList
+          spacing: Style.space(10)
+          Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: cwLeft.width - Style.space(40)
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            text: "No rows match the current filters."
+            color: cashewWin.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+          }
+          CashewBtn {
+            anchors.horizontalCenter: parent.horizontalCenter
+            label: "Clear filters"
+            onClicked: {
+              cashewWin.needOnly = false
+              root.cashewGuessedOnly = false
+            }
+          }
+        }
       }
 
       // ---- in-card picker (no popup)
