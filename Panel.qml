@@ -636,6 +636,9 @@ Panel {
   }
 
   readonly property var groupedTransactions: Model.groupByDate(Model.collapseTransfers(root.filteredTransactions, store.transfers))
+  // Flat, one-row-per-entry version of groupedTransactions for txnList (the
+  // virtualized ListView below) — see Model.flattenGroups.
+  readonly property var flatTransactionRows: Model.flattenGroups(root.groupedTransactions)
 
   // Biggest bill first, then by card, so rows do not reshuffle between
   // snapshots. (Object.values alone put ••7462 before ••0220: JavaScript
@@ -737,11 +740,54 @@ Panel {
     }
   }
 
+  // The RECENT list (txnList, see the bank-tab Column below) is a
+  // virtualized ListView: only rows actually on screen (plus a cache
+  // buffer) exist as real items. Set once txnList is created.
+  property var txnListRef: null
+
+  // Same as focusNext, but for a row inside txnList: nextItemInFocusChain
+  // only ever walks items that already exist, so at the edge of the
+  // realized window it would silently jump straight past every
+  // not-yet-created row underneath to whatever real item comes next
+  // (the empty-state text, the portfolio section, ...). Nudging the
+  // ListView to the neighbouring index first forces that row to exist,
+  // so the walk lands on it instead of skipping it.
+  function focusNextInList(item, forward) {
+    var view = root.txnListRef
+    if (view && item && item.rowIndex !== undefined && item.rowIndex >= 0) {
+      var want = item.rowIndex + (forward ? 1 : -1)
+      if (want >= 0 && want < view.count) view.positionViewAtIndex(want, ListView.Contain)
+    }
+    root.focusNext(item, forward)
+  }
+
   // Scrolls the popup's Flickable just enough to bring `item` fully into
   // view — Up/Down moving focus doesn't move the scroll position on its
   // own, so without this the newly focused row could land off-screen.
+  // When `item` is a row inside the virtualized txnList, its OWN inner
+  // viewport (a nested Flickable) needs the same treatment first, since
+  // a realized-but-off-screen (cache buffer) row is clipped there too.
   function scrollIntoView(item) {
     if (!item) return
+    var view = root.txnListRef
+    if (view) {
+      var p = item
+      var insideList = false
+      for (var i = 0; i < 100 && p; i++) {
+        if (p === view || p === view.contentItem) { insideList = true; break }
+        p = p.parent
+      }
+      if (insideList) {
+        var innerPos = item.mapToItem(view.contentItem, 0, 0)
+        var innerMargin = Style.spacing.sm
+        var innerTop = innerPos.y - innerMargin
+        var innerBottom = innerPos.y + item.height + innerMargin
+        if (innerTop < view.contentY) view.contentY = Math.max(0, innerTop)
+        else if (innerBottom > view.contentY + view.height) {
+          view.contentY = Math.min(Math.max(0, view.contentHeight - view.height), innerBottom - view.height)
+        }
+      }
+    }
     var pos = item.mapToItem(column, 0, 0)
     var margin = Style.spacing.sm
     var top = pos.y - margin
@@ -2876,24 +2922,67 @@ Panel {
           width: parent.width
           spacing: Style.spacing.lg
 
-          Repeater {
-            model: root.groupedTransactions
+          // The transaction list used to be a plain Repeater of date groups,
+          // each with its own nested Repeater of rows — no virtualization,
+          // so ANY state change (tracking a row, clearing a filter, ...)
+          // destroyed and rebuilt every single delegate, even the ones
+          // scrolled far off screen. txnList is a single flat, virtualized
+          // ListView instead (model: root.flatTransactionRows, see
+          // Model.flattenGroups): only rows actually on screen (plus
+          // cacheBuffer below) are ever instantiated, and it scrolls on
+          // its own once the list is taller than its cap. The date-header
+          // + day-total look is drawn by the delegate itself, keyed off
+          // each row's own sectionFirst/sectionLabel/sectionTotal fields,
+          // rather than by a separate Repeater per day.
+          ListView {
+            id: txnList
+            width: parent.width
+            height: Math.min(contentHeight, Style.space(420))
+            clip: true
+            interactive: contentHeight > height
+            boundsBehavior: Flickable.StopAtBounds
+            // A generous cache keeps far more rows realized than are ever
+            // on screen, so Up/Down arrow nagivation (see
+            // root.focusNextInList) rarely has to force a not-yet-created
+            // neighbour into existence before focusing it.
+            cacheBuffer: Style.space(2000)
+            model: root.flatTransactionRows
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            Component.onCompleted: root.txnListRef = txnList
+            Component.onDestruction: if (root.txnListRef === txnList) root.txnListRef = null
+
             delegate: Column {
+              id: rowWrap
               required property var modelData
-              width: parent.width
-              spacing: Style.spacing.sm
+              required property int index
+              width: txnList.width
+              spacing: 0
+
+              // The gap before this row: none for the very first row in
+              // the whole list, Style.spacing.lg before a new day's
+              // header, Style.spacing.xxs between rows of the same day —
+              // exactly the gaps the old outer-Column (lg) / inner-Column
+              // (xxs) nesting produced.
+              Item {
+                width: 1
+                height: rowWrap.index === 0 ? 0
+                  : (rowWrap.modelData.sectionFirst ? Style.spacing.lg : Style.spacing.xxs)
+              }
 
               // Date-group header: label on the left, that day's net
               // total on the right (e.g. "Friday, October 2" / "-₹47.36").
+              // Only the first row of each day draws one.
               Item {
+                id: dateHeader
+                visible: rowWrap.modelData.sectionFirst
                 width: parent.width
-                height: dateLabel.implicitHeight
+                height: visible ? dateLabel.implicitHeight : 0
 
                 Text {
                   id: dateLabel
                   anchors.left: parent.left
                   textFormat: Text.PlainText
-                  text: modelData.label
+                  text: rowWrap.modelData.sectionLabel
                   color: Qt.darker(root.foreground, 1.3)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -2901,50 +2990,46 @@ Panel {
                 }
 
                 Text {
-                  visible: modelData.total !== 0
+                  visible: rowWrap.modelData.sectionTotal !== 0
                   anchors.right: parent.right
                   textFormat: Text.PlainText
-                  text: Model.formatAmount({ amount: modelData.total, currency: modelData.currency })
+                  text: Model.formatAmount({ amount: rowWrap.modelData.sectionTotal, currency: rowWrap.modelData.sectionCurrency })
                   color: Qt.darker(root.foreground, 1.3)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
                 }
               }
 
-              Column {
+              Item {
+                width: 1
+                height: rowWrap.modelData.sectionFirst ? Style.spacing.sm : 0
+              }
+
+              // A transfer between your own accounts is one TransferCard;
+              // everything else is an ordinary TransactionCard.
+              Item {
+                id: rowSlot
                 width: parent.width
-                spacing: Style.spacing.xxs
+                height: slotLoader.height
 
-                Repeater {
-                  model: modelData.rows
-                  // A transfer between your own accounts is one TransferCard;
-                  // everything else is an ordinary TransactionCard.
-                  delegate: Item {
-                    id: rowSlot
-                    required property var modelData
-                    width: parent.width
-                    height: slotLoader.height
-
-                    Loader {
-                      id: slotLoader
-                      width: parent.width
-                      sourceComponent: rowSlot.modelData.isTransfer ? transferCardC : txnCardC
-                      opacity: rowSlot.modelData.accountClosed === true ? 0.55 : 1
-                    }
-                    Text {
-                      visible: rowSlot.modelData.accountClosed === true
-                      z: 2
-                      anchors { right: parent.right; bottom: parent.bottom; rightMargin: Style.space(10); bottomMargin: Style.space(4) }
-                      textFormat: Text.PlainText
-                      text: "closed card"
-                      color: Qt.darker(root.foreground, 1.3)
-                      font.family: Style.font.family
-                      font.pixelSize: Style.font.caption
-                    }
-                    Component { id: txnCardC; TransactionCard { txn: rowSlot.modelData; selectable: true } }
-                    Component { id: transferCardC; TransferCard { transfer: rowSlot.modelData } }
-                  }
+                Loader {
+                  id: slotLoader
+                  width: parent.width
+                  sourceComponent: rowWrap.modelData.isTransfer ? transferCardC : txnCardC
+                  opacity: rowWrap.modelData.accountClosed === true ? 0.55 : 1
                 }
+                Text {
+                  visible: rowWrap.modelData.accountClosed === true
+                  z: 2
+                  anchors { right: parent.right; bottom: parent.bottom; rightMargin: Style.space(10); bottomMargin: Style.space(4) }
+                  textFormat: Text.PlainText
+                  text: "closed card"
+                  color: Qt.darker(root.foreground, 1.3)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+                Component { id: txnCardC; TransactionCard { txn: rowWrap.modelData; selectable: true; rowIndex: rowWrap.index } }
+                Component { id: transferCardC; TransferCard { transfer: rowWrap.modelData; rowIndex: rowWrap.index } }
               }
             }
           }
@@ -9182,6 +9267,12 @@ Panel {
   component TransferCard: BorderSurface {
     id: xc
     required property var transfer
+    // This row's index in the virtualized RECENT ListView (txnList), -1
+    // when not inside it (there is no other caller right now, but the
+    // default keeps the component usable standalone). Lets Up/Down
+    // force the neighbouring row to exist before walking the focus
+    // chain onto it — see root.focusNextInList.
+    property int rowIndex: -1
     property bool expanded: false
     readonly property var outLeg: xc.transfer.out
     readonly property var inLeg: xc.transfer.in
@@ -9214,8 +9305,8 @@ Panel {
     Keys.onReturnPressed: xc.toggleTracked()
     Keys.onEnterPressed: xc.toggleTracked()
     Keys.onSpacePressed: xc.toggleTracked()
-    Keys.onUpPressed: root.focusNext(xc, false)
-    Keys.onDownPressed: root.focusNext(xc, true)
+    Keys.onUpPressed: root.focusNextInList(xc, false)
+    Keys.onDownPressed: root.focusNextInList(xc, true)
     Keys.onLeftPressed: xc.expanded = false
     Keys.onRightPressed: xc.expanded = true
     Keys.onPressed: function (event) {
@@ -9494,6 +9585,8 @@ Panel {
   component TransactionCard: BorderSurface {
     id: card
     required property var txn
+    // See TransferCard.rowIndex above — same purpose.
+    property int rowIndex: -1
 
     property bool editing: false
     // RECENT rows get a checkbox in selection mode.
@@ -9562,8 +9655,8 @@ Panel {
       else if (event.key === Qt.Key_I) { card.toggleInfo(); event.accepted = true }
       else if (event.key === Qt.Key_Escape && card.infoOpen) { root.infoOpenId = ""; event.accepted = true }
     }
-    Keys.onUpPressed: if (!card.editing) root.focusNext(card, false)
-    Keys.onDownPressed: if (!card.editing) root.focusNext(card, true)
+    Keys.onUpPressed: if (!card.editing) root.focusNextInList(card, false)
+    Keys.onDownPressed: if (!card.editing) root.focusNextInList(card, true)
     // Left/Right collapse/expand the detail panel — unused by this
     // component otherwise (Up/Down already own row navigation).
     Keys.onLeftPressed: if (!card.editing) card.expanded = false

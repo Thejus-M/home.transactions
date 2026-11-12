@@ -173,6 +173,28 @@ function groupByDate(transactions) {
   return order
 }
 
+// Flattens groupByDate's day buckets into one array for a single
+// virtualized ListView (Panel.qml's txnList) — each row carries its own
+// day's header label/total/currency plus `sectionFirst` (true for the
+// first row of a new day), so the delegate can draw the same date-header +
+// day-total design the old nested Repeaters drew, without needing a
+// Repeater (or a model) per day.
+function flattenGroups(groups) {
+  var out = []
+  for (var i = 0; i < groups.length; i++) {
+    var g = groups[i]
+    for (var j = 0; j < g.rows.length; j++) {
+      out.push(Object.assign({}, g.rows[j], {
+        sectionFirst: j === 0,
+        sectionLabel: g.label,
+        sectionTotal: g.total,
+        sectionCurrency: g.currency,
+      }))
+    }
+  }
+  return out
+}
+
 // Resolves the display name for an account: a user-set override (from
 // ~/.local/state/omarchy/transactions-account-names.json, keyed by last4)
 // if one exists, else `fallback` (the card's real scraped name, or
