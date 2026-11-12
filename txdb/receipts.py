@@ -759,3 +759,63 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     cats = [{"name": c["name"], "type": c["type"], "icon": c.get("icon", ""), "color": c.get("color", ""),
              "subcategories": c.get("subcategories") or [], "subIcons": c.get("subIcons") or {}} for c in cashew.load_categories()]
     return {"receipts": out, "receiptCategories": cats}
+
+
+def set_txn_note(conn: sqlite3.Connection, txn_id: str, note: str) -> None:
+    """Save (or, when empty, delete) the user's own note on a transaction."""
+    note = (note or "").strip()
+    with write(conn):
+        if note:
+            conn.execute("INSERT OR REPLACE INTO txn_notes (transaction_id, note, updated_at) VALUES (?,?,?)",
+                         (txn_id, note, now()))
+        else:
+            conn.execute("DELETE FROM txn_notes WHERE transaction_id = ?", (txn_id,))
+
+
+def _note_items(text: str) -> list[dict]:
+    """One item per line. A trailing number is the amount: 'Milk 2 x 30 60' -> Milk, 60."""
+    import re
+    items = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^(.*?)[\s:=-]*(?:Rs\.?|INR|\u20b9)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)$", line)
+        if m and m.group(1).strip():
+            items.append({"description": m.group(1).strip(" x*"), "amount": float(m.group(2).replace(",", ""))})
+        else:
+            items.append({"description": line, "amount": None})
+    return items
+
+
+def note_bill(conn: sqlite3.Connection, txn_id: str, text: str) -> str:
+    """Make a bill from typed text and file it against the transaction.
+
+    The bill has no photo (empty stored_path). Its total is the transaction's amount.
+    """
+    import hashlib
+    t = conn.execute("SELECT merchant, date, amount_paise, currency FROM transactions WHERE id = ?",
+                     (txn_id,)).fetchone()
+    if not t:
+        raise SystemExit(f"Unknown transaction {txn_id}")
+    held = conn.execute("SELECT receipt_id FROM receipt_links WHERE transaction_id = ?", (txn_id,)).fetchone()
+    if held:
+        raise SystemExit(f"That transaction already has receipt {held[0]} filed against it")
+    sha = hashlib.sha256(f"note:{txn_id}:{now()}".encode()).hexdigest()
+    rid = receipt_id(sha)
+    ts = now()
+    items = _note_items(text)
+    name = conn.execute("SELECT n.name FROM merchant_names n JOIN transactions x ON x.group_key = n.group_key "
+                        "WHERE x.id = ?", (txn_id,)).fetchone()
+    with write(conn):
+        conn.execute(
+            "INSERT INTO receipts (id, image_sha256, stored_path, merchant, date, total_paise, currency, "
+            "method, confidence, needs_review, raw_text, parser_version, parsed_at, imported_at, image_deleted) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+            (rid, sha, "", name[0] if name else t["merchant"], t["date"], abs(t["amount_paise"] or 0),
+             t["currency"] or "INR", "note", 100, 0, text or "", "note", ts, ts))
+        for n, it in enumerate(items, start=1):
+            conn.execute("INSERT INTO receipt_items (receipt_id, line_no, description, amount_paise) VALUES (?,?,?,?)",
+                         (rid, n, it["description"], to_paise(it["amount"])))
+    set_link(conn, rid, transaction_id=txn_id, state="linked", matched_by="manual")
+    return rid

@@ -704,6 +704,14 @@ MIGRATIONS = [
         "fp_amount_paise = (SELECT t.amount_paise FROM transactions t WHERE t.id = transaction_id), "
         "fp_merchant = (SELECT t.merchant FROM transactions t WHERE t.id = transaction_id) "
         "WHERE transaction_id IS NOT NULL"),
+    # v24: a note the user typed on a transaction (separate from the bank's own remark).
+    """
+    CREATE TABLE txn_notes (
+        transaction_id  TEXT PRIMARY KEY,
+        note            TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    );
+    """,
 ]
 
 

@@ -928,7 +928,7 @@ Panel {
   readonly property var _optimisticWriteCmds: ({
     "set-tracked": true, "set-tracked-many": true,
     "bill-paid": true, "bill-notified": true,
-    "account-name": true, "rename": true,
+    "account-name": true, "rename": true, "txn-note": true,
     // receipt-link / receipt-unlink / receipt-set-category are NOT here: they change a
     // transaction row's category (a linked bill's category wins), which only the
     // snapshot knows, so their own reload must run.
@@ -1077,6 +1077,7 @@ Panel {
     property var accountBalances: []   // list of {bank, accountType, last4, balance, currency}
     property var billOverrides: ({})   // map: last4 -> { markedPaid, notifiedDate }
     property var accountNameOverrides: ({})   // map: last4 -> user-set display name
+    property var txnNotes: ({})                  // map: transaction id -> the user's own note
     property var transactionNameOverrides: ({})   // map: groupKey -> user-set merchant name
     // The investments half (txdb/portfolio.py). Additive keys, so a
     // snapshot written before they existed simply leaves these empty and
@@ -1112,6 +1113,7 @@ Panel {
       billOverrides = snap.bills || {}
       accountNameOverrides = snap.accountNames || {}
       transactionNameOverrides = snap.merchantNames || {}
+      txnNotes = snap.txnNotes || {}
       portfolio = snap.portfolio || ({})
       holdings = snap.holdings || []
       allocation = snap.allocation || []
@@ -1547,6 +1549,20 @@ Panel {
       else delete overrides[groupKey]
       transactionNameOverrides = overrides
       root.txdb(trimmed ? ["rename", groupKey, trimmed] : ["rename", groupKey])
+    }
+
+    function setTxnNote(txnId, text) {
+      var next = Object.assign({}, txnNotes)
+      var trimmed = String(text || "").trim()
+      if (trimmed) next[txnId] = trimmed
+      else delete next[txnId]
+      txnNotes = next
+      root.txdb(["txn-note", txnId, trimmed])
+    }
+
+    // A bill made from typed text, filed against the transaction.
+    function noteBill(txnId, text) {
+      root.txdb(["note-bill", txnId, String(text || "").replace(/\n/g, "\\n")])
     }
 
     // Fires a desktop notification for each unpaid card, at most once per
@@ -9567,6 +9583,37 @@ Panel {
     }
   }
 
+  // A small text button for the transaction edit panel.
+  component TxnBtn: BorderSurface {
+    id: tb
+    property string label: ""
+    property bool primary: false
+    signal clicked()
+    height: Style.space(26)
+    width: tbText.implicitWidth + Style.space(18)
+    radius: Style.space(7)
+    opacity: !tb.enabled ? 0.4 : (tbMouse.pressed ? 0.7 : 1)
+    color: tb.primary ? Util.alpha(Color.accent, tbMouse.containsMouse ? 0.34 : 0.24)
+      : Util.alpha(root.foreground, tbMouse.containsMouse ? 0.14 : 0.07)
+    borderSpec: Border.none()
+    Text {
+      id: tbText
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: tb.label
+      color: root.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+    MouseArea {
+      id: tbMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: tb.clicked()
+    }
+  }
+
   // The "i" button at the far right of a card.
   component InfoButton: PanelActionButton {
     id: ib
@@ -10135,6 +10182,17 @@ Panel {
     // word is only stripped from the bank's own card name.
     readonly property string accountName: Model.accountChipText(txn, store.cardOverviews, store.accountNameOverrides)
     readonly property string note: Model.transactionNote(txn)
+    readonly property string userNote: store.txnNotes[card.txn.id] || ""
+    // Content slides left by this much while the pointer is over the row, which
+    // reveals the "i" and edit buttons at the right edge.
+    property real slide: (card._hot || card.infoOpen) && !card.editing ? Style.space(62) : 0
+    Behavior on slide { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+    function saveEdit() {
+      store.setTransactionName(card.groupKey, editField.text)
+      if (noteArea.text.trim() !== card.userNote) store.setTxnNote(card.txn.id, noteArea.text)
+      card.editing = false
+      Qt.callLater(function () { card.forceActiveFocus() })
+    }
     // The bill filed against this transaction, if any - its note icon opens it.
     readonly property var linkedReceipt: Model.linkedReceiptForTransaction(txn, store.receipts)
     readonly property bool isDebit: txn.amount < 0
@@ -10145,7 +10203,7 @@ Panel {
     readonly property bool infoOpen: root.infoOpenId === card.infoId && !card.editing
     function toggleInfo() { root.infoOpenId = root.infoOpenId === card.infoId ? "" : card.infoId }
 
-    implicitHeight: card.collapsedHeight + cInfo.height + (card.showDetails ? detailsPanel.implicitHeight + Style.space(10) : 0)
+    implicitHeight: card.collapsedHeight + cInfo.height + (card.editing ? editPanel.implicitHeight + Style.space(10) : 0) + (card.showDetails ? detailsPanel.implicitHeight + Style.space(10) : 0)
     radius: Style.cornerRadius
     opacity: cardMouse.pressed ? 0.75 : 1.0
     color: card.selected ? Util.alpha(Color.accent, 0.16)
@@ -10332,15 +10390,54 @@ Panel {
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.space(3)
 
-        Text {
+        Row {
           width: parent.width
-          textFormat: Text.PlainText
-          text: card.displayMerchant
-          color: root.foreground
-          font.family: Style.font.family
-          font.bold: true
-          font.pixelSize: Style.font.subtitle
-          elide: Text.ElideRight
+          spacing: Style.space(6)
+          Text {
+            width: Math.min(implicitWidth, parent.width - (noteIconSlot.visible ? noteIconSlot.width + parent.spacing : 0))
+            textFormat: Text.PlainText
+            text: card.displayMerchant
+            color: root.foreground
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.subtitle
+            elide: Text.ElideRight
+          }
+          Item {
+            id: noteIconSlot
+            visible: !!card.linkedReceipt
+            width: Style.space(20)
+            height: Style.space(20)
+            anchors.verticalCenter: parent.verticalCenter
+              // A small note: this transaction has a bill. Click it to open the bill.
+              Rectangle {
+                visible: !!card.linkedReceipt
+                anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(20)
+                height: width
+                radius: Style.space(5)
+                color: noteMouse.containsMouse ? Util.alpha(root.creditColor, 0.32) : Util.alpha(root.creditColor, 0.16)
+                Text {
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: "󰎞"
+                  color: root.creditColor
+                  font.pixelSize: Style.font.caption
+                }
+                MouseArea {
+                  id: noteMouse
+                  anchors.fill: parent
+                  anchors.margins: -Style.space(3)
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  preventStealing: true
+                  onClicked: root.openReceiptDetail(card.linkedReceipt)
+                }
+                ToolTip.visible: noteMouse.containsMouse
+                ToolTip.text: "Bill: " + Model.receiptTitle(card.linkedReceipt || {}) + " — open"
+                ToolTip.delay: 300
+              }
+          }
         }
 
         Row {
@@ -10371,36 +10468,6 @@ Panel {
             visible: card.isSbiSavings
             markSize: Style.spaceReal(9)
             anchors.verticalCenter: parent.verticalCenter
-          }
-
-          // A small note: this transaction has a bill. Click it to open the
-          // bill and its details.
-          Rectangle {
-            visible: !!card.linkedReceipt
-            anchors.verticalCenter: parent.verticalCenter
-            width: Style.space(20)
-            height: width
-            radius: Style.space(5)
-            color: noteMouse.containsMouse ? Util.alpha(root.creditColor, 0.32) : Util.alpha(root.creditColor, 0.16)
-            Text {
-              anchors.centerIn: parent
-              textFormat: Text.PlainText
-              text: "󰎞"
-              color: root.creditColor
-              font.pixelSize: Style.font.caption
-            }
-            MouseArea {
-              id: noteMouse
-              anchors.fill: parent
-              anchors.margins: -Style.space(3)
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              preventStealing: true
-              onClicked: root.openReceiptDetail(card.linkedReceipt)
-            }
-            ToolTip.visible: noteMouse.containsMouse
-            ToolTip.text: "Bill: " + Model.receiptTitle(card.linkedReceipt || {}) + " — open"
-            ToolTip.delay: 300
           }
 
           // One side of a transfer between your own accounts whose other side is
@@ -10446,8 +10513,8 @@ Panel {
       Column {
         id: amountStack
         visible: !card.editing
-        anchors.right: editBtn.left
-        anchors.rightMargin: Style.space(4)
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX + card.slide
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.space(2)
 
@@ -10478,7 +10545,7 @@ Panel {
 
       InfoButton {
         id: cInfoBtn
-        visible: !card.editing
+        visible: !card.editing && (card._hot || card.infoOpen)
         anchors.right: parent.right
         anchors.rightMargin: Style.spacing.rowPaddingX
         anchors.verticalCenter: parent.verticalCenter
@@ -10486,26 +10553,21 @@ Panel {
         onClicked: card.toggleInfo()
       }
 
-      // Reveals on hover OR keyboard focus (so Tab-only users can still
-      // reach rename — hover alone would leave them unreachable).
-      Text {
+      // Revealed when the row slides left (hover or keyboard focus). Opens the edit
+      // panel: name, note, and the two bill actions.
+      PanelActionButton {
         id: editBtn
-        visible: !card.editing && card._hot
+        visible: !card.editing && (card._hot || card.infoOpen)
         anchors.right: cInfoBtn.left
         anchors.rightMargin: Style.space(4)
         anchors.verticalCenter: parent.verticalCenter
-        textFormat: Text.PlainText
-        text: "✎"
-        color: root.foreground
-        font.pixelSize: Style.font.caption
-
-        MouseArea {
-          anchors.fill: parent
-          anchors.margins: -Style.space(6)
-          hoverEnabled: true
-          cursorShape: Qt.PointingHandCursor
-          onClicked: card.editing = true
-        }
+        size: Style.space(24)
+        iconText: "✎"
+        tooltipText: "Edit name, add a note or a bill"
+        foreground: root.foreground
+        bordered: false
+        focusable: false
+        onClicked: card.editing = true
       }
 
       TextField {
@@ -10518,7 +10580,8 @@ Panel {
         text: card.displayMerchant
         font.family: Style.font.family
         font.pixelSize: Style.font.body
-        onVisibleChanged: if (visible) { selectAll(); forceActiveFocus() }
+        onVisibleChanged: if (visible) { text = card.displayMerchant; selectAll(); forceActiveFocus() }
+        onAccepted: card.saveEdit()
         // card.editing = false hides this field, but a hidden item keeps
         // activeFocus until something else explicitly takes it (QtQuick
         // doesn't reassign focus just because the focused item went
@@ -10529,11 +10592,6 @@ Panel {
         // defers it below — handing focus to a different item from inside
         // the currently-focused item's own key/edit event doesn't reliably
         // stick otherwise.
-        onEditingFinished: {
-          store.setTransactionName(card.groupKey, text)
-          card.editing = false
-          Qt.callLater(function () { card.forceActiveFocus() })
-        }
         Keys.onEscapePressed: {
           card.editing = false
           Qt.callLater(function () { card.forceActiveFocus() })
@@ -10556,6 +10614,91 @@ Panel {
           ? Model.transferExplain(card.txn, { accountTag: card.accountName })
           : Model.txnExplain(card.txn, { accountTag: card.accountName,
               receiptMerchant: card.linkedReceipt ? (card.linkedReceipt.merchant || Model.receiptTitle(card.linkedReceipt)) : "" }))
+    }
+
+    // Edit panel: shows while editing. Name is the field in the row above.
+    Column {
+      id: editPanel
+      visible: card.editing
+      anchors.top: cInfo.bottom
+      anchors.topMargin: Style.space(2)
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.leftMargin: Style.spacing.rowPaddingX
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      spacing: Style.space(6)
+      property bool picking: false
+
+      Text {
+        text: "Note  (one line per item, price last: Milk 60)"
+        textFormat: Text.PlainText
+        color: Qt.darker(root.foreground, 1.3)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      Rectangle {
+        width: parent.width
+        height: Style.space(72)
+        radius: Style.space(6)
+        color: Util.alpha(root.foreground, 0.06)
+        border.width: 1
+        border.color: noteArea.activeFocus ? Color.accent : Util.alpha(root.foreground, 0.2)
+        TextArea {
+          id: noteArea
+          anchors.fill: parent
+          anchors.margins: Style.space(4)
+          wrapMode: TextArea.Wrap
+          color: root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.body
+          background: null
+          onVisibleChanged: if (visible) text = card.userNote
+          Keys.onEscapePressed: { card.editing = false; Qt.callLater(function () { card.forceActiveFocus() }) }
+        }
+      }
+
+      Row {
+        spacing: Style.space(6)
+        TxnBtn { label: "Save"; primary: true; onClicked: card.saveEdit() }
+        TxnBtn { label: "Cancel"; onClicked: { card.editing = false; Qt.callLater(function () { card.forceActiveFocus() }) } }
+        TxnBtn {
+          label: "Add as bill"
+          visible: !card.linkedReceipt
+          enabled: noteArea.text.trim() !== ""
+          onClicked: {
+            store.setTransactionName(card.groupKey, editField.text)
+            store.setTxnNote(card.txn.id, noteArea.text)
+            store.noteBill(card.txn.id, noteArea.text)
+            card.editing = false
+          }
+        }
+        TxnBtn {
+          label: editPanel.picking ? "Hide bills" : "Link a bill"
+          visible: !card.linkedReceipt
+          onClicked: editPanel.picking = !editPanel.picking
+        }
+        TxnBtn {
+          label: "Open bill"
+          visible: !!card.linkedReceipt
+          onClicked: { card.editing = false; root.openReceiptDetail(card.linkedReceipt) }
+        }
+      }
+
+      // Bills not yet filed against any transaction.
+      Flow {
+        visible: editPanel.picking && !card.linkedReceipt
+        width: parent.width
+        spacing: Style.space(6)
+        Repeater {
+          model: editPanel.picking ? store.receipts.filter(function (r) { return r.state === "unmatched" }).slice(0, 12) : []
+          delegate: TxnBtn {
+            required property var modelData
+            label: Model.receiptTitle(modelData) + (modelData.total != null ? "  " + Model.currencySymbol(modelData.currency) + Model.formatGrouped(modelData.total) : "")
+            onClicked: { store.linkReceipt(modelData.id, card.txn.id); card.editing = false }
+          }
+        }
+      }
     }
 
     Column {
@@ -10590,6 +10733,17 @@ Panel {
         textFormat: Text.PlainText
         text: Model.formatFullDate(card.txn.date) + "  ·  " + Model.formatAccount(card.txn, store.accountNameOverrides, store.cardOverviews)
         color: Qt.darker(root.foreground, 1.3)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      Text {
+        visible: card.userNote !== ""
+        width: parent.width
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        text: "Note: " + card.userNote
+        color: Qt.darker(root.foreground, 1.1)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
       }

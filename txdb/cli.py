@@ -176,6 +176,12 @@ def main(argv: list[str]) -> int:
                              (args[0], name, now()))
             else:
                 conn.execute("DELETE FROM merchant_names WHERE group_key = ?", (args[0],))
+    elif cmd == "txn-note":
+        from . import receipts
+        receipts.set_txn_note(conn, args[0], " ".join(args[1:]))
+    elif cmd == "note-bill":
+        from . import receipts
+        print(receipts.note_bill(conn, args[0], " ".join(args[1:]).replace("\\n", "\n")))
     elif cmd == "account-name":
         aid = _account(conn, args[0])
         name = " ".join(args[1:]).strip() or None

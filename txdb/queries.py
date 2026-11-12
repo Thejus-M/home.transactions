@@ -128,6 +128,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
                       "WHERE a.closed_at IS NULL")},
         "accountNames": {r["last4"]: r["display_name"] for r in conn.execute(
             "SELECT last4, display_name FROM accounts WHERE display_name IS NOT NULL")},
+        "txnNotes": {r["transaction_id"]: r["note"] for r in conn.execute("SELECT * FROM txn_notes")},
         "merchantNames": {r["group_key"]: r["name"] for r in conn.execute("SELECT * FROM merchant_names")},
         # The investments half: portfolio, holdings, allocation,
         # portfolioActivity, portfolioHistory. Additive, so a widget that
