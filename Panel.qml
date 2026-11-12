@@ -1561,6 +1561,19 @@ Panel {
 
   property real fetchStartedMs: 0
 
+  // Unverified AI categories: the first Copy/Open of a link while any AI
+  // guess is still unaccepted only arms this; a second click within 8 s
+  // goes through. Inline, no popup.
+  property bool cashewVerifyArmed: false
+  Timer { id: cashewVerifyTimer; interval: 8000; onTriggered: root.cashewVerifyArmed = false }
+  // True when the click may go ahead.
+  function cashewVerifyGate() {
+    if (root.cashewGuessedCount === 0 || root.cashewVerifyArmed) { root.cashewVerifyArmed = false; return true }
+    root.cashewVerifyArmed = true
+    cashewVerifyTimer.restart()
+    return false
+  }
+
   // "Fetch all": HDFC, then Axis, then SBI, then ICICI, one after another.
   // They can't really run at once — each one needs you for a QR scan or an
   // OTP — so this queues the rest and starts the next the moment one exits
@@ -7614,6 +7627,35 @@ Panel {
             width: parent.width
             spacing: Style.space(10)
 
+            Column {
+              visible: root.cashewGuessedCount > 0
+              width: parent.width
+              spacing: Style.space(6)
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+                text: "✦ " + root.cashewGuessedCount + " AI-guessed categor" + (root.cashewGuessedCount === 1 ? "y is" : "ies are")
+                  + " not verified yet. Please check them before you import these links."
+                color: root.pendingColor
+                font.family: Style.font.family
+                font.bold: true
+                font.pixelSize: Style.font.caption
+              }
+              Row {
+                spacing: Style.space(6)
+                CashewBtn {
+                  label: "Review guessed"
+                  primary: true
+                  onClicked: root.cashewGuessedOnly = true
+                }
+                CashewBtn {
+                  label: "I checked them · accept all"
+                  onClicked: root.cashewAcceptGuesses()
+                }
+              }
+            }
+
             Text {
               visible: root.cashewLinksError !== ""
               width: parent.width
@@ -7723,9 +7765,10 @@ Panel {
                   Row {
                     spacing: Style.space(6)
                     CashewBtn {
-                      label: lk.copied ? "Copied" : "Copy"
+                      label: root.cashewVerifyArmed ? "Unverified AI · click again" : (lk.copied ? "Copied" : "Copy")
                       primary: true
                       onClicked: {
+                        if (!root.cashewVerifyGate()) return
                         var url = lk.modelData.url
                         Quickshell.execDetached(["wl-copy", url])
                         lk.copied = true
@@ -7733,8 +7776,9 @@ Panel {
                       }
                     }
                     CashewBtn {
-                      label: "Open"
+                      label: root.cashewVerifyArmed ? "Unverified AI · click again" : "Open"
                       onClicked: {
+                        if (!root.cashewVerifyGate()) return
                         Quickshell.execDetached(["xdg-open", lk.modelData.url])
                         lk.opened = true
                       }
@@ -7838,9 +7882,10 @@ Panel {
                     Row {
                       spacing: Style.space(6)
                       CashewBtn {
-                        label: tf.copied ? "Copied" : "Copy"
+                        label: root.cashewVerifyArmed ? "Unverified AI · click again" : (tf.copied ? "Copied" : "Copy")
                         primary: true
                         onClicked: {
+                          if (!root.cashewVerifyGate()) return
                           var url = tf.modelData.url
                           Quickshell.execDetached(["wl-copy", url])
                           tf.copied = true
@@ -7848,8 +7893,9 @@ Panel {
                         }
                       }
                       CashewBtn {
-                        label: "Open"
+                        label: root.cashewVerifyArmed ? "Unverified AI · click again" : "Open"
                         onClicked: {
+                          if (!root.cashewVerifyGate()) return
                           Quickshell.execDetached(["xdg-open", tf.modelData.url])
                           tf.opened = true
                         }
