@@ -1972,11 +1972,20 @@ function cashewNeedIdxs(drafts, shown) {
 // `groupKey` rides along (same identity as the UPI-rename feature, Model.
 // transactionGroupKey) so the grouping functions below can tell which rows
 // are really the same UPI counterparty asked N times.
-function cashewGuessRows(drafts, shown) {
+function cashewGuessTried(log) {
+  var tried = {}
+  for (var i = 0; i < (log || []).length; i++) if (log[i].state === "no-guess") tried[log[i].id] = true
+  return tried
+}
+
+// `tried`: ids the model was already asked about in this window and could not answer
+// (see cashewGuessTried). Asking again gives the same empty answer, so they are not offered.
+function cashewGuessRows(drafts, shown, tried) {
   var out = []
   for (var k = 0; k < shown.length; k++) {
     var d = drafts[shown[k]]
     if (!d || d.touched || d.guessed || !cashewNeedsCategory(d)) continue
+    if (tried && tried[d.id]) continue
     var title = String(d.title || "").trim()
     var merchant = String(d.merchant || "").trim()
     var note = String(d.notes || "").trim()

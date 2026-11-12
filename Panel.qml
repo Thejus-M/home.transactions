@@ -529,7 +529,7 @@ Panel {
   // Rows with no category (notes or not); the ask-me flow walks them.
   readonly property int cashewNeedCount: Model.cashewNeedIdxs(root.cashewDrafts, root.cashewShown).length
   // Rows with a note and no category: the only ones the model reads.
-  readonly property int cashewGuessCount: Model.cashewGuessRows(root.cashewDrafts, root.cashewShown).length
+  readonly property int cashewGuessCount: Model.cashewGuessRows(root.cashewDrafts, root.cashewShown, Model.cashewGuessTried(root.cashewGuessLog)).length
   readonly property int cashewGuessedCount: Model.cashewGuessedCount(root.cashewDrafts)
   function cashewSetGuessPref(patch) {
     var prefs = Object.assign({}, root.cashewGuessPrefs, patch)
@@ -539,7 +539,7 @@ Panel {
   }
   function cashewGuessStart() {
     if (root.cashewGuessing || cashewGuessProc.running) return
-    var rows = Model.cashewGuessRows(root.cashewDrafts, root.cashewShown)
+    var rows = Model.cashewGuessRows(root.cashewDrafts, root.cashewShown, Model.cashewGuessTried(root.cashewGuessLog))
     if (rows.length === 0) return
     // Same-UPI-counterparty rows (Model.cashewGuessGroups) are asked about
     // once: one representative per group goes to the model, and its answer
@@ -8451,18 +8451,34 @@ Panel {
                 label: "Categorise next  (N)"
                 onClicked: cashewWin.askStart()
               }
+              // One slot, three states: a run in progress (Stop), guesses waiting for the
+              // user (Confirm + Review, no start button), or the start button.
               CashewBtn {
+                visible: root.cashewGuessing
                 big: true
-                label: (root.cashewGuessing ? (root.cashewStopArmed ? "■ Click again to stop" : "■ Stop") : "✦ AI categories") + (root.cashewGuessCount > 0 ? "  ·  " + root.cashewGuessCount : "")
-                primary: !root.cashewGuessing
-                active: root.cashewGuessing
-                enabled: root.cashewGuessing || (root.cashewGuessCount > 0 && !root.cashewLoading)
-                onClicked: root.cashewGuessing ? root.cashewStopClick() : root.cashewGuessStart()
+                active: true
+                label: root.cashewStopArmed ? "■ Click again to stop" : "■ Stop"
+                onClicked: root.cashewStopClick()
               }
               CashewBtn {
-                visible: root.cashewGuessedCount > 0
-                label: "Accept guesses  ·  " + root.cashewGuessedCount
+                visible: !root.cashewGuessing && root.cashewGuessedCount > 0
+                big: true
+                primary: true
+                label: "✓ Confirm " + root.cashewGuessedCount + " AI categories"
                 onClicked: root.cashewAcceptGuesses()
+              }
+              CashewBtn {
+                visible: !root.cashewGuessing && root.cashewGuessedCount > 0
+                label: "Review"
+                onClicked: { cashewWin.resultsFilter = "guessed"; cashewWin.resultsOpen = true }
+              }
+              CashewBtn {
+                visible: !root.cashewGuessing && root.cashewGuessedCount === 0 && root.cashewGuessCount > 0
+                big: true
+                primary: true
+                enabled: !root.cashewLoading
+                label: "✦ AI categories  ·  " + root.cashewGuessCount
+                onClicked: root.cashewGuessStart()
               }
             }
           }

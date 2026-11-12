@@ -165,3 +165,18 @@ class GuessProgressTextTests(unittest.TestCase):
         self.assertEqual(run("cashewGuessProgressText({}, 0, 21)"), "Starting · 0 / 21")
         self.assertEqual(run("cashewGuessDoneText(19, 21, 370)"), "Done · 19 of 21 got a category · 2 had no answer · 6 min 10 s")
         self.assertEqual(run("cashewGuessDoneText(3, 3, 41)"), "Done · 3 of 3 got a category · 41 s")
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class GuessOfferTests(unittest.TestCase):
+    def test_count_drops_by_answered_and_unanswered_are_not_offered_again(self):
+        drafts = [_d(x, notes="n") for x in "abcd"]
+        before = run("cashewGuessRows(input, [0,1,2,3]).length", drafts)
+        self.assertEqual(before, 4)
+        res = [{"id": "a", "category": "Food Out", "subcategory": ""}, {"id": "b", "category": "Food Out", "subcategory": ""}]
+        after_drafts = run("cashewApplyGuesses(input.d, input.r)", {"d": drafts, "r": res})
+        self.assertEqual(run("cashewGuessRows(input, [0,1,2,3]).length", after_drafts), 2)
+        log = [{"id": "c", "state": "no-guess"}, {"id": "d", "state": "no-guess"}, {"id": "a", "state": "guessed"}]
+        tried = run("cashewGuessTried(input)", log)
+        self.assertEqual(tried, {"c": True, "d": True})
+        self.assertEqual(run("cashewGuessRows(input.d, [0,1,2,3], input.t).length", {"d": after_drafts, "t": tried}), 0)
