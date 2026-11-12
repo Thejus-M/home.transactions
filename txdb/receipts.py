@@ -751,5 +751,5 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         })
     from . import cashew
     cats = [{"name": c["name"], "type": c["type"], "icon": c.get("icon", ""), "color": c.get("color", ""),
-             "subcategories": c.get("subcategories") or []} for c in cashew.load_categories()]
+             "subcategories": c.get("subcategories") or [], "subIcons": c.get("subIcons") or {}} for c in cashew.load_categories()]
     return {"receipts": out, "receiptCategories": cats}

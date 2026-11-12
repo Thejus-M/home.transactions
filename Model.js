@@ -2657,8 +2657,12 @@ function categoryIcon(name, categories) {
   return ""
 }
 
-// The first three letters of a subcategory ("Dinner" -> "Din"), "" for none.
-function subcategoryBadge(sub) {
-  var s = String(sub || "").trim()
-  return s ? s.slice(0, 3) : ""
+// The symbol of a subcategory for the badge on a transaction card, from the
+// category list the snapshot carries. "" when there is none.
+function subcategoryIcon(categoryName, sub, categories) {
+  var list = categories || []
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].name === categoryName) return (list[i].subIcons && list[i].subIcons[sub]) || ""
+  }
+  return ""
 }

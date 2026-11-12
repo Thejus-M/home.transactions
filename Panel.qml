@@ -8974,12 +8974,18 @@ Panel {
     width: Style.space(44)
     height: width
     radius: width / 2
-    color: ci.fill
+    // Border only: a ring and a thin glyph in one tone, lightened so the
+    // category colours (dark on dark) stay readable.
+    readonly property color tone: Qt.lighter(ci.fill, 1.9)
+    color: "transparent"
+    border.width: 1.5
+    border.color: ci.tone
     Text {
       anchors.centerIn: parent
       textFormat: Text.PlainText
       text: ci.icon
-      font.family: "Noto Color Emoji"
+      color: ci.tone
+      font.family: "JetBrainsMono Nerd Font"
       font.pixelSize: Math.round(ci.width * 0.48)
     }
     Rectangle {
@@ -10051,7 +10057,10 @@ Panel {
         width: Style.space(36)
         height: width
         radius: width / 2
-        color: Util.alpha(card.directionColor, 0.22)
+        // Border only: a ring in the direction colour, nothing filled.
+        color: "transparent"
+        border.width: 1.5
+        border.color: Util.alpha(card.directionColor, 0.85)
         anchors.left: parent.left
         anchors.leftMargin: Style.spacing.rowPaddingX + (card.selectable && root.selectionMode ? Style.space(24) : 0)
         anchors.verticalCenter: parent.verticalCenter
@@ -10062,7 +10071,7 @@ Panel {
         // mark; a row with no category shows its direction arrow, dimmed.
         readonly property bool hasCategory: !root.isTransferLeg(card.txn) && !!card.txn.category
         readonly property string categoryIcon: avatar.hasCategory ? Model.categoryIcon(card.txn.category, store.receiptCategories) : ""
-        readonly property string subBadge: avatar.hasCategory ? Model.subcategoryBadge(card.txn.subcategory) : ""
+        readonly property string subIcon: avatar.hasCategory ? Model.subcategoryIcon(card.txn.category, card.txn.subcategory, store.receiptCategories) : ""
 
         // Clicking the circle expands or collapses the details below.
         MouseArea {
@@ -10081,33 +10090,33 @@ Panel {
           text: root.isTransferLeg(card.txn) ? "⇄" : (avatar.categoryIcon !== "" ? avatar.categoryIcon : (card.isDebit ? "↓" : "↑"))
           color: card.directionColor
           opacity: root.isTransferLeg(card.txn) || avatar.hasCategory ? 1.0 : 0.6
+          font.family: avatar.categoryIcon !== "" ? "JetBrainsMono Nerd Font" : Style.font.family
           font.bold: avatar.categoryIcon === ""
           font.pixelSize: avatar.categoryIcon !== "" ? Style.font.title : Style.font.subtitle
         }
 
+        // The subcategory's symbol, in a small ring on the lower-right edge.
         Rectangle {
           id: subBadgeRect
-          visible: avatar.subBadge !== ""
+          visible: avatar.subIcon !== ""
           anchors.right: parent.right
           anchors.bottom: parent.bottom
           anchors.rightMargin: -Style.space(5)
-          anchors.bottomMargin: -Style.space(3)
-          height: Style.space(13)
-          width: Math.max(height, subBadgeText.implicitWidth + Style.space(6))
-          radius: height / 2
-          color: Qt.tint(Color.background, Util.alpha(card.directionColor, 0.55))
-          border.width: 2
-          border.color: Color.background
+          anchors.bottomMargin: -Style.space(4)
+          width: Style.space(16)
+          height: width
+          radius: width / 2
+          color: Color.background
+          border.width: 1.5
+          border.color: Util.alpha(card.directionColor, 0.85)
 
           Text {
-            id: subBadgeText
             anchors.centerIn: parent
             textFormat: Text.PlainText
-            text: avatar.subBadge
-            color: root.foreground
-            font.family: Style.font.family
-            font.bold: true
-            font.pixelSize: Style.font.caption - 2
+            text: avatar.subIcon
+            color: card.directionColor
+            font.family: "JetBrainsMono Nerd Font"
+            font.pixelSize: Style.space(10)
           }
         }
 

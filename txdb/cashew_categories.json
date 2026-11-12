@@ -3,8 +3,9 @@
   "name": "Balance Correction",
   "type": "balance",
   "subcategories": [],
-  "icon": "📊",
-  "color": "#37474F"
+  "icon": "󰗑",
+  "color": "#37474F",
+  "subIcons": {}
  },
  {
   "name": "Salary",
@@ -13,8 +14,12 @@
    "Bonus",
    "Monthly"
   ],
-  "icon": "💰",
-  "color": "#8A7A1E"
+  "icon": "󰯝",
+  "color": "#8A7A1E",
+  "subIcons": {
+   "Bonus": "󰊡",
+   "Monthly": "󰸘"
+  }
  },
  {
   "name": "Rent Received",
@@ -23,8 +28,12 @@
    "Other",
    "Rent"
   ],
-  "icon": "🔑",
-  "color": "#2E5E2B"
+  "icon": "󰷖",
+  "color": "#2E5E2B",
+  "subIcons": {
+   "Other": "󰮍",
+   "Rent": "󰷖"
+  }
  },
  {
   "name": "Returns & Interest",
@@ -34,8 +43,13 @@
    "Interest",
    "Maturity"
   ],
-  "icon": "📈",
-  "color": "#1F5A33"
+  "icon": "󰄪",
+  "color": "#1F5A33",
+  "subIcons": {
+   "Dividends": "󰐙",
+   "Interest": "󱉸",
+   "Maturity": "󰱄"
+  }
  },
  {
   "name": "Cashback & Rewards",
@@ -46,8 +60,14 @@
    "Refund",
    "UPI"
   ],
-  "icon": "💳",
-  "color": "#5C6B1F"
+  "icon": "󰆛",
+  "color": "#5C6B1F",
+  "subIcons": {
+   "App": "󰘔",
+   "ATM Card": "󱤐",
+   "Refund": "󰪜",
+   "UPI": "󰐲"
+  }
  },
  {
   "name": "Housing",
@@ -55,8 +75,11 @@
   "subcategories": [
    "Rent"
   ],
-  "icon": "🏠",
-  "color": "#3F6B2D"
+  "icon": "󰚡",
+  "color": "#3F6B2D",
+  "subIcons": {
+   "Rent": "󰷖"
+  }
  },
  {
   "name": "Bills & Utilities",
@@ -65,8 +88,12 @@
    "Electricity",
    "Mobile"
   ],
-  "icon": "📰",
-  "color": "#3D5A80"
+  "icon": "󱐌",
+  "color": "#3D5A80",
+  "subIcons": {
+   "Electricity": "󱐌",
+   "Mobile": "󰷰"
+  }
  },
  {
   "name": "Subscriptions",
@@ -76,8 +103,13 @@
    "Claude Pro",
    "Dating App"
   ],
-  "icon": "📅",
-  "color": "#34527A"
+  "icon": "󰺏",
+  "color": "#34527A",
+  "subIcons": {
+   "Apps": "󱇙",
+   "Claude Pro": "󱙺",
+   "Dating App": "󰋕"
+  }
  },
  {
   "name": "Groceries",
@@ -85,8 +117,11 @@
   "subcategories": [
    "Provisions"
   ],
-  "icon": "🛒",
-  "color": "#2E6B34"
+  "icon": "󰄑",
+  "color": "#2E6B34",
+  "subIcons": {
+   "Provisions": "󱆁"
+  }
  },
  {
   "name": "Transport",
@@ -96,8 +131,13 @@
    "Petrol",
    "Transit"
   ],
-  "icon": "🚗",
-  "color": "#2F6A38"
+  "icon": "󰃧",
+  "color": "#2F6A38",
+  "subIcons": {
+   "Parking": "󰰚",
+   "Petrol": "󰺸",
+   "Transit": "󰔬"
+  }
  },
  {
   "name": "Vehicle",
@@ -108,8 +148,14 @@
    "Parts",
    "Servicing"
   ],
-  "icon": "🛵",
-  "color": "#3C6B2A"
+  "icon": "󱖹",
+  "color": "#3C6B2A",
+  "subIcons": {
+   "Fines": "󰗖",
+   "Insurance": "󰳈",
+   "Parts": "󰢻",
+   "Servicing": "󰯠"
+  }
  },
  {
   "name": "Health",
@@ -118,8 +164,12 @@
    "Doctor",
    "Medicine"
   ],
-  "icon": "🩺",
-  "color": "#2A6B4A"
+  "icon": "󰓙",
+  "color": "#2A6B4A",
+  "subIcons": {
+   "Doctor": "󰿷",
+   "Medicine": "󰐂"
+  }
  },
  {
   "name": "Food Out",
@@ -133,8 +183,17 @@
    "Others",
    "Sweets"
   ],
-  "icon": "🍴",
-  "color": "#7A5A2E"
+  "icon": "󰩰",
+  "color": "#7A5A2E",
+  "subIcons": {
+   "Breakfast": "󰛊",
+   "Brunch": "󱌎",
+   "Delivery": "󱊛",
+   "Dinner": "󰒦",
+   "Lunch": "󱤖",
+   "Others": "󰇘",
+   "Sweets": "󱟰"
+  }
  },
  {
   "name": "Personal Care",
@@ -145,8 +204,14 @@
    "Self Care Product",
    "Teeth"
   ],
-  "icon": "🤍",
-  "color": "#7A5A2E"
+  "icon": "󱁸",
+  "color": "#7A5A2E",
+  "subIcons": {
+   "Grooming Products": "󱃰",
+   "Haircut": "󰆐",
+   "Self Care Product": "󱖃",
+   "Teeth": "󰔩"
+  }
  },
  {
   "name": "Fitness",
@@ -154,8 +219,11 @@
   "subcategories": [
    "Gym"
   ],
-  "icon": "🏋️",
-  "color": "#3F6B2D"
+  "icon": "󰇦",
+  "color": "#3F6B2D",
+  "subIcons": {
+   "Gym": "󰇦"
+  }
  },
  {
   "name": "Shopping",
@@ -166,8 +234,14 @@
    "Luxury",
    "Others"
   ],
-  "icon": "🛍️",
-  "color": "#A3154F"
+  "icon": "󱇕",
+  "color": "#A3154F",
+  "subIcons": {
+   "Clothing": "󰔿",
+   "Footwear": "󱗈",
+   "Luxury": "󰮋",
+   "Others": "󰇘"
+  }
  },
  {
   "name": "Entertainment",
@@ -177,8 +251,13 @@
    "Activities",
    "Movies"
   ],
-  "icon": "🎬",
-  "color": "#3A3A3F"
+  "icon": "󰿏",
+  "color": "#3A3A3F",
+  "subIcons": {
+   "Items": "󰏗",
+   "Activities": "󰤓",
+   "Movies": "󰈰"
+  }
  },
  {
   "name": "Gifts & Giving",
@@ -187,8 +266,12 @@
    "Family Support",
    "Gifts"
   ],
-  "icon": "🎁",
-  "color": "#6B1F2A"
+  "icon": "󰊡",
+  "color": "#6B1F2A",
+  "subIcons": {
+   "Family Support": "󰭘",
+   "Gifts": "󰊡"
+  }
  },
  {
   "name": "Travel",
@@ -200,8 +283,15 @@
    "Travel Food",
    "Travel Shopping"
   ],
-  "icon": "✈️",
-  "color": "#2F4B6E"
+  "icon": "󰀝",
+  "color": "#2F4B6E",
+  "subIcons": {
+   "Travel": "󰀝",
+   "Place/event": "󰟙",
+   "Stay": "󰂙",
+   "Travel Food": "󰩰",
+   "Travel Shopping": "󱖌"
+  }
  },
  {
   "name": "Education",
@@ -210,8 +300,12 @@
    "Courses",
    "Finance"
   ],
-  "icon": "📚",
-  "color": "#2F4B6E"
+  "icon": "󱗖",
+  "color": "#2F4B6E",
+  "subIcons": {
+   "Courses": "󱆀",
+   "Finance": "󰺀"
+  }
  },
  {
   "name": "Investments",
@@ -224,8 +318,16 @@
    "Mutual Funds",
    "Dividend"
   ],
-  "icon": "🥧",
-  "color": "#4A3A8A"
+  "icon": "󰄦",
+  "color": "#4A3A8A",
+  "subIcons": {
+   "Stocks": "󰄪",
+   "US Stocks": "󰇁",
+   "RD": "󱛡",
+   "FD": "󰺀",
+   "Mutual Funds": "󱕎",
+   "Dividend": "󱢐"
+  }
  },
  {
   "name": "Friend Settlement",
@@ -236,8 +338,14 @@
    "Settle",
    "Split Paid"
   ],
-  "icon": "🤝",
-  "color": "#6B5A1E"
+  "icon": "󱖡",
+  "color": "#6B5A1E",
+  "subIcons": {
+   "Lent": "󰁜",
+   "Received": "󰁂",
+   "Settle": "󱖡",
+   "Split Paid": "󰃻"
+  }
  },
  {
   "name": "Flatmates",
@@ -247,8 +355,13 @@
    "Groceries Share",
    "Settle"
   ],
-  "icon": "🛋️",
-  "color": "#28406B"
+  "icon": "󱕭",
+  "color": "#28406B",
+  "subIcons": {
+   "Bills Share": "󱧜",
+   "Groceries Share": "󰄑",
+   "Settle": "󱖡"
+  }
  },
  {
   "name": "Uncategorized",
@@ -256,7 +369,10 @@
   "subcategories": [
    "Unknown"
   ],
-  "icon": "❓",
-  "color": "#5A2A2E"
+  "icon": "󰘥",
+  "color": "#5A2A2E",
+  "subIcons": {
+   "Unknown": "󰘥"
+  }
  }
 ]

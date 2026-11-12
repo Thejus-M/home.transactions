@@ -23,3 +23,12 @@ class SnapshotCategoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CategoryIconDataTests(unittest.TestCase):
+    def test_every_category_and_subcategory_has_a_symbol(self):
+        from txdb import cashew
+        for c in cashew.load_categories():
+            self.assertTrue(c["icon"], c["name"])
+            for s in c["subcategories"]:
+                self.assertTrue(c["subIcons"].get(s), f"{c['name']} / {s}")

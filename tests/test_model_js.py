@@ -422,8 +422,9 @@ class CategoryCircleTests(unittest.TestCase):
         cats = '[{name:"Food Out",icon:"🍽"}]'
         self.assertEqual(run("categoryIcon('Food Out', %s)" % cats), "🍽")
         self.assertEqual(run("categoryIcon('Nope', %s)" % cats), "")
-        self.assertEqual(run("subcategoryBadge('Dinner')"), "Din")
-        self.assertEqual(run("subcategoryBadge('')"), "")
+        self.assertEqual(run("subcategoryIcon('Food Out', 'Dinner', [{name:'Food Out',subIcons:{Dinner:'X'}}])"), "X")
+        self.assertEqual(run("subcategoryIcon('Food Out', '', [{name:'Food Out',subIcons:{Dinner:'X'}}])"), "")
+        self.assertEqual(run("subcategoryIcon('Nope', 'Dinner', [])"), "")
 
 
 @unittest.skipUnless(NODE, "node is not installed")
