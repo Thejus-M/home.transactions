@@ -4967,16 +4967,18 @@ Panel {
     //   "due" — a bill is generated and not cleared — red !.
     // The manual "mark as paid" override still drives the bill-due
     // reminder/badge (store.isPaid/anyBillDue); it does not recolour the row.
-    readonly property string billState: billRow.parts.payNow > 0
-      ? "due"
-      : (billRow.parts.nextBill > 0 && !billRow.parts.inCredit ? "pending" : "settled")
+    readonly property string billState: billRow.parts.awaiting
+      ? "awaiting"
+      : (billRow.parts.payNow > 0
+        ? "due"
+        : (billRow.parts.nextBill > 0 && !billRow.parts.inCredit ? "pending" : "settled"))
     readonly property bool displayPaid: billRow.billState === "settled"
     readonly property color statusColor: billRow.billState === "settled"
       ? root.creditColor
       : (billRow.billState === "due" ? root.debitColor : root.pendingColor)
     readonly property string statusGlyph: billRow.billState === "settled"
       ? "✓"
-      : (billRow.billState === "due" ? "!" : "●")
+      : (billRow.billState === "due" ? "!" : (billRow.billState === "awaiting" ? "…" : "●"))
     readonly property bool _hot: rowHover.hovered || billRow.activeFocus
     // The status column (disc + label) is the tallest thing in the row, so
     // it sets this; the two text lines need less.
@@ -5086,13 +5088,17 @@ Panel {
         // line beside the card's name, where there is room for it.
         Rectangle {
           id: statePill
-          readonly property string label: billRow.parts.inCredit
+          readonly property string label: billRow.parts.awaiting
+            ? "SENT"
+            : billRow.parts.inCredit
             ? "IN CREDIT"
             : (billRow.parts.payNow <= 0
                 ? (billRow.paid ? "PAID" : "")
                 : (billRow.paid ? "PAID"
                     : (Model.billUrgency(billRow.overview, false) === "overdue" ? "OVERDUE" : "NOT PAID")))
-          readonly property color tone: billRow.parts.inCredit
+          readonly property color tone: billRow.parts.awaiting
+            ? root.pendingColor
+            : billRow.parts.inCredit
             ? root.creditColor
             : (billRow.parts.payNow <= 0 || billRow.paid
                 ? Qt.darker(root.foreground, 1.4)
@@ -5170,10 +5176,14 @@ Panel {
         // its last payment here instead.
         Text {
           id: dueText
-          readonly property string urgency: Model.billUrgency(billRow.overview, billRow.paid)
+          readonly property string urgency: Model.billUrgency(billRow.overview, billRow.paid || billRow.parts.awaiting)
           width: parent.width
           textFormat: Text.PlainText
-          text: billRow.parts.payNow > 0 && billRow.overview.dueDate
+          text: billRow.parts.awaiting
+            ? "Paid " + Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.awaitingAmount)
+              + (billRow.parts.awaitingDate ? " · " + Model.formatShortDate(billRow.parts.awaitingDate) : "")
+              + " · bank not updated"
+            : billRow.parts.payNow > 0 && billRow.overview.dueDate
             ? "Due " + Model.formatShortDate(billRow.overview.dueDate)
               + " · " + Model.dueCountdown(billRow.overview.dueDate)
             : (Model.cycleCloseLine(billRow.overview) || Model.billPaidLine(billRow.overview))
@@ -5222,7 +5232,7 @@ Panel {
           width: parent.width
           horizontalAlignment: Text.AlignRight
           text: billRow.parts.payNow > 0
-            ? "bill " + Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.payNow)
+            ? (billRow.parts.awaiting ? "bank shows " : "bill ") + Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.payNow)
             : (billRow.parts.inCredit
                 ? "credit " + Model.currencySymbol("INR") + Model.formatGrouped(Math.abs(billRow.parts.payNow))
                 : "no bill due")
@@ -5311,6 +5321,9 @@ Panel {
               ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.paidIn)
               : (Model.parseCurrencyString(billRow.overview.credited_this_cycle) !== 0
                   ? billRow.overview.credited_this_cycle : "") },
+          { label: "Paid, bank not updated", value: billRow.parts.awaiting
+              ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.awaitingAmount)
+                + (billRow.parts.awaitingDate ? "  ·  " + Model.formatShortDate(billRow.parts.awaitingDate, true) : "") : "" },
           { label: "Left to pay", value: billRow.parts.payNow > 0
               ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.payNow) : "" },
           { label: "In credit", value: billRow.parts.inCredit

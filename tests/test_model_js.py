@@ -395,7 +395,7 @@ class BillOrderAndCycleTests(unittest.TestCase):
 
 @unittest.skipUnless(NODE, "node is not installed")
 class PaidSinceBillTests(unittest.TestCase):
-    def test_sbi_payment_in_transactions_clears_the_bill(self):
+    def test_sbi_payment_in_transactions_is_awaiting_not_cleared(self):
         sbi = {"total_outstanding": "₹ 11082.04", "unbilled_amount": "₹ 10,493.04", "unbilled_purchases": "₹ 10,493.04",
                "last_statement_amount": "₹ 589.00", "unbilled_credits": "", "unsettled_amount": "",
                "payment_status": "AMOUNT DUE", "paidSinceBill": 588.82}
@@ -404,5 +404,8 @@ class PaidSinceBillTests(unittest.TestCase):
                   'console.log(JSON.stringify(vm.runInContext("billParts(d)",c)))')
         out = json.loads(subprocess.run([NODE, "-e", script, str(ROOT / "Model.js"), json.dumps(sbi)],
                                         capture_output=True, text=True, check=True).stdout)
-        self.assertEqual(out["payNow"], 0)
+        # Never cleared by the widget: it waits for the bank, and says a payment is seen.
+        self.assertEqual(out["payNow"], 589)
+        self.assertTrue(out["awaiting"])
+        self.assertEqual(out["awaitingAmount"], 588.82)
         self.assertEqual(out["nextBill"], 10493.04)

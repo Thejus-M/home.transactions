@@ -566,7 +566,8 @@ function isBillPaid(overviewEntry, manualOverride) {
   if (!overviewEntry.total_outstanding) {
     return !!PAID_STATUSES[String(overviewEntry.payment_status || "").toUpperCase()]
   }
-  return billParts(overviewEntry).payNow <= 0
+  var bp = billParts(overviewEntry)
+  return bp.payNow <= 0 || bp.awaiting
 }
 
 // --- Credit card bill dates (statementDate / dueDate / nextStatementDate are
@@ -681,7 +682,7 @@ function billDatesLine(overviewEntry) {
 // payNow is signed — negative is the bank owing the cardholder.
 function billParts(overviewEntry) {
   if (!overviewEntry) {
-    return { billThisMonth: 0, paidIn: 0, payNow: 0, nextBill: 0, inCredit: false, hasBreakdown: false }
+    return { billThisMonth: 0, paidIn: 0, payNow: 0, nextBill: 0, inCredit: false, hasBreakdown: false, awaiting: false, awaitingAmount: 0, awaitingDate: "" }
   }
 
   var outstanding = _money(parseCurrencyString(overviewEntry.total_outstanding))
@@ -696,15 +697,14 @@ function billParts(overviewEntry) {
     hasBreakdown ? overviewEntry.unbilled_purchases : overviewEntry.unbilled_amount)
     + parseCurrencyString(overviewEntry.unsettled_amount))
   var payNow = _money(outstanding - nextBill)
-  // A bank page that does not report credits (SBI) keeps asking for a bill
-  // that was paid. Take the payments the card's own transactions show since
-  // the bill closed off it. The bank rounds a bill up to the rupee (588.82
-  // shown as 589.00), so a leftover under 1 rupee counts as paid.
+  // A bank page that does not report credits (SBI) can keep asking for a
+  // bill that was paid. The widget never clears it on its own: it waits for
+  // the bank's page to say so (user's choice, 2026-11-12). It only notes
+  // that a payment covering the bill is in the card's transactions
+  // ("awaiting"). The bank rounds a bill up to the rupee (588.82 shown as
+  // 589.00), hence the 1 rupee slack.
   var paidSince = Number(overviewEntry.paidSinceBill) || 0
-  if (!overviewEntry.unbilled_credits && paidSince > 0 && payNow > 0) {
-    payNow = _money(payNow - paidSince)
-    if (payNow > 0 && payNow < 1) payNow = 0
-  }
+  var awaiting = !overviewEntry.unbilled_credits && payNow > 0 && paidSince > 0 && paidSince + 1 >= payNow
 
   return {
     billThisMonth: hasBreakdown ? _money(parseCurrencyString(overviewEntry.last_statement_amount)) : 0,
@@ -714,7 +714,10 @@ function billParts(overviewEntry) {
     payNow: payNow,
     nextBill: nextBill,
     inCredit: payNow < 0,
-    hasBreakdown: hasBreakdown
+    hasBreakdown: hasBreakdown,
+    awaiting: awaiting,
+    awaitingAmount: awaiting ? _money(paidSince) : 0,
+    awaitingDate: awaiting ? (overviewEntry.paidSinceDate || "") : ""
   }
 }
 
@@ -743,8 +746,8 @@ function billsDueTotal(cardOverviewList, billOverridesByLast4) {
     if (!entry) continue
     var override = billOverridesByLast4 ? billOverridesByLast4[entry.last4] : null
     if (isBillPaid(entry, override)) continue
-    var payNow = billParts(entry).payNow
-    if (payNow > 0) total += payNow
+    var bp = billParts(entry)
+    if (bp.payNow > 0 && !bp.awaiting) total += bp.payNow
   }
   return _money(total)
 }
