@@ -1881,6 +1881,9 @@ function cashewNeedIdxs(drafts, shown) {
 // The rows `cashew-guess` reads: a non-empty note AND no category yet. A row
 // with a category from any source, a transfer, a row edited by hand and a row
 // already guessed are never sent. The rest is asked from the user.
+// `groupKey` rides along (same identity as the UPI-rename feature, Model.
+// transactionGroupKey) so the grouping functions below can tell which rows
+// are really the same UPI counterparty asked N times.
 function cashewGuessRows(drafts, shown) {
   var out = []
   for (var k = 0; k < shown.length; k++) {
@@ -1889,7 +1892,72 @@ function cashewGuessRows(drafts, shown) {
     var note = String(d.notes || "").trim()
     if (note === "") continue
     out.push({ id: d.id, title: d.title || "", merchant: d.merchant || "", notes: note,
-               amount: d.amount || "", kind: d.kind || "", bank: d.bank || "", accountType: d.accountId ? String(d.accountId).split("|")[1] || "" : "" })
+               amount: d.amount || "", kind: d.kind || "", bank: d.bank || "", accountType: d.accountId ? String(d.accountId).split("|")[1] || "" : "",
+               groupKey: d.groupKey || "" })
+  }
+  return out
+}
+
+// Groups `cashewGuessRows` output by UPI counterparty ("if it is just the
+// UPI id" - the user's own framing): rows whose groupKey is a UPI identity
+// (the same "UPI|BANK|NAME" key the rename feature uses, see Model.
+// transactionGroupKey / txdb/keys.py) and share that key become one group.
+// Anything else - card transactions, bank fees, a lone UPI counterparty with
+// only one untracked row right now - gets its own group of 1, so singletons
+// behave exactly as before (no grouping chrome, no change in flow).
+function cashewGuessGroups(rows) {
+  var byKey = {}, out = []
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i]
+    var upi = !!r.groupKey && r.groupKey.indexOf("UPI|") === 0
+    var key = upi ? r.groupKey : ("row:" + r.id)
+    var g = byKey[key]
+    if (!g) { g = { key: key, upi: upi, rows: [] }; byKey[key] = g; out.push(g) }
+    g.rows.push(r)
+  }
+  return out
+}
+
+// The one row that represents a whole group when asking the model - the
+// member with the richest note, so the AI sees the most informative text for
+// what is really one question asked about N transactions.
+function cashewGuessGroupRep(g) {
+  var rep = g.rows[0]
+  for (var i = 1; i < g.rows.length; i++) {
+    if (String(g.rows[i].notes || "").length > String(rep.notes || "").length) rep = g.rows[i]
+  }
+  return rep
+}
+
+// What actually gets sent to cashew-guess: one row per group instead of one
+// per transaction, so a UPI counterparty with several untracked transactions
+// is asked about once, not N times.
+function cashewGuessRequestRows(groups) {
+  return groups.map(cashewGuessGroupRep)
+}
+
+// Representative transaction id -> every member id of its group (itself
+// included), so a result keyed by the representative's id can be copied onto
+// every transaction it stands in for.
+function cashewGuessGroupMap(groups) {
+  var m = {}
+  groups.forEach(function (g) {
+    var rep = cashewGuessGroupRep(g)
+    m[rep.id] = g.rows.map(function (r) { return r.id })
+  })
+  return m
+}
+
+// Expands the model's per-representative results into one entry per actual
+// transaction id, using the map above. A result for an ungrouped row (group
+// of 1) just passes through unchanged.
+function cashewGuessExpandResults(results, groupMap) {
+  var out = []
+  for (var i = 0; i < (results || []).length; i++) {
+    var r = results[i]
+    if (!r) continue
+    var ids = (groupMap && groupMap[r.id]) || [r.id]
+    for (var j = 0; j < ids.length; j++) out.push({ id: ids[j], category: r.category, subcategory: r.subcategory })
   }
   return out
 }
@@ -1958,12 +2026,18 @@ function _cashewById(drafts) {
   return m
 }
 
-// A new log for the rows being sent; `before` is the draft as it is now.
+// A new log for the rows being sent; `before` is the draft as it is now. One
+// entry per actual transaction (not per group/request row sent to the
+// model) - the log is the record of what happened to every real row, so
+// accept/revert/display stay correct per transaction even when several of
+// them were asked about together. `groupKey` rides along so the results UI
+// can tell which entries are the same UPI counterparty.
 function cashewGuessLogNew(rows, drafts) {
   var at = _cashewById(drafts)
   return rows.map(function (r) {
     var d = drafts[at[r.id]] || ({})
     return { id: r.id, title: d.title || r.title || "", amount: d.amount || r.amount || "",
+             groupKey: r.groupKey || "",
              before: { category: d.category || "", subcategory: d.subcategory || "", warn: d.warn || "" },
              sent: true, guess: null, state: "pending" }
   })
@@ -2016,17 +2090,53 @@ function cashewGuessLogLive(log, drafts) {
   return ids
 }
 
-// The rows of the results list. filter: "all" | "guessed" | "none".
+// The rows of the results list. filter: "all" | "guessed" | "none". Rows
+// that share a UPI counterparty (same groupKey, the rename feature's
+// identity - see cashewGuessGroups above) collapse into one group card with
+// `isGroup: true`, so the same question asked once for N transactions shows
+// once, with "Apply to all N" / "Revert all" alongside the usual per-row
+// actions (kept in `members`, for reviewing or adjusting one at a time). A
+// lone UPI counterparty, or any non-UPI row, stays a plain single row -
+// `isGroup: false`, `count: 1` - with no visible change.
 function cashewGuessLogView(log, drafts, filter) {
-  var at = _cashewById(drafts), out = []
+  var at = _cashewById(drafts), rows = []
   for (var i = 0; i < log.length; i++) {
     var e = log[i], idx = at[e.id] === undefined ? -1 : at[e.id]
     var st = _cashewGuessState(e, drafts[idx])
     if (filter === "guessed" && !e.guess) continue
     if (filter === "none" && st !== "no-guess") continue
-    out.push({ gid: e.id, idx: idx, title: e.title, amount: e.amount, st: st,
+    rows.push({ gid: "x:" + e.id, rawId: e.id, idx: idx, title: e.title, amount: e.amount, st: st,
                beforeCat: e.before.category, beforeSub: e.before.subcategory,
-               guessCat: e.guess ? e.guess.category : "", guessSub: e.guess ? e.guess.subcategory : "" })
+               guessCat: e.guess ? e.guess.category : "", guessSub: e.guess ? e.guess.subcategory : "",
+               groupKey: e.groupKey || "", isGroup: false, count: 1, members: [] })
+  }
+  var byKey = {}, order = [], out = []
+  for (var r = 0; r < rows.length; r++) {
+    var row = rows[r]
+    if (row.groupKey.indexOf("UPI|") !== 0) { out.push(row); continue }
+    if (!byKey[row.groupKey]) { byKey[row.groupKey] = []; order.push(row.groupKey) }
+    byKey[row.groupKey].push(row)
+  }
+  for (var k = 0; k < order.length; k++) {
+    var members = byKey[order[k]]
+    if (members.length === 1) { out.push(members[0]); continue }
+    var sameSt = true
+    for (var si = 1; si < members.length; si++) if (members[si].st !== members[0].st) sameSt = false
+    var guessCat = "", guessSub = "", sameGuess = true
+    for (var gi = 0; gi < members.length; gi++) {
+      if (members[gi].guessCat === "") continue
+      if (guessCat === "") { guessCat = members[gi].guessCat; guessSub = members[gi].guessSub }
+      else if (members[gi].guessCat !== guessCat || members[gi].guessSub !== guessSub) sameGuess = false
+    }
+    if (!sameGuess) { guessCat = ""; guessSub = "" }
+    out.push({
+      gid: "g:" + order[k], rawId: members[0].rawId, idx: members[0].idx,
+      title: members[0].title, amount: members[0].amount,
+      st: sameSt ? members[0].st : "mixed",
+      beforeCat: members[0].beforeCat, beforeSub: members[0].beforeSub,
+      guessCat: guessCat, guessSub: guessSub,
+      groupKey: order[k], isGroup: true, count: members.length, members: members
+    })
   }
   return out
 }
@@ -2046,9 +2156,20 @@ function cashewGuessLogMark(log, ids, state) {
 
 // {drafts, state}: the guess of row `id` remembered for its merchant.
 function cashewAcceptOne(drafts, state, id) {
+  return cashewAcceptSome(drafts, state, [id])
+}
+
+// {drafts, state}: every guessed row in `ids` remembered for its merchant,
+// mark cleared - the group-accept path ("Apply to all N") and the
+// single-row path both go through this; a row in `ids` that is not (or no
+// longer) guessed is left untouched, so passing a whole group's ids is
+// always safe even when some members were already accepted/reverted/edited.
+function cashewAcceptSome(drafts, state, ids) {
+  var set = {}
+  ids.forEach(function (id) { set[id] = true })
   var st = state
   var out = drafts.map(function (d) {
-    if (d.id !== id || !d.guessed) return d
+    if (!set[d.id] || !d.guessed) return d
     st = cashewRememberCategory(st, d.groupKey, d.category, d.subcategory)
     return Object.assign({}, d, { guessed: false })
   })

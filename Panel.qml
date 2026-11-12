@@ -410,6 +410,7 @@ Panel {
     root.cashewGuessLog = []
     root.cashewGuessRaw = []
     root.cashewGuessMeta = ({ batches: 0, seconds: 0, model: "" })
+    root.cashewGuessGroupMap = ({})
     root.cashewLoading = true
     root.cashewError = ""
     root.cashewDrafts = []
@@ -479,6 +480,11 @@ Panel {
   property var cashewGuessLog: []
   property var cashewGuessRaw: []      // the NDJSON lines received, the last 200
   property var cashewGuessMeta: ({ batches: 0, seconds: 0, model: "" })
+  // Representative transaction id -> every transaction id it stands in for
+  // (same-UPI-counterparty grouping, see Model.cashewGuessGroups). Built
+  // fresh at the start of each run; lets a single result from the model be
+  // copied onto every transaction asked about together.
+  property var cashewGuessGroupMap: ({})
   readonly property var cashewGuessCounts: Model.cashewGuessLogCounts(root.cashewGuessLog)
   readonly property var cashewGuessPrefs: root.cashewState.guess || ({})
   // Ollama here loads one model at a time (OLLAMA_MAX_LOADED_MODELS=1): a
@@ -501,14 +507,22 @@ Panel {
     if (root.cashewGuessing || cashewGuessProc.running) return
     var rows = Model.cashewGuessRows(root.cashewDrafts, root.cashewShown)
     if (rows.length === 0) return
+    // Same-UPI-counterparty rows (Model.cashewGuessGroups) are asked about
+    // once: one representative per group goes to the model, and its answer
+    // is copied back onto every transaction in the group (cashewGuessLine
+    // below, via cashewGuessGroupMap). A counterparty with only one
+    // untracked row right now is its own group of 1 - unchanged behaviour.
+    var groups = Model.cashewGuessGroups(rows)
+    var requestRows = Model.cashewGuessRequestRows(groups)
+    root.cashewGuessGroupMap = Model.cashewGuessGroupMap(groups)
     root.cashewGuessError = ""
     root.cashewGuessDone = 0
-    root.cashewGuessTotal = rows.length
+    root.cashewGuessTotal = requestRows.length
     root.cashewGuessStopping = false
     root.cashewGuessLog = Model.cashewGuessLogNew(rows, root.cashewDrafts)
     root.cashewGuessRaw = []
-    root.cashewGuessMeta = ({ batches: Math.ceil(rows.length / 8), seconds: 0, model: "" })
-    root.cashewGuessInput = JSON.stringify({ rows: rows, taught: Model.cashewTaught(root.cashewState) }) + "\n"
+    root.cashewGuessMeta = ({ batches: Math.ceil(requestRows.length / 8), seconds: 0, model: "" })
+    root.cashewGuessInput = JSON.stringify({ rows: requestRows, taught: Model.cashewTaught(root.cashewState) }) + "\n"
     cashewGuessProc.command = ["python3", root.txdbBin, "cashew-guess", "-", "--workers", String(root.cashewGuessWorkers), "--batch", "8"]
     root.cashewGuessing = true
     cashewGuessProc.running = true
@@ -529,8 +543,15 @@ Panel {
       root.cashewGuessMeta = Object.assign({}, root.cashewGuessMeta, { seconds: Number(m.seconds) || 0, model: String(m.model || "") })
     }
     if (m.results) {
-      root.cashewGuessLog = Model.cashewGuessLogApply(root.cashewGuessLog, root.cashewDrafts, m.results)
-      root.cashewEdit(Model.cashewApplyGuesses(root.cashewDrafts, m.results))
+      // m.results is keyed by the representative transaction of each group
+      // (see cashewGuessStart); expand it back to one entry per actual
+      // transaction before touching the log or the drafts, so grouping is
+      // invisible to cashewGuessLogApply/cashewApplyGuesses below - each
+      // member still gets its own guess applied and validated exactly like
+      // an ungrouped row always has.
+      var expanded = Model.cashewGuessExpandResults(m.results, root.cashewGuessGroupMap)
+      root.cashewGuessLog = Model.cashewGuessLogApply(root.cashewGuessLog, root.cashewDrafts, expanded)
+      root.cashewEdit(Model.cashewApplyGuesses(root.cashewDrafts, expanded))
       root.cashewGuessDone = m.done
       root.cashewGuessTotal = m.total
     }
@@ -542,12 +563,18 @@ Panel {
     root.cashewEdit(r.drafts)
     root.cashewSetState(r.state)
   }
-  // One row of the results list: remember it for its merchant, like "Accept guesses".
-  function cashewAcceptOneGuess(id) {
-    var r = Model.cashewAcceptOne(root.cashewDrafts, root.cashewState, id)
-    root.cashewGuessLog = Model.cashewGuessLogMark(root.cashewGuessLog, [id], "accepted")
+  // One or more rows of the results list: remember each for its merchant,
+  // like "Accept guesses". A row not currently guessed (already accepted,
+  // reverted, or hand-edited) is silently skipped - safe to pass a whole
+  // group's ids at once for "Apply to all N".
+  function cashewAcceptGuessRows(ids) {
+    var r = Model.cashewAcceptSome(root.cashewDrafts, root.cashewState, ids)
+    root.cashewGuessLog = Model.cashewGuessLogMark(root.cashewGuessLog, ids, "accepted")
     root.cashewEdit(r.drafts)
     root.cashewSetState(r.state)
+  }
+  function cashewAcceptOneGuess(id) {
+    root.cashewAcceptGuessRows([id])
   }
   // Puts the rows in `ids` (null = every guessed row of the log) back as they were.
   function cashewRevertGuessRows(ids) {
@@ -7895,6 +7922,7 @@ Panel {
           delegate: Rectangle {
             id: cgr
             required property string gid
+            required property string rawId
             required property int idx
             required property string title
             required property string amount
@@ -7903,26 +7931,37 @@ Panel {
             required property string beforeSub
             required property string guessCat
             required property string guessSub
+            required property bool isGroup
+            required property int count
+            required property var members
+            // Same-UPI-counterparty rows (isGroup) start collapsed - the
+            // group card itself already says enough ("4 transactions · guess
+            // · Apply to all 4"); this just lets a user drop into the list
+            // of actual transactions to review or adjust one at a time.
+            property bool expanded: false
             readonly property bool hasGuess: cgr.guessCat !== ""
+            readonly property bool anyGuessed: cgr.isGroup
+              ? cgr.members.some(function (mm) { return mm.st === "guessed" })
+              : cgr.st === "guessed"
             readonly property var catInfo: cashewWin.catMap[cgr.hasGuess ? cgr.guessCat : cgr.beforeCat] || ({ icon: "❓", color: "#5A2A2E" })
             readonly property var beforeInfo: cashewWin.catMap[cgr.beforeCat] || ({ icon: "❓", color: "#5A2A2E" })
             readonly property bool isCredit: cgr.amount.charAt(0) !== "-"
             width: cgList.width
-            height: Style.space(62)
+            height: Style.space(62) + (cgr.isGroup && cgr.expanded ? cgMembersCol.implicitHeight + Style.space(8) : 0)
             radius: Style.space(10)
             color: Util.alpha(root.foreground, cgHover.hovered ? 0.06 : 0)
             HoverHandler { id: cgHover }
 
             CashewIcon {
               id: cgIcon
-              anchors { left: parent.left; leftMargin: Style.space(8); verticalCenter: parent.verticalCenter }
+              anchors { left: parent.left; leftMargin: Style.space(8); top: parent.top; topMargin: Style.space(13) }
               width: Style.space(36)
               icon: cgr.catInfo.icon
               fill: cgr.catInfo.color
             }
             Item {
               id: cgActions
-              anchors { right: parent.right; rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
+              anchors { right: parent.right; rightMargin: Style.space(8); top: parent.top; topMargin: Style.space(4) }
               width: Style.space(215)
               height: Style.space(54)
               Rectangle {
@@ -7945,19 +7984,32 @@ Panel {
                 }
               }
               CashewBtn {
+                id: cgExpand
+                visible: cgr.isGroup
+                anchors { left: cgTag.right; leftMargin: Style.space(6); top: parent.top }
+                label: cgr.expanded ? "Hide" : "Members"
+                onClicked: cgr.expanded = !cgr.expanded
+              }
+              CashewBtn {
                 id: cgRevert
                 anchors { right: parent.right; bottom: parent.bottom }
-                label: "Revert"
-                visible: cgr.st === "guessed"
-                onClicked: { var rid = cgr.gid; root.cashewRevertGuessRows([rid]) }
+                label: cgr.isGroup ? "Revert all" : "Revert"
+                visible: cgr.anyGuessed
+                onClicked: {
+                  var ids = cgr.isGroup ? cgr.members.map(function (mm) { return mm.rawId }) : [cgr.rawId]
+                  root.cashewRevertGuessRows(ids)
+                }
               }
               CashewBtn {
                 id: cgAccept
                 anchors { right: cgRevert.left; rightMargin: Style.space(6); bottom: parent.bottom }
-                label: "Accept"
+                label: cgr.isGroup ? "Apply to all " + cgr.count : "Accept"
                 primary: true
-                visible: cgr.st === "guessed"
-                onClicked: { var rid = cgr.gid; root.cashewAcceptOneGuess(rid) }
+                visible: cgr.anyGuessed
+                onClicked: {
+                  var ids = cgr.isGroup ? cgr.members.map(function (mm) { return mm.rawId }) : [cgr.rawId]
+                  root.cashewAcceptGuessRows(ids)
+                }
               }
             }
             Text {
@@ -7978,7 +8030,7 @@ Panel {
               anchors { left: cgIcon.right; leftMargin: Style.space(12); right: cgAmount.left; rightMargin: Style.space(10); top: parent.top; topMargin: Style.space(8) }
               elide: Text.ElideRight
               textFormat: Text.PlainText
-              text: cgr.title
+              text: cgr.title + (cgr.isGroup ? "  ·  " + cgr.count + " transactions" : "")
               color: root.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.body
@@ -7992,7 +8044,8 @@ Panel {
               }
             }
             Row {
-              anchors { left: cgTitle.left; bottom: parent.bottom; bottomMargin: Style.space(7) }
+              id: cgChipsRow
+              anchors { left: cgTitle.left; top: parent.top; topMargin: Style.space(34) }
               spacing: Style.space(6)
               CashewChip {
                 maxWidth: Style.space(220)
@@ -8018,10 +8071,67 @@ Panel {
                 visible: !cgr.hasGuess
                 anchors.verticalCenter: parent.verticalCenter
                 textFormat: Text.PlainText
-                text: cgr.st === "pending" ? "waiting for the model" : cgr.st === "skipped-touched" ? "you edited this row" : "no guess"
+                text: cgr.st === "pending" ? "waiting for the model" : cgr.st === "skipped-touched" ? "you edited this row"
+                  : cgr.st === "mixed" ? "mixed - open Members" : "no guess"
                 color: cashewWin.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
+              }
+            }
+
+            // One line per actual transaction in the group - the per-row
+            // accept/revert/view still work here, so dropping into a group
+            // to handle one member differently never loses that ability.
+            Column {
+              id: cgMembersCol
+              visible: cgr.isGroup && cgr.expanded
+              anchors { left: cgIcon.right; leftMargin: Style.space(12); right: parent.right; rightMargin: Style.space(8); top: parent.top; topMargin: Style.space(62) }
+              spacing: Style.space(4)
+              Repeater {
+                model: cgr.isGroup ? cgr.members : []
+                delegate: Row {
+                  id: cgMember
+                  required property var modelData
+                  width: cgMembersCol.width
+                  height: Style.space(24)
+                  spacing: Style.space(8)
+                  Text {
+                    width: Style.space(80)
+                    anchors.verticalCenter: parent.verticalCenter
+                    horizontalAlignment: Text.AlignRight
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: Model.cashewMoney(cgMember.modelData.amount)
+                    color: cgMember.modelData.amount.charAt(0) !== "-" ? root.creditColor : root.debitColor
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                  Text {
+                    width: Style.space(90)
+                    anchors.verticalCenter: parent.verticalCenter
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: cgMember.modelData.st === "no-guess" ? "no guess" : cgMember.modelData.st === "skipped-touched" ? "edited" : cgMember.modelData.st
+                    color: cgMember.modelData.st === "guessed" ? Color.accent : cgMember.modelData.st === "accepted" ? root.creditColor : cashewWin.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                  TextAction {
+                    label: "View"
+                    onTriggered: cashewWin.revealRow(cgMember.modelData.idx)
+                  }
+                  CashewBtn {
+                    label: "Accept"
+                    primary: true
+                    visible: cgMember.modelData.st === "guessed"
+                    onClicked: { var rid = cgMember.modelData.rawId; root.cashewAcceptGuessRows([rid]) }
+                  }
+                  CashewBtn {
+                    label: "Revert"
+                    visible: cgMember.modelData.st === "guessed"
+                    onClicked: { var rid = cgMember.modelData.rawId; root.cashewRevertGuessRows([rid]) }
+                  }
+                }
               }
             }
           }
