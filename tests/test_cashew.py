@@ -256,7 +256,8 @@ class DraftTests(Base):
         self.assertEqual(lone_res["warnings"], [])
         ticked = cashew.build_links([dict(lone[0], include=True)])      # ticking it again brings the warning back
         self.assertTrue(any("without partner" in w for w in ticked["warnings"]))
-        self.assertEqual((lone_res["transfers"], lone_res["links"][0]["ids"]), ([], ["t-1"]))
+        self.assertEqual((lone_res["transfers"], lone_res["links"]), ([], []))                 # unticked: nothing exports
+        self.assertEqual((ticked["transfers"], ticked["links"][0]["ids"]), ([], ["t-1"]))     # ticked: a plain row
 
     def test_transfer_titles_use_the_names_the_user_assigned(self):
         self.add(self.sbi, row(1, "2026-10-02", -500.0, SBI_OUT))
