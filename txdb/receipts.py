@@ -780,6 +780,16 @@ def _note_items(text: str) -> list[dict]:
         line = line.strip()
         if not line:
             continue
+        if "|" in line:  # "name | qty | amount", as typed in the widget
+            parts = [x.strip() for x in line.split("|")] + ["", ""]
+            def num(x):
+                try:
+                    return float(x.replace(",", "")) if x else None
+                except ValueError:
+                    return None
+            if parts[0]:
+                items.append({"description": parts[0], "qty": num(parts[1]), "amount": num(parts[2])})
+                continue
         m = re.match(r"^(.*?)[\s:=-]*(?:Rs\.?|INR|\u20b9)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)$", line)
         if m and m.group(1).strip():
             items.append({"description": m.group(1).strip(" x*"), "amount": float(m.group(2).replace(",", ""))})
@@ -815,7 +825,11 @@ def note_bill(conn: sqlite3.Connection, txn_id: str, text: str) -> str:
             (rid, sha, "", name[0] if name else t["merchant"], t["date"], abs(t["amount_paise"] or 0),
              t["currency"] or "INR", "note", 100, 0, text or "", "note", ts, ts))
         for n, it in enumerate(items, start=1):
-            conn.execute("INSERT INTO receipt_items (receipt_id, line_no, description, amount_paise) VALUES (?,?,?,?)",
-                         (rid, n, it["description"], to_paise(it["amount"])))
+            qty = it.get("qty")
+            amount = to_paise(it["amount"])
+            conn.execute("INSERT INTO receipt_items (receipt_id, line_no, description, qty_e4, rate_paise, amount_paise) "
+                         "VALUES (?,?,?,?,?,?)",
+                         (rid, n, it["description"], _e4(qty),
+                          round(amount / qty) if qty and amount is not None else None, amount))
     set_link(conn, rid, transaction_id=txn_id, state="linked", matched_by="manual")
     return rid

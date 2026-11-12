@@ -10630,7 +10630,7 @@ Panel {
       spacing: Style.space(6)
       property bool billMode: false
       property bool picking: false
-      property var billItems: [{ d: "", p: "" }]
+      property var billItems: [{ d: "", q: "", p: "" }]
       readonly property real billSum: {
         var t = 0
         for (var i = 0; i < billItems.length; i++) t += parseFloat(String(billItems[i].p).replace(/,/g, "")) || 0
@@ -10640,7 +10640,7 @@ Panel {
         for (var i = 0; i < billItems.length; i++) if (String(billItems[i].d).trim() !== "") return true
         return false
       }
-      onVisibleChanged: if (visible) { billMode = false; picking = false; billItems = [{ d: "", p: "" }] }
+      onVisibleChanged: if (visible) { billMode = false; picking = false; billItems = [{ d: "", q: "", p: "" }] }
       function setItem(i, key, val) {
         var next = billItems.slice()
         next[i] = Object.assign({}, next[i]); next[i][key] = val
@@ -10652,7 +10652,9 @@ Panel {
           var d = String(billItems[i].d).trim().replace(/\s+/g, " ")
           var pr = String(billItems[i].p).trim().replace(/,/g, "")
           if (d === "") continue
-          lines.push(pr !== "" && !isNaN(parseFloat(pr)) ? d + " " + parseFloat(pr) : d)
+          var q = String(billItems[i].q).trim().replace(/,/g, "")
+          lines.push(d.replace(/\|/g, " ") + " | " + (q !== "" && !isNaN(parseFloat(q)) ? parseFloat(q) : "")
+            + " | " + (pr !== "" && !isNaN(parseFloat(pr)) ? parseFloat(pr) : ""))
         }
         store.setTransactionName(card.groupKey, editField.text)
         store.noteBill(card.txn.id, lines.join("\n"))
@@ -10704,12 +10706,22 @@ Panel {
             width: parent.width
             spacing: Style.space(4)
             TextField {
-              width: parent.width - Style.space(96) - Style.space(28) - parent.spacing * 2
+              width: parent.width - Style.space(96) - Style.space(56) - Style.space(28) - parent.spacing * 3
               placeholderText: "Item"
               text: editPanel.billItems[itemRow.index] ? editPanel.billItems[itemRow.index].d : ""
               font.family: Style.font.family
               font.pixelSize: Style.font.body
               onTextEdited: editPanel.setItem(itemRow.index, "d", text)
+            }
+            TextField {
+              width: Style.space(56)
+              placeholderText: "Qty"
+              inputMethodHints: Qt.ImhFormattedNumbersOnly
+              horizontalAlignment: Text.AlignRight
+              text: editPanel.billItems[itemRow.index] ? editPanel.billItems[itemRow.index].q : ""
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              onTextEdited: editPanel.setItem(itemRow.index, "q", text)
             }
             TextField {
               width: Style.space(96)
@@ -10758,7 +10770,7 @@ Panel {
         TxnBtn {
           label: "+ Item"
           visible: editPanel.billMode && !card.linkedReceipt
-          onClicked: editPanel.billItems = editPanel.billItems.concat([{ d: "", p: "" }])
+          onClicked: editPanel.billItems = editPanel.billItems.concat([{ d: "", q: "", p: "" }])
         }
         TxnBtn { label: "Cancel"; onClicked: { card.editing = false; Qt.callLater(function () { card.forceActiveFocus() }) } }
         TxnBtn {

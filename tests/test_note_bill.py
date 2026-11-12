@@ -24,3 +24,10 @@ class NoteBillTests(unittest.TestCase):
         self.assertEqual(tuple(r), (15000, "linked", "icici-a"))
         items = self.conn.execute("SELECT description, amount_paise FROM receipt_items ORDER BY line_no").fetchall()
         self.assertEqual([tuple(i) for i in items], [("Coffee", 10000), ("Cake", 5000), ("thanks", None)])
+
+
+class QtyTests(NoteBillTests):
+    def test_qty_column(self):
+        rid = receipts.note_bill(self.conn, "icici-a", "Tea | 2 | 100\nCake | | 50")
+        rows = self.conn.execute("SELECT description, qty_e4, rate_paise, amount_paise FROM receipt_items ORDER BY line_no").fetchall()
+        self.assertEqual([tuple(r) for r in rows], [("Tea", 20000, 5000, 10000), ("Cake", None, None, 5000)])
