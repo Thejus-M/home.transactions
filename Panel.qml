@@ -7218,26 +7218,24 @@ Panel {
       cashewWin.resultsOpen = false
       cashewWin.resultsRaw = false
       cashewWin.askActive = false
+      // Closing this window (Close button, Escape, backdrop click) no
+      // longer stops a running guess - it keeps going in the background
+      // and its results are there waiting the next time the window opens.
+      // Only the explicit "Stop" button (cashewGuessStop, next to the "AI
+      // categories" button) actually cancels it: a close is "get this out
+      // of my way for now", not "cancel what I started", and conflating
+      // the two is also what made an incidental compositor visibility blip
+      // (see below) kill a multi-minute run by accident in the first
+      // place - fixed 2026-11-12.
       if (cashewWin.visible) {
         // Skip the reload while a guess is actively running: becoming
-        // visible again after the same kind of transient remap blip (see
-        // below) must not wipe the in-progress guess log/drafts out from
-        // under it. A real fresh open never has a guess running yet
-        // (a real close always stops one first, below), so this only ever
-        // skips the reload for a blip, never for an actual open.
+        // visible again, whether from a real reopen or the compositor
+        // transiently remapping this Overlay layer surface (confirmed
+        // live: happens on an unrelated window becoming active, even with
+        // keyboardFocus set to OnDemand rather than Exclusive), must not
+        // wipe the in-progress guess log/drafts out from under it.
         if (!root.cashewGuessing) root.cashewLoad()
         cashewCard.forceActiveFocus()
-      } else if (!root.cashewOpen) {
-        // Only stop a running guess for a REAL close (the user's own
-        // cashewOpen intent going false) - not for `visible` alone, which
-        // can also go false for a moment the compositor remaps this
-        // Overlay layer surface (confirmed live, 2026-11-12: happens on an
-        // unrelated window becoming active, even with keyboardFocus set to
-        // OnDemand rather than Exclusive). cashewOpen never changes on its
-        // own, so this guard can't mistake a real close for a blip, and a
-        // guess left running through a blip just finishes in the
-        // background and shows its results whenever the window reopens.
-        root.cashewGuessStop()
       }
     }
 
