@@ -246,13 +246,16 @@ class DraftTests(Base):
         self.assertEqual([t["ids"] for t in res["transfers"]], [["t-1", "t-2"]])
         self.assertEqual((res["transfers"][0]["accountFrom"], res["transfers"][0]["accountTo"]), ("SBI", "HDFC"))
         self.assertEqual(res["warnings"], [])
-        # a tracked partner leaves a lone leg that is still a transfer but warns
+        # a tracked partner leaves a lone leg that is still a transfer; it starts unticked, so no warning
         self.conn.execute("INSERT INTO tracked VALUES ('t-2', 'now')")
         lone = self.drafts()
         self.assertEqual([d["id"] for d in lone], ["t-1"])
         self.assertEqual(lone[0]["kind"], "transfer")
         lone_res = cashew.build_links(lone)
-        self.assertTrue(any("without partner" in w for w in lone_res["warnings"]))
+        self.assertFalse(lone[0]["include"])
+        self.assertEqual(lone_res["warnings"], [])
+        ticked = cashew.build_links([dict(lone[0], include=True)])      # ticking it again brings the warning back
+        self.assertTrue(any("without partner" in w for w in ticked["warnings"]))
         self.assertEqual((lone_res["transfers"], lone_res["links"][0]["ids"]), ([], ["t-1"]))
 
     def test_transfer_titles_use_the_names_the_user_assigned(self):
@@ -291,6 +294,13 @@ class DraftTests(Base):
         cr = {x["id"]: x for x in self.drafts()}["t-2"]
         self.assertNotEqual(cr["subcategory"], "Petrol")
 
+    def test_leg_whose_partner_is_tracked_starts_unticked(self):
+        self.add(self.sbi, row(1, "2026-10-02", -500.0, SBI_OUT))
+        self.add(self.hdfc, row(2, "2026-10-02", 500.0, HDFC_IN))
+        self.conn.execute("INSERT INTO tracked VALUES ('t-1', 'now')")     # the out side is already in Cashew
+        d = {x["id"]: x for x in self.drafts()}["t-2"]
+        self.assertEqual((d["kind"], d["partnerTracked"], d["include"]), ("transfer", True, False))
+
     def test_one_sided_own_name_leg(self):
         # the pair teaches the own name; a second row with that name and no partner is one-sided
         self.add(self.sbi, row(1, "2026-10-02", -500.0, SBI_OUT))
@@ -314,7 +324,7 @@ class CliTests(Base):
         self.assertIn("HDFC ₹", out["accountNames"])
         self.assertEqual(set(out["drafts"][0]), {
             "id", "include", "date", "title", "amount", "category", "subcategory", "account", "notes", "kind",
-            "bank", "last4", "accountId", "groupKey", "merchant", "pairId", "warn", "pending"})
+            "bank", "last4", "accountId", "groupKey", "merchant", "pairId", "warn", "pending", "partnerTracked"})
         self.assertEqual(set(out["categories"][0]), {"name", "type", "subcategories", "icon", "color", "subIcons"})
         for c in out["categories"]:
             self.assertRegex(c["color"], r"^#[0-9A-Fa-f]{6}$")

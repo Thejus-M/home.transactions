@@ -400,7 +400,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False) -> list[dict
             # a transfer inside one bank (bank account <-> its card) names the account, else the bank
             label = (ACCOUNT_MAP.get(peer["account_id"]) if peer["bank"] == own["bank"] else None) \
                 or BANK_NAMES.get(peer["bank"], peer["bank"])
-            legs[tid] = {"pairId": p["id"], "peer": label}
+            legs[tid] = {"pairId": p["id"], "peer": label, "partnerTracked": bool(peer["tracked"])}
     for h in hits:
         if h["id"] not in split and h["id"] not in legs:
             other = h["other"]
@@ -437,7 +437,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False) -> list[dict
         aid = r["account_id"]
         account = acct_over[aid] if aid in acct_over else ACCOUNT_MAP.get(aid, "")
         out.append({
-            "id": r["id"], "include": True, "pending": r["status"] != "settled", "date": r["date"], "title": title,
+            "id": r["id"], "include": not (leg and leg.get("partnerTracked") and not r["tracked"]), "pending": r["status"] != "settled", "partnerTracked": bool(leg and leg.get("partnerTracked")), "date": r["date"], "title": title,
             "amount": format_amount(r["amount_paise"]), "category": cat, "subcategory": sub,
             "account": account or "",
             "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title)),
