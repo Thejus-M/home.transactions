@@ -325,7 +325,7 @@ class CliTests(Base):
         self.assertIn("HDFC ₹", out["accountNames"])
         self.assertEqual(set(out["drafts"][0]), {
             "id", "include", "date", "title", "amount", "category", "subcategory", "account", "notes", "kind",
-            "bank", "last4", "accountId", "groupKey", "merchant", "pairId", "warn", "pending", "partnerTracked"})
+            "bank", "last4", "accountId", "groupKey", "merchant", "pairId", "warn", "pending", "fromBill", "partnerTracked"})
         self.assertEqual(set(out["categories"][0]), {"name", "type", "subcategories", "icon", "color", "subIcons"})
         for c in out["categories"]:
             self.assertRegex(c["color"], r"^#[0-9A-Fa-f]{6}$")
@@ -599,3 +599,23 @@ class TxnCategoryBillTests(Base):
         d = {x["id"]: x for x in self.drafts(cashew.load_state(self.state_path))}["t-1"]
         self.assertEqual((d["category"], d["subcategory"]), ("Shopping", "Others"))
         self.assertIn("t-1", cashew.load_state(self.state_path).get("txn", {}))
+
+
+    def test_check_reports_a_saved_answer_that_is_not_in_force(self):
+        self.state_path.write_text('{"version": 1, "categories": {}, "accounts": {}}')
+        self.add(self.hdfc, row(1, "2026-10-02", -250.0, "SWIGGY ORDER 123"))
+        with db.write(self.conn):
+            self.conn.execute("INSERT INTO receipts (id, image_sha256, stored_path, parsed_at, imported_at) VALUES "
+                              "('r1','r1','x','2026-10-02T00:00:00','2026-10-02T00:00:00')")
+            self.conn.execute("INSERT INTO receipt_links (receipt_id, transaction_id, state, matched_by, linked_at) "
+                              "VALUES ('r1','t-1','linked','manual','2026-10-02T00:00:00')")
+            self.conn.execute("INSERT INTO receipt_categories (receipt_id, category, subcategory, source, updated_at) "
+                              "VALUES ('r1','Groceries','Provisions','user','2026-10-02T00:00:00')")
+        gk = self.conn.execute("SELECT group_key FROM transactions").fetchone()[0]
+        ro = cashew.open_readonly(self.path)
+        bad = cashew.category_mismatches(ro, {"version": 1, "categories": {gk: {"category": "Shopping", "subcategory": "Others"}},
+                                              "accounts": {}})
+        self.assertEqual([(m["id"], m["wanted"], m["shows"]) for m in bad],
+                         [("t-1", ("Shopping", "Others"), ("Groceries", "Provisions"))])
+        self.assertEqual(cashew.category_mismatches(ro, {"version": 1, "categories": {gk: {"category": "Shopping", "subcategory": "Others"}},
+                                                         "accounts": {}, "txn": {"t-1": {"category": "Shopping", "subcategory": "Others"}}}), [])

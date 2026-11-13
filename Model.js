@@ -2381,6 +2381,17 @@ function cashewRememberCategory(state, groupKey, category, subcategory) {
   return s
 }
 
+// New state with the category pinned on one transaction (it beats a payee-wide answer and a bill's).
+function cashewPinCategory(state, txnId, category, subcategory) {
+  var s = JSON.parse(JSON.stringify(state || { version: 1 }))
+  s.version = 1
+  s.categories = s.categories || {}
+  s.accounts = s.accounts || {}
+  s.txn = s.txn || {}
+  if (txnId) s.txn[txnId] = { category: category, subcategory: subcategory || "" }
+  return s
+}
+
 // New state with the bank account's Cashew name remembered.
 function cashewRememberAccount(state, accountId, name) {
   var s = JSON.parse(JSON.stringify(state || { version: 1 }))

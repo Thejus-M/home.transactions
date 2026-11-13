@@ -308,6 +308,11 @@ def main(argv: list[str]) -> int:
         unlinked = conn.execute("SELECT COUNT(*) FROM receipts r WHERE NOT EXISTS "
                                 "(SELECT 1 FROM receipt_links l WHERE l.receipt_id = r.id)").fetchone()[0]
         print(f"receipt links: {links[0]} linked, {links[1]} orphaned, {unlinked} bills not filed")
+        from . import cashew
+        off = cashew.category_mismatches(conn)
+        print("categories:", "every saved answer is in force" if not off else f"{len(off)} rows do not use the answer you saved")
+        for m in off[:20]:
+            print(f"  {m['date']} {m['merchant'][:36]}: saved {m['wanted'][0]} > {m['wanted'][1]}, shows {m['shows'][0]} > {m['shows'][1]}")
         counts = conn.execute("SELECT COUNT(*) FILTER (WHERE balance_paise IS NOT NULL), "
                               "COUNT(*) FILTER (WHERE balance_derived = 1) FROM transactions").fetchone()
         print(f"  {counts[0]} rows carry a balance, {counts[1]} of them worked out rather than read")

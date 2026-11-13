@@ -7584,6 +7584,8 @@ Panel {
       var remember = cashewWin.pickRemember && d.kind !== "transfer" && category !== "Uncategorized"
       var next = Model.cashewApplyCategory(root.cashewDrafts, idx, category, sub, remember)
       var st = remember ? Model.cashewRememberCategory(root.cashewState, key, category, sub) : null
+      // A category set on this row's own bill beats the payee-wide answer, so remember it on the row too.
+      if (d.fromBill && category !== "Uncategorized") st = Model.cashewPinCategory(st || root.cashewState, d.id, category, sub)
       var again = cashewWin.askActive
       cashewWin.closePicker()
       root.cashewEdit(next)

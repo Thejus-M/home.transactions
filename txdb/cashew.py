@@ -471,6 +471,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False) -> list[dict
         negative = r["amount_paise"] < 0
         title = display_title(r["bank"], r["merchant"], r["group_key"], r["counterparty"], overrides)
         warn = ""
+        from_bill = False                       # the category comes from a bill the user categorised
         leg = legs.get(r["id"])
         if leg:
             kind, (cat, sub) = "transfer", (BALANCE, "")
@@ -482,6 +483,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False) -> list[dict
         else:
             kind = "spend" if negative else "income"
             bc = bill_cats.get(r["id"])
+            from_bill = bool(bc and bc["source"] == "user")
             cat, sub, warn = choose_category(
                 title, r["merchant"], r["group_key"], negative, state, rules, types,
                 bill_user=(bc["category"], bc["subcategory"]) if bc and bc["source"] == "user" else None,
@@ -493,7 +495,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False) -> list[dict
         aid = r["account_id"]
         account = acct_over[aid] if aid in acct_over else ACCOUNT_MAP.get(aid, "")
         out.append({
-            "id": r["id"], "include": not (leg and leg.get("partnerTracked") and not r["tracked"]), "pending": r["status"] != "settled", "partnerTracked": bool(leg and leg.get("partnerTracked")), "date": r["date"], "title": title,
+            "id": r["id"], "include": not (leg and leg.get("partnerTracked") and not r["tracked"]), "pending": r["status"] != "settled", "fromBill": from_bill, "partnerTracked": bool(leg and leg.get("partnerTracked")), "date": r["date"], "title": title,
             "amount": format_amount(r["amount_paise"]), "category": cat, "subcategory": sub,
             "account": account or "",
             "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title)),
@@ -617,3 +619,23 @@ def build_links(draft_list: list[dict], max_chars: int = DEFAULT_MAX_CHARS, base
             warnings.append(f"one link is {len(url)} characters, over the {max_chars} limit: {b[0].get('title')}")
         links.append({"url": url, "count": len(b), "chars": len(url), "ids": [d.get("id") for d in b], "json": text})
     return {"links": links, "transfers": transfer_list, "warnings": warnings}
+
+
+def category_mismatches(conn, state: dict | None = None) -> list[dict]:
+    """Rows where an answer the user saved (payee-wide or on the row) is not the category Cashew
+    would use. Empty means every saved answer is in force. Used by `txdb check`."""
+    state = state or load_state()
+    cats, pins = state.get("categories") or {}, state.get("txn") or {}
+    group = {r["id"]: r["group_key"] for r in conn.execute("SELECT id, group_key FROM transactions")}
+    out = []
+    for d in drafts(conn, state, all_rows=True):
+        if d["kind"] == "transfer":
+            continue
+        want = pins.get(d["id"]) or cats.get(group.get(d["id"]))
+        if not isinstance(want, dict) or not want.get("category"):
+            continue
+        wanted = (want["category"], want.get("subcategory") or "")
+        if (d["category"], d["subcategory"]) != wanted:
+            out.append({"id": d["id"], "date": d["date"], "merchant": d["merchant"], "wanted": wanted,
+                        "shows": (d["category"], d["subcategory"]), "tracked": None})
+    return out
