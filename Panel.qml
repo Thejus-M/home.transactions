@@ -2579,8 +2579,8 @@ Panel {
             anchors.right: parent.right
             anchors.rightMargin: Style.spacing.rowPaddingX
             anchors.top: limitTotalLabel.bottom
-            anchors.topMargin: Style.space(5)
-            height: Style.space(5)
+            anchors.topMargin: Style.space(4)
+            height: Style.space(4)
             clip: true
 
             Rectangle {
@@ -2613,7 +2613,7 @@ Panel {
 
           // Every card, in its own tone: "HDFC ••7462 8%". A card with no
           // limit read yet says so, and is not drawn in the bar.
-          Grid {
+          Flow {
             id: limitTotalKey
             visible: limitHeader.total.limit > 0
             anchors.left: parent.left
@@ -2622,16 +2622,16 @@ Panel {
             anchors.rightMargin: Style.spacing.rowPaddingX
             anchors.top: limitTotalTrack.bottom
             anchors.topMargin: Style.space(6)
-            columns: 2                          // two aligned columns, never a ragged wrap
-            columnSpacing: Style.space(10)
-            rowSpacing: Style.space(3)
+            spacing: Style.space(8)             // one row for four cards: same-bank cards share a name
 
             Repeater {
               model: limitHeader.total.cards || []
               delegate: Row {
                 required property var modelData
-                width: (limitTotalKey.width - limitTotalKey.columnSpacing) / 2
-                // The last four digits only where two cards share a bank ("HDFC 0220").
+                required property int index
+                // The last four digits only where two cards share a bank, and the bank's name
+                // only on the first of them: "HDFC 0220 8%  7462 8%".
+                readonly property bool firstOfBank: (limitHeader.total.cards || []).findIndex(function (c) { return c.bank === modelData.bank }) === index
                 readonly property bool sameBank: (limitHeader.total.cards || []).filter(function (c) { return c.bank === modelData.bank }).length > 1
                 spacing: Style.space(4)
                 Rectangle {
@@ -2643,7 +2643,8 @@ Panel {
                 }
                 Text {
                   textFormat: Text.PlainText
-                  text: modelData.bank + (parent.sameBank ? " " + modelData.last4 : "") + " " + Math.round(modelData.percent) + "%"
+                  text: [parent.firstOfBank ? modelData.bank : "", parent.sameBank ? modelData.last4 : "",
+                         Math.round(modelData.percent) + "%"].filter(function (s) { return s !== "" }).join(" ")
                   color: Qt.darker(root.foreground, 1.3)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
