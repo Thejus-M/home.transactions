@@ -2472,23 +2472,22 @@ Panel {
             spacing: Style.space(6)
 
             Text {
-              visible: root.billsNextTotal > 0
               textFormat: Text.PlainText
-              text: "next " + Model.currencySymbol("INR") + Model.formatGrouped(Math.round(root.billsNextTotal))
-              color: root.foreground
+              text: root.billsDueTotal > 0
+                ? "to pay " + Model.currencySymbol("INR") + Model.formatGrouped(Math.round(root.billsDueTotal))
+                : "nothing to pay"
+              color: root.billsDueTotal > 0 ? root.debitColor : root.creditColor
               font.family: Style.font.family
               font.bold: true
               font.pixelSize: Style.font.caption
             }
 
             Text {
+              visible: Math.round(root.billsNextTotal) > 0
               textFormat: Text.PlainText
-              text: root.billsDueTotal > 0
-                ? "·  billed " + Model.currencySymbol("INR") + Model.formatGrouped(root.billsDueTotal)
-                : "·  nothing billed"
-              color: root.billsDueTotal > 0 ? root.debitColor : root.creditColor
+              text: "·  building " + Model.currencySymbol("INR") + Model.formatGrouped(Math.round(root.billsNextTotal))
+              color: Qt.darker(root.foreground, 1.4)
               font.family: Style.font.family
-              font.bold: root.billsDueTotal > 0
               font.pixelSize: Style.font.caption
             }
           }
@@ -5228,14 +5227,21 @@ Panel {
     readonly property string statusGlyph: billRow.billState === "settled"
       ? "✓"
       : (billRow.billState === "due" ? "!" : (billRow.billState === "awaiting" ? "…" : "●"))
+    // Everything the collapsed row shows: Model.billRowView.
+    readonly property var view: Model.billRowView(billRow.overview, billRow.paid)
+    readonly property var glyphs: ({ alert: "󰗖", clock: "󰅐", check: "󰄬", plus: "󰐕" })
+    function toneColor(tone) {
+      return tone === "debit" ? root.debitColor : (tone === "pending" ? root.pendingColor
+        : (tone === "credit" ? root.creditColor : Qt.darker(root.foreground, 1.4)))
+    }
     readonly property bool _hot: rowHover.hovered || billRow.activeFocus
     // The status column (disc + label) is the tallest thing in the row, so
     // it sets this; the two text lines need less.
-    readonly property int collapsedHeight: Style.space(44)
+    readonly property int collapsedHeight: Style.space(48)
     // Where the row's text starts — the status column plus its gap. Shared
     // with the detail panel, so the panel's text lines up under the card
     // name instead of an inset worked out from a disc size long since gone.
-    readonly property int contentLeft: Style.spacing.rowPaddingX + root.billStatusWidth + Style.spacing.md
+    readonly property int contentLeft: Style.spacing.rowPaddingX + Style.space(30)
 
     implicitHeight: billRow.collapsedHeight + (billRow.expanded ? detailsPanel.implicitHeight + Style.space(10) : 0)
     radius: Style.cornerRadius
@@ -5275,10 +5281,8 @@ Panel {
       anchors.right: parent.right
       height: billRow.collapsedHeight
 
-      // Covers the collapsed row — clicking anywhere on it expands the full
-      // detail panel below. The disc's own MouseArea (below) sits on top of
-      // this one (declared later = higher z) and claims just that icon for
-      // "mark as paid", same precedent as TransactionCard's editBtn.
+      // Clicking anywhere on the row expands its details; the disc (declared
+      // later, so on top) claims just itself for "mark as paid".
       MouseArea {
         id: rowMouse
         anchors.fill: parent
@@ -5286,227 +5290,166 @@ Panel {
         onClicked: billRow.expanded = !billRow.expanded
       }
 
-      // Status gutter: the disc, and under it the one word for where this
-      // bill stands. Fixed width, so every row's name starts at the same x
-      // whatever its label says, and the labels read as their own column.
-      Item {
-        id: statusGutter
+      // Line 1:  (status)  amount  [STATE]   card ••1234            date
+      // Line 2:            small muted detail
+      // The status, the number to act on and its label are one cluster at the left;
+      // only the card name shrinks.
+      Rectangle {
+        id: avatar
+        width: Style.space(22)
+        height: width
+        radius: width / 2
+        color: Util.alpha(billRow.toneColor(billRow.view.tone), 0.16)
         anchors.left: parent.left
         anchors.leftMargin: Style.spacing.rowPaddingX
-        anchors.verticalCenter: parent.verticalCenter
-        width: root.billStatusWidth
-        height: avatar.height + (statePill.visible ? Style.space(4) + statePill.height : 0)
+        anchors.top: parent.top
+        anchors.topMargin: Style.space(5)
 
-        Rectangle {
-          id: avatar
-          width: Style.space(20)
-          height: width
-          radius: width / 2
-          color: Util.alpha(billRow.statusColor, 0.16)
-          anchors.top: parent.top
-          // Left-aligned, not centred: the disc, the label under it and the
-          // BILLS header all share one left edge this way.
-          anchors.left: parent.left
-
-          Text {
-            anchors.centerIn: parent
-            textFormat: Text.PlainText
-            text: billRow.statusGlyph
-            color: billRow.statusColor
-            font.bold: true
-            // A smaller disc needs a proportionally larger glyph to stay
-            // legible, so this drops one step where the disc dropped two.
-            font.pixelSize: Style.font.caption
-          }
-
-          // The one place "mark as paid" lives: click just the status icon
-          // to flip the manual override (it still drives the bill-due
-          // reminder/badge) without expanding the row.
-          MouseArea {
-            anchors.fill: parent
-            // The disc lost a third of its width; the target keeps the size
-            // it had. The gutter around it is empty, so nothing else can be
-            // hit by mistake.
-            anchors.margins: -Style.space(10)
-            cursorShape: Qt.PointingHandCursor
-            onClicked: store.setBillPaid(billRow.overview.last4, !billRow.paid)
-          }
+        Text {
+          anchors.centerIn: parent
+          textFormat: Text.PlainText
+          text: billRow.glyphs[billRow.view.glyph] || ""
+          color: billRow.toneColor(billRow.view.tone)
+          font.family: "JetBrainsMono Nerd Font"
+          font.pixelSize: Style.font.caption + 1
         }
 
-        // One word, never a sentence: how long is left belongs on the due
-        // line beside the card's name, where there is room for it.
-        Rectangle {
-          id: statePill
-          readonly property string label: billRow.parts.awaiting
-            ? "SENT"
-            : billRow.parts.inCredit
-            ? "IN CREDIT"
-            : (billRow.parts.payNow <= 0
-                ? (billRow.paid ? "PAID" : "")
-                : (billRow.paid ? "PAID"
-                    : (Model.billUrgency(billRow.overview, false) === "overdue" ? "OVERDUE" : "NOT PAID")))
-          readonly property color tone: billRow.parts.awaiting
-            ? root.pendingColor
-            : billRow.parts.inCredit
-            ? root.creditColor
-            : (billRow.parts.payNow <= 0 || billRow.paid
-                ? Qt.darker(root.foreground, 1.4)
-                : root.debitColor)
-
-          visible: statePill.label !== ""
-          anchors.top: avatar.bottom
-          anchors.topMargin: Style.space(4)
-          anchors.left: parent.left
-          implicitWidth: Math.min(parent.width, pillText.implicitWidth + Style.space(8))
-          implicitHeight: pillText.implicitHeight + Style.space(2)
-          width: implicitWidth
-          height: implicitHeight
-          radius: Style.space(4)
-          color: Util.alpha(statePill.tone, 0.18)
-
-          Text {
-            id: pillText
-            anchors.centerIn: parent
-            textFormat: Text.PlainText
-            text: statePill.label
-            color: statePill.tone
-            font.family: Style.font.family
-            font.bold: true
-            font.pixelSize: Style.font.caption
-          }
+        // The one place "mark as paid" lives: click just the status symbol.
+        MouseArea {
+          anchors.fill: parent
+          anchors.margins: -Style.space(8)
+          cursorShape: Qt.PointingHandCursor
+          onClicked: store.setBillPaid(billRow.overview.last4, !billRow.paid)
         }
       }
 
-      // The card and its deadline. Same two-line shape and spacing as the
-      // figures on the right, so the name sits on the amount's baseline and
-      // the due date on the next bill's. Only the name can shrink: it is the
-      // one item whose width comes from a pair of anchors.
-      Column {
-        id: textCol
-        anchors.left: statusGutter.right
-        anchors.leftMargin: Style.spacing.md
-        anchors.right: amountStack.left
-        anchors.rightMargin: Style.spacing.md
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: Style.space(3)
+      Text {
+        id: amountText
+        anchors.left: avatar.right
+        anchors.leftMargin: Style.space(8)
+        anchors.verticalCenter: avatar.verticalCenter
+        textFormat: Text.PlainText
+        text: billRow.view.amount
+        color: billRow.view.amountMuted ? Qt.darker(root.foreground, 1.5)
+          : (billRow.view.tone === "debit" ? billRow.toneColor("debit") : root.foreground)
+        font.family: Style.font.family
+        font.bold: !billRow.view.amountMuted
+        font.pixelSize: billRow.view.amountMuted ? Style.font.caption : Style.font.subtitle
+      }
 
-        Item {
-          width: parent.width
-          height: nameText.implicitHeight
+      Text {
+        id: suffixText
+        visible: billRow.view.suffix !== ""
+        anchors.left: amountText.right
+        anchors.leftMargin: Style.space(4)
+        anchors.baseline: amountText.baseline
+        textFormat: Text.PlainText
+        text: billRow.view.suffix
+        color: Qt.darker(root.foreground, 1.5)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
 
-          BrandMark {
-            id: billBrandMark
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            network: billRow.brand.network
-            markHeight: Style.spaceReal(9)
-          }
-
-          // The name shrinks and elides; the last four digits never do.
-          Text {
-            id: nameText
-            readonly property string full: Model.accountChipText({ bank: billRow.bank, accountType: "credit", last4: billRow.overview.last4 }, store.cardOverviews, store.accountNameOverrides)
-            anchors.left: billBrandMark.visible ? billBrandMark.right : parent.left
-            anchors.leftMargin: billBrandMark.visible ? Style.space(6) : 0
-            width: Math.min(nameText.implicitWidth,
-                            parent.width - (billBrandMark.visible ? billBrandMark.width + Style.space(6) : 0)
-                            - last4Text.implicitWidth - Style.space(4))
-            textFormat: Text.PlainText
-            text: nameText.full.replace(/\s*••\d+$/, "")
-            color: root.foreground
-            font.family: Style.font.family
-            font.bold: true
-            font.pixelSize: Style.font.body
-            elide: Text.ElideRight
-          }
-
-          Text {
-            id: last4Text
-            anchors.left: nameText.right
-            anchors.leftMargin: Style.space(4)
-            anchors.verticalCenter: nameText.verticalCenter
-            textFormat: Text.PlainText
-            text: "••" + billRow.overview.last4
-            color: Qt.darker(root.foreground, 1.4)
-            font.family: Style.font.family
-            font.bold: true
-            font.pixelSize: Style.font.caption
-          }
-        }
-
-        // The last day to pay, while there is something to pay — red once
-        // three days or less are left, or it is past. A cleared card shows
-        // its last payment here instead.
+      Rectangle {
+        id: statePill
+        readonly property color tone: billRow.toneColor(billRow.view.pillTone)
+        anchors.left: suffixText.visible ? suffixText.right : amountText.right
+        anchors.leftMargin: Style.space(8)
+        anchors.verticalCenter: avatar.verticalCenter
+        width: pillText.implicitWidth + Style.space(10)
+        height: pillText.implicitHeight + Style.space(3)
+        radius: Style.space(4)
+        color: Util.alpha(statePill.tone, 0.18)
         Text {
-          id: dueText
-          readonly property string urgency: Model.billUrgency(billRow.overview, billRow.paid || billRow.parts.awaiting)
-          width: parent.width
+          id: pillText
+          anchors.centerIn: parent
           textFormat: Text.PlainText
-          text: billRow.parts.awaiting
-            ? "Paid " + Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.awaitingAmount)
-              + (billRow.parts.awaitingDate ? " · " + Model.formatShortDate(billRow.parts.awaitingDate) : "")
-              + " · bank not updated"
-            : billRow.parts.payNow > 0 && billRow.overview.dueDate
-            ? "Due " + Model.formatShortDate(billRow.overview.dueDate)
-              + " · " + Model.dueCountdown(billRow.overview.dueDate)
-            : (Model.cycleCloseLine(billRow.overview) || Model.billPaidLine(billRow.overview))
-          color: dueText.urgency !== "" ? root.debitColor : Qt.darker(root.foreground, 1.5)
+          text: billRow.view.pill
+          color: statePill.tone
           font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.caption - 1
+        }
+      }
+
+      // One date: the due date while a bill is unpaid (red when close or late),
+      // else when the next bill closes.
+      Text {
+        id: dateText
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: avatar.verticalCenter
+        textFormat: Text.PlainText
+        text: billRow.view.right
+        color: billRow.view.rightUrgent ? root.debitColor : Qt.darker(root.foreground, 1.4)
+        font.family: Style.font.family
+        font.bold: billRow.view.rightUrgent
+        font.pixelSize: Style.font.caption
+      }
+
+      // The card. The name shrinks and elides; the last four digits never do.
+      Item {
+        id: cardBox
+        anchors.left: statePill.right
+        anchors.leftMargin: Style.space(10)
+        anchors.right: dateText.left
+        anchors.rightMargin: Style.space(8)
+        anchors.verticalCenter: avatar.verticalCenter
+        height: nameText.implicitHeight
+
+        BrandMark {
+          id: billBrandMark
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          network: billRow.brand.network
+          markHeight: Style.spaceReal(9)
+        }
+        Text {
+          id: nameText
+          // Short on purpose: the bank, then the last four.
+          // The product name ("Millennia", "Amazon Pay") is in the expanded card.
+          readonly property string full: billRow.bank
+          anchors.left: billBrandMark.visible ? billBrandMark.right : parent.left
+          anchors.leftMargin: billBrandMark.visible ? Style.space(6) : 0
+          width: Math.max(0, Math.min(nameText.implicitWidth,
+                          parent.width - (billBrandMark.visible ? billBrandMark.width + Style.space(6) : 0)
+                          - last4Text.implicitWidth - Style.space(4)))
+          textFormat: Text.PlainText
+          text: nameText.full
+          color: root.foreground
+          font.family: Style.font.family
+          font.bold: true
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
-      }
-
-      // Two figures, stacked so they are never mistaken for one: what the
-      // card wants now, and what this cycle has already spent into next
-      // month's bill. The second line is always drawn — an empty next bill
-      // is said in words rather than left to a dash — so rows stay level.
-      Column {
-        id: amountStack
-        // Fixed width, so both rows' figures share a column and neither row
-        // can borrow width from the other's card name.
-        width: root.billFigureWidth
-        anchors.right: parent.right
-        anchors.rightMargin: Style.spacing.rowPaddingX
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: Style.space(3)
-
-        // Top line: the running spend, which becomes the next bill.
         Text {
-          id: nextBillText
-          anchors.right: parent.right
+          id: last4Text
+          anchors.left: nameText.right
+          anchors.leftMargin: Style.space(4)
+          anchors.verticalCenter: nameText.verticalCenter
           textFormat: Text.PlainText
-          width: parent.width
-          horizontalAlignment: Text.AlignRight
-          readonly property bool hasSpend: Math.round(billRow.parts.nextBill) > 0
-          text: nextBillText.hasSpend
-            ? Model.currencySymbol("INR") + Model.formatGrouped(Math.round(billRow.parts.nextBill))
-            : "no spend yet"
-          color: nextBillText.hasSpend ? root.foreground : Qt.darker(root.foreground, 1.5)
+          text: "••" + billRow.overview.last4
+          color: Qt.darker(root.foreground, 1.4)
           font.family: Style.font.family
-          font.bold: nextBillText.hasSpend
-          font.pixelSize: nextBillText.hasSpend ? Style.font.subtitle : Style.font.caption
-        }
-
-        // Below it: a bill already generated, with the amount left to pay.
-        Text {
-          id: payNowText
-          anchors.right: parent.right
-          textFormat: Text.PlainText
-          width: parent.width
-          horizontalAlignment: Text.AlignRight
-          text: billRow.parts.payNow > 0
-            ? (billRow.parts.awaiting ? "bank shows " : "bill ") + Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.payNow)
-            : (billRow.parts.inCredit
-                ? "credit " + Model.currencySymbol("INR") + Model.formatGrouped(Math.abs(billRow.parts.payNow))
-                : "no bill due")
-          color: billRow.parts.payNow > 0 || billRow.parts.inCredit
-            ? billRow.statusColor
-            : Qt.darker(root.foreground, 1.5)
-          font.family: Style.font.family
-          font.bold: billRow.parts.payNow > 0 || billRow.parts.inCredit
+          font.bold: true
           font.pixelSize: Style.font.caption
         }
+      }
+
+      // Line 2, under the amount.
+      Text {
+        id: detailText
+        anchors.left: amountText.left
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.top: avatar.bottom
+        anchors.topMargin: Style.space(3)
+        textFormat: Text.PlainText
+        text: billRow.view.line2
+        color: Qt.darker(root.foreground, 1.5)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
       }
     }
 
@@ -5597,7 +5540,7 @@ Panel {
           { label: "Pay by", value: billRow.overview.dueDate
               ? Model.formatShortDate(billRow.overview.dueDate, true) + "  ·  " + Model.dueCountdown(billRow.overview.dueDate) : "" },
           { label: "Next bill closes", value: Model.cycleClose(billRow.overview).known ? Model.formatShortDate(Model.cycleClose(billRow.overview).closesOn, true) : "" },
-          { label: "Next bill so far", value: Math.round(billRow.parts.nextBill) > 0
+          { label: "Bill so far", value: Math.round(billRow.parts.nextBill) > 0
               ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.nextBill) : "" },
           { label: "Total outstanding", value: billRow.overview.total_outstanding },
           { label: "Unsettled / loans", value: billRow.overview.unsettled_amount || "" },

@@ -723,6 +723,59 @@ function billParts(overviewEntry) {
   }
 }
 
+// Everything the two-line BILLS row shows, worked out in one place so the row
+// is only layout. `tone` is "debit" | "pending" | "credit" | "muted"; `glyph` is
+// "alert" | "clock" | "check" | "plus". The amount is the number to act on:
+// the bill while it is unpaid, the spend so far once it is paid.
+function billRowView(o, paidOverride) {
+  var bp = billParts(o)
+  var sym = currencySymbol("INR")
+  function money(n) { return sym + formatGrouped(Math.round(n)) }
+  var spend = Math.round(bp.nextBill) > 0 ? bp.nextBill : 0
+  var cc = cycleClose(o)
+  var closes = cc.known ? "closes " + formatShortDate(cc.closesOn) : ""
+  var closesShort = cc.known ? formatShortDate(cc.closesOn) : ""      // beside "so far": when it closes
+  var due = o && o.dueDate ? o.dueDate : ""
+  var minDue = o && o.minimum_due ? o.minimum_due : ""
+  var v = { glyph: "check", tone: "credit", amount: "", amountMuted: false, suffix: "", pill: "PAID",
+            pillTone: "muted", right: closesShort, rightUrgent: false, line2: "" }
+  function soFarAmount() {
+    if (spend > 0) { v.amount = money(spend); v.suffix = "so far" }
+    else { v.amount = "no spend yet"; v.amountMuted = true }
+  }
+  if (bp.awaiting) {
+    v.glyph = "clock"; v.tone = "pending"; v.pill = "SENT"; v.pillTone = "pending"
+    soFarAmount()
+    v.line2 = "Paid " + sym + formatGrouped(bp.awaitingAmount)
+      + (bp.awaitingDate ? " · " + formatShortDate(bp.awaitingDate) : "")
+      + " · bank still asks " + money(bp.payNow)
+  } else if (bp.inCredit) {
+    v.glyph = "plus"; v.tone = "credit"; v.pill = "IN CREDIT"; v.pillTone = "credit"
+    v.amount = money(Math.abs(bp.payNow))
+    v.line2 = "the card holds this for you" + (spend > 0 ? " · so far " + money(spend) : "")
+  } else if (bp.payNow > 0 && paidOverride) {
+    v.pill = "PAID"; soFarAmount()
+    v.line2 = "marked paid · bank still asks " + money(bp.payNow)
+  } else if (bp.payNow > 0) {
+    var urgency = billUrgency(o, false)
+    v.glyph = "alert"; v.tone = "debit"
+    v.pill = urgency === "overdue" ? "OVERDUE" : "NOT PAID"; v.pillTone = "debit"
+    v.amount = money(bp.payNow)
+    v.right = due ? formatShortDate(due) : closes
+    v.rightUrgent = urgency !== ""
+    var parts = []
+    if (due) parts.push(dueCountdown(due))
+    else if (closes) parts.push(closes)
+    if (minDue) parts.push("min " + minDue)
+    if (spend > 0) parts.push("so far " + money(spend))
+    v.line2 = parts.join(" · ")
+  } else {
+    soFarAmount()
+    v.line2 = billPaidLine(o) || "no bill due"
+  }
+  return v
+}
+
 // Sub-paise leftovers are noise, not money: HDFC's split leaves ₹0.38 of
 // "loans and/or unsettled transactions" behind, and floating point leaves
 // less than that.
