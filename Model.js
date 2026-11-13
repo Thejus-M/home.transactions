@@ -737,24 +737,23 @@ function billRowView(o, paidOverride) {
   var closesShort = cc.known ? formatShortDate(cc.closesOn) : ""      // beside "so far": when it closes
   var due = o && o.dueDate ? o.dueDate : ""
   var minDue = o && o.minimum_due ? o.minimum_due : ""
-  var v = { glyph: "check", tone: "credit", amount: "", amountMuted: false, suffix: "", pill: "PAID",
+  var v = { glyph: "check", tone: "credit", amount: "", amountMuted: false, suffix: "", pill: "BILL PAID",
             pillTone: "muted", right: closesShort, rightUrgent: false, line2: "" }
   function soFarAmount() {
     if (spend > 0) { v.amount = money(spend); v.suffix = "so far" }
     else { v.amount = "no spend yet"; v.amountMuted = true }
   }
   if (bp.awaiting) {
-    v.glyph = "clock"; v.tone = "pending"; v.pill = "SENT"; v.pillTone = "pending"
+    v.glyph = "clock"; v.tone = "pending"; v.pill = "BILL SENT"; v.pillTone = "pending"
     soFarAmount()
-    v.line2 = "Paid " + sym + formatGrouped(bp.awaitingAmount)
-      + (bp.awaitingDate ? " · " + formatShortDate(bp.awaitingDate) : "")
-      + " · bank still asks " + money(bp.payNow)
+    v.line2 = "paid" + (bp.awaitingDate ? " " + formatShortDate(bp.awaitingDate) : "")
+      + " · bank asks " + money(bp.payNow)
   } else if (bp.inCredit) {
     v.glyph = "plus"; v.tone = "credit"; v.pill = "IN CREDIT"; v.pillTone = "credit"
     v.amount = money(Math.abs(bp.payNow))
     v.line2 = "the card holds this for you" + (spend > 0 ? " · so far " + money(spend) : "")
   } else if (bp.payNow > 0 && paidOverride) {
-    v.pill = "PAID"; soFarAmount()
+    v.pill = "BILL PAID"; soFarAmount()
     v.line2 = "marked paid · bank still asks " + money(bp.payNow)
   } else if (bp.payNow > 0) {
     var urgency = billUrgency(o, false)
@@ -764,14 +763,19 @@ function billRowView(o, paidOverride) {
     v.right = due ? formatShortDate(due) : closes
     v.rightUrgent = urgency !== ""
     var parts = []
-    if (due) parts.push(dueCountdown(due))
+    if (due) {
+      var left = daysUntil(due)
+      parts.push("due " + formatShortDate(due) + " ("
+        + (left > 0 ? left + "d" : (left === 0 ? "today" : (-left) + "d late")) + ")")
+    }
     else if (closes) parts.push(closes)
     if (minDue) parts.push("min " + minDue)
     if (spend > 0) parts.push("so far " + money(spend))
     v.line2 = parts.join(" · ")
   } else {
     soFarAmount()
-    v.line2 = billPaidLine(o) || "no bill due"
+    var paidLine = billPaidLine(o)
+    v.line2 = paidLine ? paidLine.replace(/^Paid /, "paid ").replace(/\s+/g, " ") : "no bill due"
   }
   return v
 }

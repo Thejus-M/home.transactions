@@ -33,7 +33,7 @@ class BillRowViewTests(unittest.TestCase):
         v = view({"last4": "4002", "total_outstanding": "₹16,591.82", "last_statement_amount": "₹16,591.82",
                   "unbilled_purchases": "₹0", "minimum_due": "₹830", "dueDate": iso(17), "billingDay": 12})
         self.assertEqual((v["glyph"], v["tone"], v["pill"], v["amount"]), ("alert", "debit", "NOT PAID", "₹16,592"))
-        self.assertIn("17 days left", v["line2"])
+        self.assertIn("(17d)", v["line2"])
         self.assertIn("min ₹830", v["line2"])
         self.assertNotIn("so far", v["line2"])                 # nothing building: no noise
 
@@ -54,17 +54,17 @@ class BillRowViewTests(unittest.TestCase):
     def test_paid_card_promotes_the_spend_so_far(self):
         v = view({"last4": "1", "total_outstanding": "₹3,000", "last_statement_amount": "₹0", "unbilled_purchases": "₹3,000",
                   "billingDay": 12})
-        self.assertEqual((v["glyph"], v["pill"], v["amount"], v["suffix"]), ("check", "PAID", "₹3,000", "so far"))
+        self.assertEqual((v["glyph"], v["pill"], v["amount"], v["suffix"]), ("check", "BILL PAID", "₹3,000", "so far"))
 
     def test_paid_card_without_spend(self):
         v = view({"last4": "1", "total_outstanding": "₹0", "last_statement_amount": "₹0", "unbilled_purchases": "₹0"})
-        self.assertEqual((v["pill"], v["amount"], v["amountMuted"]), ("PAID", "no spend yet", True))
+        self.assertEqual((v["pill"], v["amount"], v["amountMuted"]), ("BILL PAID", "no spend yet", True))
 
     def test_sent_card_when_a_payment_covers_the_bill(self):
         v = view({"last4": "5896", "total_outstanding": "₹12,223.04", "last_statement_amount": "₹589.00",
                   "unbilled_purchases": "₹11,634.04", "paidSinceBill": 588.82, "paidSinceDate": iso(-7), "billingDay": 1})
-        self.assertEqual((v["glyph"], v["pill"], v["amount"], v["suffix"]), ("clock", "SENT", "₹11,634", "so far"))
-        self.assertIn("bank still asks ₹589", v["line2"])
+        self.assertEqual((v["glyph"], v["pill"], v["amount"], v["suffix"]), ("clock", "BILL SENT", "₹11,634", "so far"))
+        self.assertIn("bank asks ₹589", v["line2"])
 
     def test_spend_that_rounds_to_zero_is_no_spend(self):
         v = view({"last4": "0220", "total_outstanding": "₹10,930.27", "last_statement_amount": "₹10,930.00",

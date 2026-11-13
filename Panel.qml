@@ -5237,7 +5237,7 @@ Panel {
     readonly property bool _hot: rowHover.hovered || billRow.activeFocus
     // The status column (disc + label) is the tallest thing in the row, so
     // it sets this; the two text lines need less.
-    readonly property int collapsedHeight: Style.space(48)
+    readonly property int collapsedHeight: Style.space(52)
     // Where the row's text starts — the status column plus its gap. Shared
     // with the detail panel, so the panel's text lines up under the card
     // name instead of an inset worked out from a disc size long since gone.
@@ -5303,7 +5303,7 @@ Panel {
         anchors.left: parent.left
         anchors.leftMargin: Style.spacing.rowPaddingX
         anchors.top: parent.top
-        anchors.topMargin: Style.space(5)
+        anchors.topMargin: Style.space(7)
 
         Text {
           anchors.centerIn: parent
@@ -5353,8 +5353,8 @@ Panel {
       Rectangle {
         id: statePill
         readonly property color tone: billRow.toneColor(billRow.view.pillTone)
-        anchors.left: suffixText.visible ? suffixText.right : amountText.right
-        anchors.leftMargin: Style.space(8)
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX
         anchors.verticalCenter: avatar.verticalCenter
         width: pillText.implicitWidth + Style.space(10)
         height: pillText.implicitHeight + Style.space(3)
@@ -5372,84 +5372,45 @@ Panel {
         }
       }
 
-      // One date: the due date while a bill is unpaid (red when close or late),
-      // else when the next bill closes.
-      Text {
-        id: dateText
+      // Line 2: the card, then what matters about it. Keeping the card here
+      // (not on line 1) leaves line 1 with only: status, amount, state.
+      Row {
+        id: cardLine
+        anchors.left: amountText.left
         anchors.right: parent.right
         anchors.rightMargin: Style.spacing.rowPaddingX
-        anchors.verticalCenter: avatar.verticalCenter
-        textFormat: Text.PlainText
-        text: billRow.view.right
-        color: billRow.view.rightUrgent ? root.debitColor : Qt.darker(root.foreground, 1.4)
-        font.family: Style.font.family
-        font.bold: billRow.view.rightUrgent
-        font.pixelSize: Style.font.caption
-      }
-
-      // The card. The name shrinks and elides; the last four digits never do.
-      Item {
-        id: cardBox
-        anchors.left: statePill.right
-        anchors.leftMargin: Style.space(10)
-        anchors.right: dateText.left
-        anchors.rightMargin: Style.space(8)
-        anchors.verticalCenter: avatar.verticalCenter
-        height: nameText.implicitHeight
+        anchors.top: avatar.bottom
+        anchors.topMargin: Style.space(5)
+        spacing: Style.space(6)
 
         BrandMark {
           id: billBrandMark
-          anchors.left: parent.left
           anchors.verticalCenter: parent.verticalCenter
           network: billRow.brand.network
           markHeight: Style.spaceReal(9)
         }
         Text {
           id: nameText
-          // Short on purpose: the bank, then the last four.
-          // The product name ("Millennia", "Amazon Pay") is in the expanded card.
-          readonly property string full: billRow.bank
-          anchors.left: billBrandMark.visible ? billBrandMark.right : parent.left
-          anchors.leftMargin: billBrandMark.visible ? Style.space(6) : 0
-          width: Math.max(0, Math.min(nameText.implicitWidth,
-                          parent.width - (billBrandMark.visible ? billBrandMark.width + Style.space(6) : 0)
-                          - last4Text.implicitWidth - Style.space(4)))
+          anchors.verticalCenter: parent.verticalCenter
           textFormat: Text.PlainText
-          text: nameText.full
+          text: billRow.bank + " ••" + billRow.overview.last4
           color: root.foreground
           font.family: Style.font.family
           font.bold: true
           font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
         }
         Text {
-          id: last4Text
-          anchors.left: nameText.right
-          anchors.leftMargin: Style.space(4)
-          anchors.verticalCenter: nameText.verticalCenter
+          id: detailText
+          anchors.verticalCenter: parent.verticalCenter
+          width: Math.max(0, cardLine.width - (billBrandMark.visible ? billBrandMark.width + cardLine.spacing : 0)
+                          - nameText.implicitWidth - cardLine.spacing)
           textFormat: Text.PlainText
-          text: "••" + billRow.overview.last4
-          color: Qt.darker(root.foreground, 1.4)
+          text: billRow.view.line2
+          color: billRow.view.rightUrgent ? root.debitColor : Qt.darker(root.foreground, 1.4)
           font.family: Style.font.family
-          font.bold: true
           font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
         }
-      }
-
-      // Line 2, under the amount.
-      Text {
-        id: detailText
-        anchors.left: amountText.left
-        anchors.right: parent.right
-        anchors.rightMargin: Style.spacing.rowPaddingX
-        anchors.top: avatar.bottom
-        anchors.topMargin: Style.space(3)
-        textFormat: Text.PlainText
-        text: billRow.view.line2
-        color: Qt.darker(root.foreground, 1.5)
-        font.family: Style.font.family
-        font.pixelSize: Style.font.caption
-        elide: Text.ElideRight
       }
     }
 
