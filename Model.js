@@ -2006,7 +2006,9 @@ function cashewApplyCategory(drafts, idx, category, subcategory, spread) {
 // Uncategorized (or empty) or the draft carries a warning.
 function cashewNeedsCategory(d) {
   if (!d || d.kind === "transfer") return false
-  return !d.category || d.category === "Uncategorized" || (d.warn || "") !== ""
+  // "Uncategorized > Miscellaneous" is a choice, not a gap: the user filed it there on purpose.
+  var chosen = d.category === "Uncategorized" && d.subcategory === "Miscellaneous"
+  return !d.category || (d.category === "Uncategorized" && !chosen) || (d.warn || "") !== ""
 }
 
 // Indexes (into drafts) of the shown rows that still need a category.
@@ -2661,7 +2663,7 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
     if (_cashewLen(notes) > 500) { warnings.push("notes cut to 500 characters: " + label); notes = _cashewCut(notes, 500) }
     var cat = _cashewStr(d.category), sub = _cashewStr(d.subcategory), acct = _cashewStr(d.account)
     var amount = _cashewStr(d.amount)
-    if (cat === "Uncategorized") warnings.push("no category: " + label)
+    if (cat === "Uncategorized" && sub !== "Miscellaneous") warnings.push("no category: " + label)
     else if (types.hasOwnProperty(cat)) {
       var t = types[cat], neg = amount.charAt(0) === "-"
       var friendOk = cat === "Friend Settlement" && sub === "Split Paid"

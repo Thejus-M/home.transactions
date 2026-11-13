@@ -518,7 +518,7 @@ def _entry(d: dict, warnings: list[str], types: dict[str, str]) -> dict:
         notes = notes[:NOTES_MAX]
     cat, sub, acct = str(d.get("category") or ""), str(d.get("subcategory") or ""), str(d.get("account") or "")
     amount = str(d.get("amount") or "")
-    if cat == UNCATEGORIZED[0]:
+    if cat == UNCATEGORIZED[0] and sub != "Miscellaneous":      # Miscellaneous is a deliberate choice
         warnings.append(f"no category: {label}")
     elif cat in types and not _fits(types[cat], amount.startswith("-")) \
             and not _friend_fits(cat, sub, amount.startswith("-")):
