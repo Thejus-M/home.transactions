@@ -65,7 +65,7 @@ class BillRowViewTests(unittest.TestCase):
         v = view({"last4": "5896", "total_outstanding": "₹12,223.04", "last_statement_amount": "₹589.00",
                   "unbilled_purchases": "₹11,634.04", "paidSinceBill": 588.82, "paidSinceDate": iso(-7), "billingDay": 1})
         self.assertEqual((v["pill"], v["bill"]["text"], v["soFar"]["text"], v["soFar"]["primary"]), ("BILL SENT", "₹589", "₹11,634", True))
-        self.assertEqual((v["pillTone"], v["bill"]["tone"], v["soFar"]["tone"]), ("pending", "credit", "credit"))   # word yellow, amounts green
+        self.assertEqual((v["pillTone"], v["bill"]["tone"], v["soFar"]["tone"]), ("pending", "credit", "pending"))   # word yellow, bill green, spend so far yellow
         self.assertIn("paid", v["line2"])
 
     def test_spend_that_rounds_to_zero_is_zero(self):

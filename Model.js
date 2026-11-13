@@ -741,7 +741,7 @@ function billRowView(o, paidOverride) {
     pill: "BILL PAID", pillTone: "credit", line2: "", rightUrgent: false
   }
   if (bp.payNow <= 0 || paidOverride) v.bill.tone = "credit"       // paid: green
-  if (spend > 0) v.soFar.tone = "credit"                           // spend building: green
+  if (spend > 0) v.soFar.tone = "pending"                          // spend building: yellow
   if (bp.awaiting) {
     v.pill = "BILL SENT"; v.pillTone = "pending"; v.bill.tone = "credit"     // sent: the bill is settled, so green; the word stays yellow
     v.line2 = "paid " + sym + formatGrouped(bp.awaitingAmount)

@@ -5339,8 +5339,8 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
             text: billRow.view.soFar.text
-            color: billRow.view.soFar.tone === "credit"
-              ? Util.alpha(root.creditColor, billRow.view.soFar.primary ? 1.0 : 0.8)
+            color: billRow.view.soFar.tone === "pending"
+              ? Util.alpha(root.pendingColor, billRow.view.soFar.primary ? 1.0 : 0.8)
               : (billRow.view.soFar.primary ? root.foreground : Qt.darker(root.foreground, 1.5))
             font.family: Style.font.family
             font.bold: billRow.view.soFar.primary
