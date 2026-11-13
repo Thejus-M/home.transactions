@@ -367,12 +367,14 @@
   "name": "Uncategorized",
   "type": "balance",
   "subcategories": [
-   "Unknown"
+   "Unknown",
+   "Miscellaneous"
   ],
   "icon": "󰘥",
   "color": "#5A2A2E",
   "subIcons": {
-   "Unknown": "󰘥"
+   "Unknown": "󰘥",
+   "Miscellaneous": "󰇘"
   }
  }
 ]

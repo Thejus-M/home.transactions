@@ -11017,7 +11017,7 @@ Panel {
         spacing: Style.space(6)
         readonly property real tileW: (editPanel.width - 3 * spacing) / 4
         Repeater {
-          model: editPanel.catPicking ? editPanel.catChoices.filter(function (c) { return c.name !== "Uncategorized" }) : []
+          model: editPanel.catPicking ? editPanel.catChoices : []
           delegate: CatTile {
             required property var modelData
             width: catGrid.tileW
