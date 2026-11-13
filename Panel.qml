@@ -2536,7 +2536,7 @@ Panel {
             textFormat: Text.PlainText
             text: limitHeader.total.limit > 0
               ? "limit " + Model.currencySymbol("INR") + Model.formatGrouped(Math.round(limitHeader.total.used))
-                + " of " + Model.currencySymbol("INR") + Model.formatGrouped(limitHeader.total.limit) + " used"
+                + " / " + Model.currencySymbol("INR") + Model.formatGrouped(limitHeader.total.limit)
               : "limit not read yet"
             color: Qt.darker(root.foreground, 1.5)
             font.family: Style.font.family
@@ -2580,7 +2580,7 @@ Panel {
             anchors.rightMargin: Style.spacing.rowPaddingX
             anchors.top: limitTotalLabel.bottom
             anchors.topMargin: Style.space(5)
-            height: Style.space(3)
+            height: Style.space(5)
             clip: true
 
             Rectangle {
@@ -2592,6 +2592,7 @@ Panel {
             Row {
               anchors.left: parent.left
               height: parent.height
+              spacing: Style.space(1)          // a hairline between cards, so each reads as its own piece
 
               Repeater {
                 model: limitHeader.total.cards || []
@@ -2612,7 +2613,7 @@ Panel {
 
           // Every card, in its own tone: "HDFC ••7462 8%". A card with no
           // limit read yet says so, and is not drawn in the bar.
-          Flow {
+          Grid {
             id: limitTotalKey
             visible: limitHeader.total.limit > 0
             anchors.left: parent.left
@@ -2620,13 +2621,18 @@ Panel {
             anchors.right: parent.right
             anchors.rightMargin: Style.spacing.rowPaddingX
             anchors.top: limitTotalTrack.bottom
-            anchors.topMargin: Style.space(5)
-            spacing: Style.spacing.md
+            anchors.topMargin: Style.space(6)
+            columns: 2                          // two aligned columns, never a ragged wrap
+            columnSpacing: Style.space(10)
+            rowSpacing: Style.space(3)
 
             Repeater {
               model: limitHeader.total.cards || []
               delegate: Row {
                 required property var modelData
+                width: (limitTotalKey.width - limitTotalKey.columnSpacing) / 2
+                // The last four digits only where two cards share a bank ("HDFC 0220").
+                readonly property bool sameBank: (limitHeader.total.cards || []).filter(function (c) { return c.bank === modelData.bank }).length > 1
                 spacing: Style.space(4)
                 Rectangle {
                   width: Style.space(6)
@@ -2637,8 +2643,8 @@ Panel {
                 }
                 Text {
                   textFormat: Text.PlainText
-                  text: modelData.bank + " ••" + modelData.last4 + " " + Math.round(modelData.percent) + "%"
-                  color: Qt.darker(root.foreground, 1.5)
+                  text: modelData.bank + (parent.sameBank ? " " + modelData.last4 : "") + " " + Math.round(modelData.percent) + "%"
+                  color: Qt.darker(root.foreground, 1.3)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
                 }
