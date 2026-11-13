@@ -9771,6 +9771,64 @@ Panel {
     }
   }
 
+  // A ring tile for the category picker: glyph on top, name under it.
+  component CatTile: Rectangle {
+    id: ct
+    property string glyph: ""
+    property string label: ""
+    property color tint: Color.accent
+    property bool selected: false
+    property bool primary: false
+    property bool marked: false          // the AI suggested this one
+    signal clicked()
+    height: Style.space(60)
+    radius: Style.space(10)
+    color: ctMouse.containsMouse ? Util.alpha(ct.tint, 0.16) : (ct.primary ? Util.alpha(ct.tint, 0.08) : "transparent")
+    border.width: ct.selected ? 2 : 1
+    border.color: ct.selected ? Color.accent : Util.alpha(ct.tint, ctMouse.containsMouse ? 0.9 : 0.5)
+    Behavior on color { ColorAnimation { duration: 100 } }
+    Column {
+      anchors.centerIn: parent
+      width: parent.width - Style.space(8)
+      spacing: Style.space(3)
+      Text {
+        anchors.horizontalCenter: parent.horizontalCenter
+        textFormat: Text.PlainText
+        text: ct.glyph
+        color: ct.tint
+        font.family: "JetBrainsMono Nerd Font"
+        font.pixelSize: Style.font.title
+      }
+      Text {
+        width: parent.width
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.Wrap
+        maximumLineCount: 2
+        elide: Text.ElideRight
+        textFormat: Text.PlainText
+        text: ct.label
+        color: root.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption - 1
+      }
+    }
+    Text {
+      visible: ct.marked
+      anchors { top: parent.top; right: parent.right; topMargin: Style.space(3); rightMargin: Style.space(6) }
+      textFormat: Text.PlainText
+      text: "✦"
+      color: Color.accent
+      font.pixelSize: Style.font.caption
+    }
+    MouseArea {
+      id: ctMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: ct.clicked()
+    }
+  }
+
   // A small text button for the transaction edit panel.
   component TxnBtn: BorderSurface {
     id: tb
@@ -10951,36 +11009,72 @@ Panel {
         TxnBtn { visible: !!editPanel.aiSuggest || editPanel.aiMsg !== ""; label: "Discard"; onClicked: { editPanel.aiSuggest = null; editPanel.aiMsg = "" } }
       }
 
-      // main categories, then the sub-categories of the one chosen
-      Flow {
+      // Step 1: the main categories as a grid of ring tiles.
+      Grid {
+        id: catGrid
         visible: editPanel.catPicking && editPanel.catMain === ""
-        width: parent.width
+        columns: 4
         spacing: Style.space(6)
+        readonly property real tileW: (editPanel.width - 3 * spacing) / 4
         Repeater {
-          model: editPanel.catPicking ? editPanel.catChoices : []
-          delegate: TxnBtn {
+          model: editPanel.catPicking ? editPanel.catChoices.filter(function (c) { return c.name !== "Uncategorized" }) : []
+          delegate: CatTile {
             required property var modelData
-            label: (modelData.icon || "") + "  " + modelData.name
+            width: catGrid.tileW
+            glyph: modelData.icon || ""
+            label: modelData.name
+            tint: modelData.color || Color.accent
+            selected: card.txn.category === modelData.name
+            marked: !!editPanel.aiSuggest && editPanel.aiSuggest.category === modelData.name
             onClicked: editPanel.catMain = modelData.name
           }
         }
       }
-      Flow {
+
+      // Step 2: the sub-categories of the chosen one, in the same place.
+      Column {
         visible: editPanel.catPicking && editPanel.catMain !== ""
         width: parent.width
         spacing: Style.space(6)
-        TxnBtn { label: "‹ Back"; onClicked: editPanel.catMain = "" }
-        TxnBtn {
-          label: "Just " + editPanel.catMain
-          primary: true
-          onClicked: { store.setTxnCategory(card.txn.id, editPanel.catMain, "", !editPanel.catAll); editPanel.catPicking = false }
+        Row {
+          spacing: Style.space(8)
+          TxnBtn { label: "‹ Back"; onClicked: editPanel.catMain = "" }
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: (editPanel.catMainDef ? (editPanel.catMainDef.icon || "") + "  " : "") + editPanel.catMain
+            color: editPanel.catMainDef && editPanel.catMainDef.color ? editPanel.catMainDef.color : root.foreground
+            font.family: "JetBrainsMono Nerd Font"
+            font.bold: true
+            font.pixelSize: Style.font.subtitle
+          }
         }
-        Repeater {
-          model: editPanel.catMainDef ? editPanel.catMainDef.subcategories : []
-          delegate: TxnBtn {
-            required property string modelData
-            label: ((editPanel.catMainDef.subIcons || {})[modelData] || "") + "  " + modelData
-            onClicked: { store.setTxnCategory(card.txn.id, editPanel.catMain, modelData, !editPanel.catAll); editPanel.catPicking = false }
+        Grid {
+          id: subGrid
+          columns: 3
+          spacing: Style.space(6)
+          readonly property real tileW: (editPanel.width - 2 * spacing) / 3
+          CatTile {
+            width: subGrid.tileW
+            glyph: "󰄬"
+            label: "Just " + editPanel.catMain
+            tint: editPanel.catMainDef && editPanel.catMainDef.color ? editPanel.catMainDef.color : Color.accent
+            primary: true
+            selected: card.txn.category === editPanel.catMain && !card.txn.subcategory
+            onClicked: { store.setTxnCategory(card.txn.id, editPanel.catMain, "", !editPanel.catAll); editPanel.catPicking = false }
+          }
+          Repeater {
+            model: editPanel.catMainDef ? editPanel.catMainDef.subcategories : []
+            delegate: CatTile {
+              required property string modelData
+              width: subGrid.tileW
+              glyph: (editPanel.catMainDef.subIcons || {})[modelData] || ""
+              label: modelData
+              tint: editPanel.catMainDef.color || Color.accent
+              selected: card.txn.category === editPanel.catMain && card.txn.subcategory === modelData
+              marked: !!editPanel.aiSuggest && editPanel.aiSuggest.category === editPanel.catMain && editPanel.aiSuggest.subcategory === modelData
+              onClicked: { store.setTxnCategory(card.txn.id, editPanel.catMain, modelData, !editPanel.catAll); editPanel.catPicking = false }
+            }
           }
         }
       }
