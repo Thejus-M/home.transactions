@@ -32,7 +32,8 @@ class BillRowViewTests(unittest.TestCase):
     def test_unpaid_card_leads_with_the_bill_and_keeps_so_far_small(self):
         v = view({"last4": "4002", "total_outstanding": "₹16,591.82", "last_statement_amount": "₹16,591.82",
                   "unbilled_purchases": "₹0", "minimum_due": "₹830", "dueDate": iso(17), "billingDay": 12})
-        self.assertEqual((v["glyph"], v["tone"], v["pill"], v["amount"]), ("alert", "debit", "NOT PAID", "₹16,592"))
+        self.assertEqual((v["pill"], v["bill"]["text"], v["bill"]["primary"], v["soFar"]["text"]), ("NOT PAID", "₹16,592", True, "₹0"))
+        self.assertFalse(v["soFar"]["primary"])
         self.assertIn("(17d)", v["line2"])
         self.assertIn("min ₹830", v["line2"])
         self.assertNotIn("so far", v["line2"])                 # nothing building: no noise
@@ -40,9 +41,8 @@ class BillRowViewTests(unittest.TestCase):
     def test_so_far_shows_small_on_line_two_while_unpaid(self):
         v = view({"last4": "1", "total_outstanding": "₹12,000", "last_statement_amount": "₹10,000",
                   "unbilled_purchases": "₹2,000", "dueDate": iso(10), "billingDay": 12})
-        self.assertEqual(v["amount"], "₹10,000")
-        self.assertIn("so far ₹2,000", v["line2"])
-
+        self.assertEqual((v["bill"]["text"], v["soFar"]["text"]), ("₹10,000", "₹2,000"))
+        
     def test_overdue_and_soon_are_urgent(self):
         late = view({"last4": "1", "total_outstanding": "₹500", "last_statement_amount": "₹500", "unbilled_purchases": "₹0",
                      "dueDate": iso(-2)})
@@ -54,26 +54,26 @@ class BillRowViewTests(unittest.TestCase):
     def test_paid_card_promotes_the_spend_so_far(self):
         v = view({"last4": "1", "total_outstanding": "₹3,000", "last_statement_amount": "₹0", "unbilled_purchases": "₹3,000",
                   "billingDay": 12})
-        self.assertEqual((v["glyph"], v["pill"], v["amount"], v["suffix"]), ("check", "BILL PAID", "₹3,000", "so far"))
+        self.assertEqual((v["pill"], v["bill"]["text"], v["soFar"]["text"], v["soFar"]["primary"]), ("BILL PAID", "₹0", "₹3,000", True))
 
     def test_paid_card_without_spend(self):
         v = view({"last4": "1", "total_outstanding": "₹0", "last_statement_amount": "₹0", "unbilled_purchases": "₹0"})
-        self.assertEqual((v["pill"], v["amount"], v["amountMuted"]), ("BILL PAID", "no spend yet", True))
+        self.assertEqual((v["pill"], v["bill"]["text"], v["soFar"]["text"]), ("BILL PAID", "₹0", "₹0"))      # nothing: zeros, not words
 
     def test_sent_card_when_a_payment_covers_the_bill(self):
         v = view({"last4": "5896", "total_outstanding": "₹12,223.04", "last_statement_amount": "₹589.00",
                   "unbilled_purchases": "₹11,634.04", "paidSinceBill": 588.82, "paidSinceDate": iso(-7), "billingDay": 1})
-        self.assertEqual((v["glyph"], v["pill"], v["amount"], v["suffix"]), ("clock", "BILL SENT", "₹11,634", "so far"))
-        self.assertIn("bank asks ₹589", v["line2"])
+        self.assertEqual((v["pill"], v["bill"]["text"], v["soFar"]["text"], v["soFar"]["primary"]), ("BILL SENT", "₹589", "₹11,634", True))
+        self.assertIn("paid", v["line2"])
 
-    def test_spend_that_rounds_to_zero_is_no_spend(self):
+    def test_spend_that_rounds_to_zero_is_zero(self):
         v = view({"last4": "0220", "total_outstanding": "₹10,930.27", "last_statement_amount": "₹10,930.00",
                   "unbilled_purchases": "₹0", "unsettled_amount": "₹0.27", "dueDate": iso(19)})
-        self.assertNotIn("so far", v["line2"])
+        self.assertEqual((v["bill"]["text"], v["soFar"]["text"]), ("₹10,930", "₹0"))
 
     def test_card_in_credit(self):
         v = view({"last4": "1", "total_outstanding": "- ₹626.00", "last_statement_amount": "₹0", "unbilled_purchases": "₹0"})
-        self.assertEqual((v["pill"], v["glyph"], v["amount"]), ("IN CREDIT", "plus", "₹626"))
+        self.assertEqual((v["pill"], v["bill"]["text"], v["bill"]["tone"]), ("IN CREDIT", "₹626 credit", "credit"))
 
 
 if __name__ == "__main__":

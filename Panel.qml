@@ -5232,7 +5232,7 @@ Panel {
     readonly property var glyphs: ({ alert: "󰗖", clock: "󰅐", check: "󰄬", plus: "󰐕" })
     function toneColor(tone) {
       return tone === "debit" ? root.debitColor : (tone === "pending" ? root.pendingColor
-        : (tone === "credit" ? root.creditColor : Qt.darker(root.foreground, 1.4)))
+        : (tone === "credit" ? root.creditColor : (tone === "foreground" ? root.foreground : Qt.darker(root.foreground, 1.4))))
     }
     readonly property bool _hot: rowHover.hovered || billRow.activeFocus
     // The status column (disc + label) is the tallest thing in the row, so
@@ -5241,7 +5241,7 @@ Panel {
     // Where the row's text starts — the status column plus its gap. Shared
     // with the detail panel, so the panel's text lines up under the card
     // name instead of an inset worked out from a disc size long since gone.
-    readonly property int contentLeft: Style.spacing.rowPaddingX + Style.space(30)
+    readonly property int contentLeft: Style.spacing.rowPaddingX
 
     implicitHeight: billRow.collapsedHeight + (billRow.expanded ? detailsPanel.implicitHeight + Style.space(10) : 0)
     radius: Style.cornerRadius
@@ -5281,8 +5281,7 @@ Panel {
       anchors.right: parent.right
       height: billRow.collapsedHeight
 
-      // Clicking anywhere on the row expands its details; the disc (declared
-      // later, so on top) claims just itself for "mark as paid".
+      // Clicking anywhere on the row expands its details.
       MouseArea {
         id: rowMouse
         anchors.fill: parent
@@ -5290,64 +5289,69 @@ Panel {
         onClicked: billRow.expanded = !billRow.expanded
       }
 
-      // Line 1:  (status)  amount  [STATE]   card ••1234            date
-      // Line 2:            small muted detail
-      // The status, the number to act on and its label are one cluster at the left;
-      // only the card name shrinks.
-      Rectangle {
-        id: avatar
-        width: Style.space(22)
-        height: width
-        radius: width / 2
-        color: Util.alpha(billRow.toneColor(billRow.view.tone), 0.16)
+      // Line 1:  ₹ bill   ₹ so far                         STATE
+      // Line 2:  card ••1234 · detail
+      // Both figures are always shown, in fixed columns so they line up from row to
+      // row. The one to act on is bold; the other is muted.
+      Row {
+        id: figures
         anchors.left: parent.left
         anchors.leftMargin: Style.spacing.rowPaddingX
         anchors.top: parent.top
-        anchors.topMargin: Style.space(7)
+        anchors.topMargin: Style.space(8)
+        spacing: Style.space(6)
 
-        Text {
-          anchors.centerIn: parent
-          textFormat: Text.PlainText
-          text: billRow.glyphs[billRow.view.glyph] || ""
-          color: billRow.toneColor(billRow.view.tone)
-          font.family: "JetBrainsMono Nerd Font"
-          font.pixelSize: Style.font.caption + 1
+        Item {
+          width: Style.space(90)
+          height: Style.font.subtitle + Style.space(4)
+          Text {
+            id: billAmount
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: billRow.view.bill.text
+            color: billRow.view.bill.primary ? billRow.toneColor(billRow.view.bill.tone === "muted" ? "foreground" : billRow.view.bill.tone) : Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.bold: billRow.view.bill.primary
+            font.pixelSize: billRow.view.bill.primary ? Style.font.subtitle : Style.font.body
+          }
+          Text {
+            anchors.left: billAmount.right
+            anchors.leftMargin: Style.space(4)
+            anchors.baseline: billAmount.baseline
+            textFormat: Text.PlainText
+            text: billRow.view.bill.text.indexOf("credit") >= 0 ? "" : "bill"
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
         }
 
-        // The one place "mark as paid" lives: click just the status symbol.
-        MouseArea {
-          anchors.fill: parent
-          anchors.margins: -Style.space(8)
-          cursorShape: Qt.PointingHandCursor
-          onClicked: store.setBillPaid(billRow.overview.last4, !billRow.paid)
+        Item {
+          width: Style.space(100)
+          height: Style.font.subtitle + Style.space(4)
+          Text {
+            id: soFarAmount
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: billRow.view.soFar.text
+            color: billRow.view.soFar.primary ? root.foreground : Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.bold: billRow.view.soFar.primary
+            font.pixelSize: billRow.view.soFar.primary ? Style.font.subtitle : Style.font.body
+          }
+          Text {
+            anchors.left: soFarAmount.right
+            anchors.leftMargin: Style.space(4)
+            anchors.baseline: soFarAmount.baseline
+            textFormat: Text.PlainText
+            text: "so far"
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
         }
-      }
-
-      Text {
-        id: amountText
-        anchors.left: avatar.right
-        anchors.leftMargin: Style.space(8)
-        anchors.verticalCenter: avatar.verticalCenter
-        textFormat: Text.PlainText
-        text: billRow.view.amount
-        color: billRow.view.amountMuted ? Qt.darker(root.foreground, 1.5)
-          : (billRow.view.tone === "debit" ? billRow.toneColor("debit") : root.foreground)
-        font.family: Style.font.family
-        font.bold: !billRow.view.amountMuted
-        font.pixelSize: billRow.view.amountMuted ? Style.font.caption : Style.font.subtitle
-      }
-
-      Text {
-        id: suffixText
-        visible: billRow.view.suffix !== ""
-        anchors.left: amountText.right
-        anchors.leftMargin: Style.space(4)
-        anchors.baseline: amountText.baseline
-        textFormat: Text.PlainText
-        text: billRow.view.suffix
-        color: Qt.darker(root.foreground, 1.5)
-        font.family: Style.font.family
-        font.pixelSize: Style.font.caption
       }
 
       Rectangle {
@@ -5355,7 +5359,8 @@ Panel {
         readonly property color tone: billRow.toneColor(billRow.view.pillTone)
         anchors.right: parent.right
         anchors.rightMargin: Style.spacing.rowPaddingX
-        anchors.verticalCenter: avatar.verticalCenter
+        anchors.verticalCenter: figures.verticalCenter
+        anchors.verticalCenterOffset: -Style.space(1)
         width: pillText.implicitWidth + Style.space(10)
         height: pillText.implicitHeight + Style.space(3)
         radius: Style.space(4)
@@ -5372,15 +5377,14 @@ Panel {
         }
       }
 
-      // Line 2: the card, then what matters about it. Keeping the card here
-      // (not on line 1) leaves line 1 with only: status, amount, state.
+      // Line 2: the card, then what matters about it.
       Row {
         id: cardLine
-        anchors.left: amountText.left
+        anchors.left: figures.left
         anchors.right: parent.right
         anchors.rightMargin: Style.spacing.rowPaddingX
-        anchors.top: avatar.bottom
-        anchors.topMargin: Style.space(5)
+        anchors.top: figures.bottom
+        anchors.topMargin: Style.space(4)
         spacing: Style.space(6)
 
         BrandMark {
@@ -5432,6 +5436,15 @@ Panel {
         width: parent.width
         height: Style.spacing.hairline
         color: Qt.darker(root.foreground, 1.8)
+      }
+
+      // Was the status disc's click: say by hand that you paid this bill.
+      Row {
+        spacing: Style.space(6)
+        TxnBtn {
+          label: billRow.paid ? "Mark as unpaid" : "Mark as paid"
+          onClicked: store.setBillPaid(billRow.overview.last4, !billRow.paid)
+        }
       }
 
       // Which bank the card is from, as its own mark: the collapsed row has
