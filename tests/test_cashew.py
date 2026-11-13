@@ -546,3 +546,40 @@ class CategoryPriorityTests(Base):
         ds = {d["id"]: d for d in self.drafts()}
         self.assertEqual((ds["t-1"]["category"], ds["t-2"]["category"]), ("Balance Correction",) * 2)
 
+
+
+class TxnCategoryTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.add(self.hdfc, row(1, "2026-10-02", -250.0, "SWIGGY ORDER 123"),
+                 row(2, "2026-10-03", -80.0, "SWIGGY ORDER 123"))
+
+    def cat(self, tid):
+        d = {x["id"]: x for x in self.drafts(cashew.load_state(self.state_path))}[tid]
+        return d["category"], d["subcategory"]
+
+    def test_group_answer_changes_every_row_of_the_payee(self):
+        self.cli("txn-category", "t-1", "Shopping", "Others")
+        self.assertEqual(self.cat("t-1"), ("Shopping", "Others"))
+        self.assertEqual(self.cat("t-2"), ("Shopping", "Others"))
+
+    def test_only_this_changes_one_row(self):
+        before = self.cat("t-2")
+        self.cli("txn-category", "t-1", "Shopping", "Others", "--only-this")
+        self.assertEqual(self.cat("t-1"), ("Shopping", "Others"))
+        self.assertEqual(self.cat("t-2"), before)
+
+    def test_clear_removes_the_answer(self):
+        self.cli("txn-category", "t-1", "Shopping", "Others")
+        self.cli("txn-category", "t-1", "")
+        self.assertNotEqual(self.cat("t-1"), ("Shopping", "Others"))
+
+    def test_unknown_category_is_refused_and_other_state_kept(self):
+        self.state_path.write_text('{"version": 1, "categories": {}, "accounts": {"a": "X"}, "base": "web"}')
+        r = subprocess.run([sys.executable, str(ROOT / "bin/txdb"), "txn-category", "t-1", "Nope"],
+                           env={**os.environ, "TXDB_DB": str(self.path), "TXDB_CASHEW_STATE": str(self.state_path)},
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.cli("txn-category", "t-1", "Shopping", "Others")
+        st = json.loads(self.state_path.read_text())
+        self.assertEqual((st["base"], st["accounts"]), ("web", {"a": "X"}))

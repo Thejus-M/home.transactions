@@ -85,6 +85,49 @@ def load_state(path: Path | str | None = None) -> dict:
             "accounts": accts if isinstance(accts, dict) else {}}
 
 
+def _txn_pick(state: dict, txn_id: str) -> tuple[str, str] | None:
+    """The category the user set on one transaction only (state["txn"][id])."""
+    v = (state.get("txn") or {}).get(txn_id)
+    if isinstance(v, dict) and v.get("category"):
+        return v["category"], v.get("subcategory") or ""
+    return None
+
+
+def save_state(state: dict, path: Path | str | None = None) -> None:
+    """Atomic write (temp file then rename), the way the widget writes it."""
+    target = Path(path or default_state_path())
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, target)
+
+
+def set_category(conn, txn_id: str, category: str, sub: str = "", only_this: bool = False,
+                 path: Path | str | None = None) -> dict:
+    """Teach the category: for every transaction of this payee (default) or for this one only.
+    An empty category removes the answer. Returns the saved state."""
+    row = conn.execute("SELECT group_key FROM transactions WHERE id = ?", (txn_id,)).fetchone()
+    if not row:
+        raise ValueError(f"Unknown transaction {txn_id}")
+    if category and (category not in _types() or (sub and not _valid_sub(category, sub))):
+        raise ValueError(f"Unknown category {category!r} / {sub!r}")
+    state = load_state(path)
+    bucket, key = ("txn", txn_id) if only_this else ("categories", row["group_key"])
+    table = state.get(bucket)
+    table = dict(table) if isinstance(table, dict) else {}
+    if category:
+        table[key] = {"category": category, "subcategory": sub or ""}
+    else:
+        table.pop(key, None)
+    state[bucket] = table
+    if not only_this:                         # a payee-wide answer replaces this row's own one
+        own = dict(state.get("txn") or {})
+        if own.pop(txn_id, None) is not None:
+            state["txn"] = own
+    save_state(state, path)
+    return state
+
+
 def account_names(state: dict | None = None) -> list[str]:
     names: list[str] = []
     for n in list(ACCOUNT_MAP.values()) + [v for v in ((state or {}).get("accounts") or {}).values()]:
@@ -162,7 +205,8 @@ def category_from_name(name: str | None) -> tuple[str, str] | None:
 def choose_category(title: str, merchant: str, group_key: str, negative: bool, state: dict,
                     rules: list[dict] | None = None, types: dict[str, str] | None = None,
                     bill_user: tuple[str, str] | None = None, bill_llm: tuple[str, str] | None = None,
-                    friend_default: bool = False, assigned_name: str | None = None) -> tuple[str, str, str]:
+                    friend_default: bool = False, assigned_name: str | None = None,
+                    txn_pick: tuple[str, str] | None = None) -> tuple[str, str, str]:
     """(category, subcategory, warning). First hit wins: (a) the category the
     user set on the linked bill, (b) the merchant mapping the user taught,
     (c) the category written in the name the user gave the payee
@@ -173,7 +217,9 @@ def choose_category(title: str, merchant: str, group_key: str, negative: bool, s
     rules = load_rules() if rules is None else rules
     taught = (state.get("categories") or {}).get(group_key)
     pick, source = None, ""
-    if bill_user and bill_user[0]:
+    if txn_pick and txn_pick[0]:
+        pick, source = txn_pick, "category set on this transaction"
+    elif bill_user and bill_user[0]:
         pick, source = bill_user, "bill category"
     elif isinstance(taught, dict) and taught.get("category"):
         pick, source = (taught["category"], taught.get("subcategory") or ""), "taught category"
@@ -433,7 +479,8 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False) -> list[dict
                 bill_llm=(bc["category"], bc["subcategory"]) if bc and bc["source"] == "llm" else None,
                 # HDFC savings (not a card, not another bank), no bill, nothing else to go on
                 friend_default=(r["bank"] == "HDFC" and r["account_type"] == "checking" and r["id"] not in linked),
-                assigned_name=overrides.get(r["group_key"]))
+                assigned_name=overrides.get(r["group_key"]),
+                txn_pick=_txn_pick(state, r["id"]))
         aid = r["account_id"]
         account = acct_over[aid] if aid in acct_over else ACCOUNT_MAP.get(aid, "")
         out.append({

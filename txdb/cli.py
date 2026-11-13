@@ -4,6 +4,7 @@
   txdb set-tracked <id> <0|1>
   txdb set-tracked-many <0|1> <id>...
   txdb rename <groupKey> [name]          no name = clear the rename
+  txdb txn-category <txnId> <category> [<sub>] [--only-this]   teach a category (empty = clear)
   txdb account-name <account> [name]     account = id (BANK|type|last4) or last4
   txdb receipt-link <receiptId> <txnId>  file a bill against a transaction
   txdb heal-links                        re-point links whose transaction id changed
@@ -159,6 +160,18 @@ def main(argv: list[str]) -> int:
         return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
+    if cmd == "txn-category":
+        # txdb txn-category <txnId> <category> [<sub>] [--only-this]; empty category clears
+        from . import cashew
+        only = "--only-this" in args
+        rest = [a for a in args if a != "--only-this"] + ["", "", ""]
+        conn = cashew.open_readonly(DB_PATH)
+        try:
+            cashew.set_category(conn, rest[0], rest[1], rest[2], only_this=only)
+        except ValueError as e:
+            print(f"txn-category: {e}", file=sys.stderr)
+            return 2
+        return 0
     conn = connect()
     if cmd == "snapshot":
         from . import queries
