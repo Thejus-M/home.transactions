@@ -992,6 +992,13 @@ Panel {
           (writeErr.text || "").trim().split("\n").pop() || ("exit " + exitCode)
         ])
         root.refreshData()
+      } else if (command.slice(2)[0] === "txn-category") {
+        // A category chosen in the main list is in the state file now. The Cashew window
+        // keeps its own copy of that file and of the drafts built from it: drop the copy
+        // (so nothing can write the old one back) and rebuild, or the choice is ignored there.
+        root.cashewStale = true
+        root.cashewStateLoaded = false
+        if (root.cashewOpen && !root.cashewGuessing) root.cashewLoad()
       }
       root.runNextWrite()
     }
@@ -10838,7 +10845,9 @@ Panel {
         card.editing = false
       }
 
-      // CATEGORY: pick it here, or let the local model suggest one.
+      // CATEGORY: pick it here, or let the local model suggest one. A transfer between
+      // your own accounts is always "Balance Correction" in Cashew, so it has no picker.
+      readonly property bool canCategorise: !root.isTransferLeg(card.txn)
       property bool catPicking: false
       property string catMain: ""
       property bool catAll: true
@@ -10891,6 +10900,7 @@ Panel {
       Timer { interval: 1000; repeat: true; running: editPanel.aiBusy; onTriggered: editPanel.aiSeconds++ }
 
       Flow {
+        visible: editPanel.canCategorise
         width: parent.width
         spacing: Style.space(6)
         TxnBtn {
@@ -10916,7 +10926,7 @@ Panel {
 
       // the model's suggestion: nothing changes until you accept
       Flow {
-        visible: !!editPanel.aiSuggest || editPanel.aiMsg !== ""
+        visible: editPanel.canCategorise && (!!editPanel.aiSuggest || editPanel.aiMsg !== "")
         width: parent.width
         spacing: Style.space(6)
         Text {

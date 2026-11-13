@@ -583,3 +583,19 @@ class TxnCategoryTests(Base):
         self.cli("txn-category", "t-1", "Shopping", "Others")
         st = json.loads(self.state_path.read_text())
         self.assertEqual((st["base"], st["accounts"]), ("web", {"a": "X"}))
+
+
+class TxnCategoryBillTests(Base):
+    def test_payee_answer_that_a_bill_category_overrides_is_pinned_on_the_row(self):
+        self.add(self.hdfc, row(1, "2026-10-02", -250.0, "SWIGGY ORDER 123"))
+        with db.write(self.conn):
+            self.conn.execute("INSERT INTO receipts (id, image_sha256, stored_path, parsed_at, imported_at) VALUES "
+                              "('r1','r1','x','2026-10-02T00:00:00','2026-10-02T00:00:00')")
+            self.conn.execute("INSERT INTO receipt_links (receipt_id, transaction_id, state, matched_by, linked_at) "
+                              "VALUES ('r1','t-1','linked','manual','2026-10-02T00:00:00')")
+            self.conn.execute("INSERT INTO receipt_categories (receipt_id, category, subcategory, source, updated_at) "
+                              "VALUES ('r1','Groceries','Provisions','user','2026-10-02T00:00:00')")
+        self.cli("txn-category", "t-1", "Shopping", "Others")           # payee-wide, but the bill says Groceries
+        d = {x["id"]: x for x in self.drafts(cashew.load_state(self.state_path))}["t-1"]
+        self.assertEqual((d["category"], d["subcategory"]), ("Shopping", "Others"))
+        self.assertIn("t-1", cashew.load_state(self.state_path).get("txn", {}))

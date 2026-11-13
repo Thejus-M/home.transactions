@@ -125,6 +125,15 @@ def set_category(conn, txn_id: str, category: str, sub: str = "", only_this: boo
         if own.pop(txn_id, None) is not None:
             state["txn"] = own
     save_state(state, path)
+    if category and not only_this:
+        # A payee-wide answer loses to a category set on this row's own bill, so check that
+        # this row really took it; if not, pin it on the row as well.
+        got = {d["id"]: d for d in drafts(conn, state, all_rows=True)}.get(txn_id)
+        if got and got["kind"] != "transfer" and (got["category"], got["subcategory"]) != (category, sub or ""):
+            pins = dict(state.get("txn") or {})
+            pins[txn_id] = {"category": category, "subcategory": sub or ""}
+            state["txn"] = pins
+            save_state(state, path)
     return state
 
 
