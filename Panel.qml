@@ -5478,13 +5478,14 @@ Panel {
           textFormat: Text.PlainText
           width: parent.width
           horizontalAlignment: Text.AlignRight
-          text: billRow.parts.nextBill > 0
+          readonly property bool hasSpend: Math.round(billRow.parts.nextBill) > 0
+          text: nextBillText.hasSpend
             ? Model.currencySymbol("INR") + Model.formatGrouped(Math.round(billRow.parts.nextBill))
             : "no spend yet"
-          color: billRow.parts.nextBill > 0 ? root.foreground : Qt.darker(root.foreground, 1.5)
+          color: nextBillText.hasSpend ? root.foreground : Qt.darker(root.foreground, 1.5)
           font.family: Style.font.family
-          font.bold: billRow.parts.nextBill > 0
-          font.pixelSize: billRow.parts.nextBill > 0 ? Style.font.subtitle : Style.font.caption
+          font.bold: nextBillText.hasSpend
+          font.pixelSize: nextBillText.hasSpend ? Style.font.subtitle : Style.font.caption
         }
 
         // Below it: a bill already generated, with the amount left to pay.
@@ -5592,10 +5593,11 @@ Panel {
           { label: "In credit", value: billRow.parts.inCredit
               ? Model.currencySymbol("INR") + Model.formatGrouped(Math.abs(billRow.parts.payNow)) : "" },
           { label: "Last bill closed", value: Model.cycleClose(billRow.overview).known ? Model.formatShortDate(Model.cycleClose(billRow.overview).lastClosed, true) : Model.formatShortDate(billRow.overview.statementDate, true) },
+          { label: "Minimum due", value: billRow.parts.payNow > 0 ? (billRow.overview.minimum_due || "") : "" },
           { label: "Pay by", value: billRow.overview.dueDate
               ? Model.formatShortDate(billRow.overview.dueDate, true) + "  ·  " + Model.dueCountdown(billRow.overview.dueDate) : "" },
           { label: "Next bill closes", value: Model.cycleClose(billRow.overview).known ? Model.formatShortDate(Model.cycleClose(billRow.overview).closesOn, true) : "" },
-          { label: "Next bill so far", value: billRow.parts.nextBill > 0
+          { label: "Next bill so far", value: Math.round(billRow.parts.nextBill) > 0
               ? Model.currencySymbol("INR") + Model.formatGrouped(billRow.parts.nextBill) : "" },
           { label: "Total outstanding", value: billRow.overview.total_outstanding },
           { label: "Unsettled / loans", value: billRow.overview.unsettled_amount || "" },

@@ -31,7 +31,7 @@ RAW_TABLES = {
 OVERVIEW_FIELDS = ["unbilled_amount", "total_outstanding", "upcoming_payment_due", "payment_status",
                    "last_payment_amount", "last_payment_date", "spent_this_cycle", "credited_this_cycle",
                    "billing_cycle", "due_text", "last_statement_amount", "unbilled_credits",
-                   "unbilled_purchases", "unsettled_amount", "credit_limit_total", "available_limit"]
+                   "unbilled_purchases", "unsettled_amount", "credit_limit_total", "available_limit", "minimum_due"]
 
 
 def account_id(bank: str, account_type: str, last4: str) -> str:

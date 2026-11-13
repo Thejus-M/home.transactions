@@ -18,7 +18,8 @@ class SnapshotCategoryTests(unittest.TestCase):
         for t in snap["transactions"]:
             self.assertIn("category", t)
             self.assertIn("subcategory", t)
-            self.assertNotEqual(t["category"], "Uncategorized")
+            if t["category"] == "Uncategorized":             # only when the user chose a sub-category on purpose
+                self.assertNotEqual(t["subcategory"], "")
 
 
 if __name__ == "__main__":

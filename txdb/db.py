@@ -712,6 +712,10 @@ MIGRATIONS = [
         updated_at      TEXT NOT NULL
     );
     """,
+    # v25: the least a card's bill accepts (ICICI prints it beside the total due).
+    """
+    ALTER TABLE card_cycles_raw ADD COLUMN minimum_due TEXT;
+    """,
 ]
 
 
