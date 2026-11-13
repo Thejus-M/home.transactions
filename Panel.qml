@@ -1560,6 +1560,12 @@ Panel {
       root.txdb(["txn-note", txnId, trimmed])
     }
 
+    // Teach a category: for every transaction of this payee, or for this one only.
+    // An empty category clears the answer. The snapshot reload shows it.
+    function setTxnCategory(txnId, category, sub, onlyThis) {
+      root.txdb(["txn-category", txnId, category || "", sub || ""].concat(onlyThis ? ["--only-this"] : []))
+    }
+
     // A bill made from typed text, filed against the transaction.
     function noteBill(txnId, text) {
       root.txdb(["note-bill", txnId, String(text || "").replace(/\n/g, "\\n")])
@@ -10822,7 +10828,7 @@ Panel {
         for (var i = 0; i < billItems.length; i++) if (String(billItems[i].d).trim() !== "") return true
         return false
       }
-      onVisibleChanged: if (visible) { billMode = false; picking = false; billItems = [{ d: "", q: "", p: "" }] }
+      onVisibleChanged: if (visible) { billMode = false; picking = false; catPicking = false; catMain = ""; aiSuggest = null; aiMsg = ""; billItems = [{ d: "", q: "", p: "" }] }
       function setItem(i, key, val) {
         var next = billItems.slice()
         next[i] = Object.assign({}, next[i]); next[i][key] = val
@@ -10841,6 +10847,142 @@ Panel {
         store.setTransactionName(card.groupKey, editField.text)
         store.noteBill(card.txn.id, lines.join("\n"))
         card.editing = false
+      }
+
+      // CATEGORY: pick it here, or let the local model suggest one.
+      property bool catPicking: false
+      property string catMain: ""
+      property bool catAll: true
+      property bool aiBusy: false
+      property int aiSeconds: 0
+      property var aiSuggest: null
+      property string aiMsg: ""
+      readonly property var catChoices: Model.cashewCategoriesFor(store.receiptCategories, Number(card.txn.amount) < 0 ? "-1" : "1")
+      readonly property var catMainDef: {
+        for (var k = 0; k < catChoices.length; k++) if (catChoices[k].name === catMain) return catChoices[k]
+        return null
+      }
+      function startAi() {
+        if (editPanel.aiBusy || root.cashewGuessing) return
+        editPanel.aiSuggest = null
+        editPanel.aiMsg = ""
+        editPanel.aiSeconds = 0
+        aiInput = JSON.stringify({ rows: [{
+          id: card.txn.id, amount: Number(card.txn.amount).toFixed(2), title: card.displayMerchant,
+          merchant: card.txn.merchant, notes: card.userNote || card.note || "",
+          bank: card.txn.bank, accountType: card.txn.accountType }], taught: Model.cashewTaught(root.cashewState) }) + "\n"
+        editPanel.aiBusy = true
+        rowGuess.running = true
+      }
+      property string aiInput: ""
+      Process {
+        id: rowGuess
+        command: ["python3", root.txdbBin, "cashew-guess", "-", "--workers", "1", "--batch", "1"]
+        stdinEnabled: true
+        stdout: SplitParser {
+          splitMarker: "\n"
+          onRead: function (line) {
+            var m
+            try { m = JSON.parse(line) } catch (e) { return }
+            if (m.error) editPanel.aiMsg = String(m.error)
+            if (m.results && m.results.length && m.results[0].category) editPanel.aiSuggest = m.results[0]
+          }
+        }
+        stderr: StdioCollector { id: rowGuessErr }
+        onRunningChanged: if (rowGuess.running && editPanel.aiInput !== "") {
+          rowGuess.write(editPanel.aiInput)
+          editPanel.aiInput = ""
+        }
+        onExited: function (exitCode) {
+          editPanel.aiBusy = false
+          if (!editPanel.aiSuggest && editPanel.aiMsg === "")
+            editPanel.aiMsg = exitCode === 0 ? "The model gave no category." : "AI failed (" + exitCode + ")"
+        }
+      }
+      Timer { interval: 1000; repeat: true; running: editPanel.aiBusy; onTriggered: editPanel.aiSeconds++ }
+
+      Flow {
+        width: parent.width
+        spacing: Style.space(6)
+        TxnBtn {
+          label: card.txn.category ? ("Category: " + card.txn.category + (card.txn.subcategory ? "  ›  " + card.txn.subcategory : "")) : "Choose category"
+          primary: editPanel.catPicking
+          onClicked: { editPanel.catPicking = !editPanel.catPicking; editPanel.catMain = "" }
+        }
+        TxnBtn {
+          label: editPanel.aiBusy ? ("Stop  " + editPanel.aiSeconds + "s") : "✦ AI"
+          enabled: editPanel.aiBusy || !root.cashewGuessing
+          onClicked: if (editPanel.aiBusy) rowGuess.running = false; else editPanel.startAi()
+        }
+        TxnBtn {
+          label: editPanel.catAll ? "☑ All from this payee" : "☐ This one only"
+          onClicked: editPanel.catAll = !editPanel.catAll
+        }
+        TxnBtn {
+          visible: !!card.txn.category
+          label: "Clear"
+          onClicked: store.setTxnCategory(card.txn.id, "", "", !editPanel.catAll)
+        }
+      }
+
+      // the model's suggestion: nothing changes until you accept
+      Flow {
+        visible: !!editPanel.aiSuggest || editPanel.aiMsg !== ""
+        width: parent.width
+        spacing: Style.space(6)
+        Text {
+          width: Math.min(implicitWidth, parent.width)
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          text: editPanel.aiSuggest ? ("AI suggests: " + editPanel.aiSuggest.category + (editPanel.aiSuggest.subcategory ? "  ›  " + editPanel.aiSuggest.subcategory : "")) : editPanel.aiMsg
+          color: editPanel.aiSuggest ? root.foreground : Qt.darker(root.foreground, 1.3)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        TxnBtn {
+          visible: !!editPanel.aiSuggest
+          label: "Accept"
+          primary: true
+          onClicked: {
+            store.setTxnCategory(card.txn.id, editPanel.aiSuggest.category, editPanel.aiSuggest.subcategory, !editPanel.catAll)
+            editPanel.aiSuggest = null
+          }
+        }
+        TxnBtn { visible: !!editPanel.aiSuggest || editPanel.aiMsg !== ""; label: "Discard"; onClicked: { editPanel.aiSuggest = null; editPanel.aiMsg = "" } }
+      }
+
+      // main categories, then the sub-categories of the one chosen
+      Flow {
+        visible: editPanel.catPicking && editPanel.catMain === ""
+        width: parent.width
+        spacing: Style.space(6)
+        Repeater {
+          model: editPanel.catPicking ? editPanel.catChoices : []
+          delegate: TxnBtn {
+            required property var modelData
+            label: (modelData.icon || "") + "  " + modelData.name
+            onClicked: editPanel.catMain = modelData.name
+          }
+        }
+      }
+      Flow {
+        visible: editPanel.catPicking && editPanel.catMain !== ""
+        width: parent.width
+        spacing: Style.space(6)
+        TxnBtn { label: "‹ Back"; onClicked: editPanel.catMain = "" }
+        TxnBtn {
+          label: "Just " + editPanel.catMain
+          primary: true
+          onClicked: { store.setTxnCategory(card.txn.id, editPanel.catMain, "", !editPanel.catAll); editPanel.catPicking = false }
+        }
+        Repeater {
+          model: editPanel.catMainDef ? editPanel.catMainDef.subcategories : []
+          delegate: TxnBtn {
+            required property string modelData
+            label: ((editPanel.catMainDef.subIcons || {})[modelData] || "") + "  " + modelData
+            onClicked: { store.setTxnCategory(card.txn.id, editPanel.catMain, modelData, !editPanel.catAll); editPanel.catPicking = false }
+          }
+        }
       }
 
       Row {
