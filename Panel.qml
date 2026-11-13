@@ -5310,7 +5310,10 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
             text: billRow.view.bill.text
-            color: billRow.view.bill.primary ? billRow.toneColor(billRow.view.bill.tone === "muted" ? "foreground" : billRow.view.bill.tone) : Qt.darker(root.foreground, 1.5)
+            // the state's colour (red unpaid, amber sent, green paid); dimmer when it is not the one to act on
+            color: billRow.view.bill.tone === "muted"
+              ? (billRow.view.bill.primary ? root.foreground : Qt.darker(root.foreground, 1.5))
+              : Util.alpha(billRow.toneColor(billRow.view.bill.tone), billRow.view.bill.primary ? 1.0 : 0.8)
             font.family: Style.font.family
             font.bold: billRow.view.bill.primary
             font.pixelSize: billRow.view.bill.primary ? Style.font.subtitle : Style.font.body

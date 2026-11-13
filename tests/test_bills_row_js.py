@@ -55,6 +55,7 @@ class BillRowViewTests(unittest.TestCase):
         v = view({"last4": "1", "total_outstanding": "₹3,000", "last_statement_amount": "₹0", "unbilled_purchases": "₹3,000",
                   "billingDay": 12})
         self.assertEqual((v["pill"], v["bill"]["text"], v["soFar"]["text"], v["soFar"]["primary"]), ("BILL PAID", "₹0", "₹3,000", True))
+        self.assertEqual((v["pillTone"], v["bill"]["tone"]), ("credit", "credit"))               # paid is green
 
     def test_paid_card_without_spend(self):
         v = view({"last4": "1", "total_outstanding": "₹0", "last_statement_amount": "₹0", "unbilled_purchases": "₹0"})

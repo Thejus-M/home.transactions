@@ -738,10 +738,11 @@ function billRowView(o, paidOverride) {
   var v = {
     bill: { text: money(Math.max(bp.payNow, 0)), primary: false, tone: "muted" },
     soFar: { text: money(spend), primary: true, tone: "muted" },
-    pill: "BILL PAID", pillTone: "muted", line2: "", rightUrgent: false
+    pill: "BILL PAID", pillTone: "credit", line2: "", rightUrgent: false
   }
+  if (bp.payNow <= 0 || paidOverride) v.bill.tone = "credit"       // paid: green
   if (bp.awaiting) {
-    v.pill = "BILL SENT"; v.pillTone = "pending"
+    v.pill = "BILL SENT"; v.pillTone = "pending"; v.bill.tone = "pending"
     v.line2 = "paid " + sym + formatGrouped(bp.awaitingAmount)
       + (bp.awaitingDate ? " · " + formatShortDate(bp.awaitingDate) : "")
   } else if (bp.inCredit) {
