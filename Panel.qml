@@ -7137,7 +7137,9 @@ Panel {
       width: parent.width
       textFormat: Text.PlainText
       wrapMode: Text.NoWrap
-      text: (fsRule.doubled ? "=" : "-").repeat(120)
+      // Long enough for any window width; the Item clips it. (120 stopped short of the right edge on a wide window.)
+      text: (fsRule.doubled ? "=" : "-").repeat(600)
+      elide: Text.ElideNone
       color: Qt.darker(root.foreground, 1.8)
       font.family: "monospace"
       font.pixelSize: Style.font.caption
@@ -10558,13 +10560,16 @@ Panel {
     // reveals the "i" and edit buttons at the right edge.
     property real slide: (card._hot || card.infoOpen) && !card.editing ? Style.space(62) : 0
     Behavior on slide { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+    // The edit panel is a Loader that unloads when editing ends, so a callLater closure written
+    // inside it would run after its own context is gone ("card is not defined"). This one lives on the card.
+    function refocus() { Qt.callLater(function () { card.forceActiveFocus() }) }
     function saveEdit() {
       store.setTransactionName(card.groupKey, (editFieldLoader.item ? editFieldLoader.item.text : ""))
       // noteArea lives inside the lazily built edit panel, so it is read through the Loader.
       var noteText = editLoader.item ? editLoader.item.noteText : card.userNote
       if (noteText.trim() !== card.userNote) store.setTxnNote(card.txn.id, noteText)
       card.editing = false
-      Qt.callLater(function () { card.forceActiveFocus() })
+      card.refocus()
     }
     // The bill filed against this transaction, if any - its note icon opens it.
     readonly property var linkedReceipt: Model.linkedReceiptForTransaction(txn, store.receipts)
@@ -10976,7 +10981,7 @@ Panel {
         // stick otherwise.
         Keys.onEscapePressed: {
           card.editing = false
-          Qt.callLater(function () { card.forceActiveFocus() })
+          card.refocus()
         }
         }
       }
@@ -11253,7 +11258,7 @@ Panel {
           background: null
           onVisibleChanged: if (visible) text = card.userNote
           Component.onCompleted: text = card.userNote
-          Keys.onEscapePressed: { card.editing = false; Qt.callLater(function () { card.forceActiveFocus() }) }
+          Keys.onEscapePressed: { card.editing = false; card.refocus() }
         }
       }
 
@@ -11336,7 +11341,7 @@ Panel {
           visible: editPanel.billMode && !card.linkedReceipt
           onClicked: editPanel.billItems = editPanel.billItems.concat([{ d: "", q: "", p: "" }])
         }
-        TxnBtn { label: "Cancel"; onClicked: { card.editing = false; Qt.callLater(function () { card.forceActiveFocus() }) } }
+        TxnBtn { label: "Cancel"; onClicked: { card.editing = false; card.refocus() } }
         TxnBtn {
           label: "Open bill"
           visible: !!card.linkedReceipt
