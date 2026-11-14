@@ -6,6 +6,8 @@ import subprocess
 import unittest
 from pathlib import Path
 
+_Y = "" if __import__("datetime").date.today().year == 2026 else "-26"   # formatDate drops the current year
+
 ROOT = Path(__file__).resolve().parent.parent
 NODE = shutil.which("node")
 
@@ -106,7 +108,7 @@ class CashewJs(unittest.TestCase):
         self.assertEqual(self.js("cashewPrettyJson('nope')"), "nope")
 
     def test_grouped_list_helpers(self):
-        self.assertEqual(self.js("cashewDayLabel('2026-11-08')"), "Sunday, November 8")
+        self.assertEqual(self.js("cashewDayLabel('2026-11-08')"), "Sunday, 08-Nov" + _Y)
         self.assertEqual(self.js("cashewDayLabel('oops')"), "oops")
         self.assertEqual(self.js("cashewMoney('-1234567.5')"), "₹1,234,567.50")
         self.assertEqual(self.js("cashewMoney('9.78')"), "₹9.78")
@@ -148,7 +150,7 @@ class CashewJs(unittest.TestCase):
         t = res["transfers"][0]
         self.assertEqual(t["url"], "https://budget-track.web.app/addTransferRoute?amountFrom=1.00&amountTo=1.00"
                                    "&accountFrom=HDFC&accountTo=SBI&title=Transfer%20to%20SBI&date=2026-11-07")
-        self.assertEqual(self.js("cashewTransferLine(input.t)", t=t), "HDFC → SBI ₹1.00 · 2026-11-07")
+        self.assertEqual(self.js("cashewTransferLine(input.t)", t=t), "HDFC → SBI ₹1.00 · 07-Nov" + _Y)
         # leg "i" not shown: "o" becomes a lone leg with a warning
         one = self.js("cashewBuildLinks(input.d, [0, 2], 6000, input.c)", d=ds, c=CATS)
         self.assertEqual((one["transfers"], one["links"][0]["ids"]), ([], ["x", "o"]))

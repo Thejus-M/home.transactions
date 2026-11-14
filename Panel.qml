@@ -4534,7 +4534,7 @@ Panel {
                         display: receiptFullScreen.r.date ? Model.formatReceiptDate(receiptFullScreen.r.date) : "—"
                         initial: Model.formatReceiptDate(receiptFullScreen.r.date)
                         textColor: Qt.darker(root.foreground, 1.1)
-                        placeholder: "DD-MM-YYYY"
+                        placeholder: "02-Nov-26"
                       }
                     }
                     Row {
@@ -4548,10 +4548,10 @@ Panel {
                       }
                       InlineEdit {
                         fieldName: "time"
-                        display: receiptFullScreen.r.time || "—"
-                        initial: receiptFullScreen.r.time || ""
+                        display: receiptFullScreen.r.time ? Model.formatClock(receiptFullScreen.r.time) : "—"
+                        initial: receiptFullScreen.r.time ? Model.formatClock(receiptFullScreen.r.time) : ""
                         textColor: Qt.darker(root.foreground, 1.1)
-                        placeholder: "HH:MM"
+                        placeholder: "8:15 PM"
                       }
                     }
                   }
@@ -5731,7 +5731,7 @@ Panel {
           textFormat: Text.PlainText
           text: [
             mb.receipt.date ? Model.formatReceiptDate(mb.receipt.date) : "",
-            mb.receipt.time || "",
+            mb.receipt.time ? Model.formatClock(mb.receipt.time) : "",
             mb.receipt.paymentHint ? "Paid by " + mb.receipt.paymentHint : "",
           ].filter(function (x) { return x !== "" }).join("   ·   ")
           color: Qt.darker(root.foreground, 1.4)
@@ -7127,7 +7127,7 @@ Panel {
   // it stands: plain text until clicked, then a box; Enter or clicking away
   // saves, Escape cancels. It is a fixed part of the card - not built per
   // refresh - so a database refresh while you type cannot close it. A date
-  // must be a real one (DD-MM-YYYY and similar) or the box stays red and
+  // must be a real one (02-Nov-26, 02/11/26 and similar) or the box stays red and
   // nothing is saved.
   component InlineEdit: Item {
     id: ie
@@ -7141,8 +7141,9 @@ Panel {
     property int pixelSize: Style.font.caption
     property bool editing: false
     readonly property string billId: receiptFullScreen.r.id || ""
-    readonly property bool invalid: ie.editing && ie.fieldName === "date"
-      && Model.parseReceiptDate(input.text) === null
+    readonly property bool invalid: ie.editing
+      && ((ie.fieldName === "date" && Model.parseReceiptDate(input.text) === null)
+          || (ie.fieldName === "time" && Model.parseReceiptTime(input.text) === null))
     onBillIdChanged: ie.editing = false
 
     implicitWidth: ie.editing ? Math.max(label.implicitWidth, Style.space(110)) : label.implicitWidth
@@ -7195,6 +7196,7 @@ Panel {
         var typed = text.trim()
         var changed = typed !== ie.initial.trim()
         if (name === "date") typed = Model.parseReceiptDate(typed)
+        if (name === "time") typed = Model.parseReceiptTime(typed)
         ie.editing = false
         if (changed) st.editReceiptField(rid, name, typed)
       }
@@ -7472,10 +7474,11 @@ Panel {
             var feeName = ef.feeField
             var typed = text
             var changed = text.trim() !== (ef.value || "").trim()
-            // Dates are shown DD-MM-YYYY but stored ISO; a discount is
+            // Dates are shown DD-Mmm-YY but stored ISO; a discount is
             // always a positive amount taken off, whatever sign the bill
             // printed it with.
             if (name === "date") typed = Model.parseReceiptDate(text)
+            if (name === "time") typed = Model.parseReceiptTime(text)
             if (name === "discount") typed = text.replace(/^\s*-/, "")
             ef.editing = false
             ef.finished()
@@ -7491,7 +7494,7 @@ Panel {
         id: efError
         visible: ef.invalid
         textFormat: Text.PlainText
-        text: ef.badDate ? "Date needs DD-MM-YYYY (e.g. 25-06-2026)" : ef.label + " needs a plain number"
+        text: ef.badDate ? "Date needs a form like 25-Jun-26 or 25/06/26" : ef.label + " needs a plain number"
         color: root.debitColor
         font.family: Style.font.family
         font.pixelSize: Style.font.caption

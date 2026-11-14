@@ -5,6 +5,8 @@ import subprocess
 import unittest
 from pathlib import Path
 
+_Y = "" if __import__("datetime").date.today().year == 2026 else "-26"   # formatDate drops the current year
+
 ROOT = Path(__file__).resolve().parent.parent
 NODE = shutil.which("node")
 SCRIPT = """
@@ -114,9 +116,9 @@ class Explain(Harness):
         self.assertEqual((r["title"], r["certainty"]), ("SAME REFERENCE", "very sure"))
         rows = {x["k"]: x["v"] for x in r["rows"]}
         self.assertEqual(rows["Matched by"], "UPI reference 1240 2879 5174")
-        self.assertEqual(rows["Matched on"], "8 Nov 2026")
-        self.assertEqual(rows["OUT"], "30 Sep 2026  HDFC  -\u20b920,000")
-        self.assertEqual(rows["IN"], "30 Sep 2026  SBI  +\u20b920,000")
+        self.assertEqual(rows["Matched on"], "08-Nov" + _Y)
+        self.assertEqual(rows["OUT"], "30-Sep" + _Y + "  HDFC  -\u20b920,000")
+        self.assertEqual(rows["IN"], "30-Sep" + _Y + "  SBI  +\u20b920,000")
         self.assertEqual(r["why"], "Both sides carry the same UPI reference.")
 
     def test_null_matched_at_omits_the_row(self):
@@ -143,8 +145,8 @@ class Explain(Harness):
         r = self.explain(self.missing(), {"lastFetched": {"HDFC": "2026-10-01T09:00:00"}})
         self.assertEqual((r["title"], r["certainty"]), ("ONE SIDE MISSING", "a guess"))
         rows = {x["k"]: x["v"] for x in r["rows"]}
-        self.assertEqual(rows["Missing"], "HDFC side (-\u20b914,000 around 5 Oct 2026)")
-        self.assertEqual(r["why"], "The other account is not in your data. HDFC was last fetched 1 Oct 2026.")
+        self.assertEqual(rows["Missing"], "HDFC side (-\u20b914,000 around 05-Oct" + _Y + ")")
+        self.assertEqual(r["why"], "The other account is not in your data. HDFC was last fetched 01-Oct" + _Y + ".")
         self.assertEqual(r["next"], "Fetch HDFC again. This will pair by itself.")
 
     def test_missing_side_next_step_after_a_later_fetch(self):

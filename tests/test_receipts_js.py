@@ -16,6 +16,8 @@ import sys
 import unittest
 from pathlib import Path
 
+_Y = "" if __import__("datetime").date.today().year == 2026 else "-26"   # formatDate drops the current year
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -124,7 +126,7 @@ class Formatting(Harness):
         self.assertEqual(shaky["pill"], "CHECK")
 
     def test_dates_print_dd_mm_yyyy_and_parse_back_to_iso(self):
-        self.assertEqual(self.js("formatReceiptDate('2026-11-05')"), "05-11-2026")
+        self.assertEqual(self.js("formatReceiptDate('2026-11-05')"), "05-Nov" + _Y)
         self.assertEqual(self.js("formatReceiptDate(null)"), "")
         self.assertEqual(self.js("parseReceiptDate('5-11-2026')"), "2026-11-05")
         self.assertEqual(self.js("parseReceiptDate('2026-11-05')"), "2026-11-05")
@@ -132,6 +134,29 @@ class Formatting(Harness):
         self.assertEqual(self.js("parseReceiptDate('')"), "")
         self.assertIsNone(self.js("parseReceiptDate('31-02-2026')"))
         self.assertIsNone(self.js("parseReceiptDate('yesterday')"))
+
+    def test_named_month_dates_and_12_hour_times(self):
+        # THE date format: dd-Mmm-yy, the year only when it is not this year.
+        self.assertEqual(self.js("formatDate('2025-11-02')"), "02-Nov-25")
+        self.assertEqual(self.js("formatDate('2020-01-09')"), "09-Jan-20")
+        self.assertEqual(self.js("formatDate('')"), "")
+        # what formatDate prints must be accepted back by the edit box
+        self.assertEqual(self.js("parseReceiptDate('02-Nov-25')"), "2025-11-02")
+        self.assertEqual(self.js("parseReceiptDate('2 nov 2025')"), "2025-11-02")
+        self.assertEqual(self.js("parseReceiptDate('02/11/25')"), "2025-11-02")
+        self.assertIsNone(self.js("parseReceiptDate('31-Feb-25')"))
+        self.assertIsNone(self.js("parseReceiptDate('02-Foo-25')"))
+        # time: 12 hour on screen, 24 hour stored
+        for stored, shown in (("00:05", "12:05 AM"), ("08:01", "8:01 AM"), ("12:00", "12:00 PM"),
+                              ("13:15", "1:15 PM"), ("20:15", "8:15 PM"), ("23:59", "11:59 PM")):
+            self.assertEqual(self.js("formatClock(input.t)", t=stored), shown)
+            self.assertEqual(self.js("parseReceiptTime(input.t)", t=shown), stored)
+        self.assertEqual(self.js("parseReceiptTime('20:15')"), "20:15")
+        self.assertEqual(self.js("parseReceiptTime('8.15pm')"), "20:15")
+        self.assertEqual(self.js("parseReceiptTime('')"), "")
+        self.assertIsNone(self.js("parseReceiptTime('25:00')"))
+        self.assertIsNone(self.js("parseReceiptTime('13:00 PM')"))
+        self.assertEqual(self.js("formatClock('')"), "")
 
     def test_tax_rows_split_a_slab_like_the_printout(self):
         out = self.js("receiptTaxRows(input.r)",
@@ -243,7 +268,7 @@ class AppOrder(Harness):
                                                   "size_bytes": 2411724, "file_name": "bill.jpg"},
                     importedAt="2026-11-06T10:00:00", parsedAt="2026-11-06T10:01:00", method="vision-llm:gemma")
         rows = dict((x["label"], x["value"]) for x in self.js("receiptInfoRows(input.r)", r=r))
-        self.assertEqual(rows["Photo taken"], "26-06-2026 08:01")
+        self.assertEqual(rows["Photo taken"], "26-Jun" + _Y + " 8:01 AM")
         self.assertEqual(rows["Bill date vs photo"], "1 day apart")
         self.assertEqual(rows["Camera"], "Google Pixel 8")
         self.assertEqual(rows["Image"], "3000 × 4000 px  ·  JPEG  ·  2.3 MB")
@@ -255,15 +280,15 @@ class AppOrder(Harness):
                                                   "printed_date": "2026-06-25"})
         rows = dict((x["label"], x["value"]) for x in self.js("receiptInfoRows(input.r)", r=r))
         self.assertEqual(rows["Date used"], "photo taken date")
-        self.assertEqual(rows["Printed on the bill"], "2026-06-25")
+        self.assertEqual(rows["Printed on the bill"], "25-Jun" + _Y)
 
     def test_the_info_rows_show_the_bill_time_and_the_printed_time(self):
         r = receipt(date="2026-06-26", time="08:01",
                     imageMeta={"taken": "2026-06-26 08:01:09", "date_source": "taken",
                                "time": "08:01", "printed_time": "13:15"})
         rows = dict((x["label"], x["value"]) for x in self.js("receiptInfoRows(input.r)", r=r))
-        self.assertEqual(rows["Bill time"], "08:01")
-        self.assertEqual(rows["Printed time"], "13:15")
+        self.assertEqual(rows["Bill time"], "8:01 AM")
+        self.assertEqual(rows["Printed time"], "1:15 PM")
         same = dict((x["label"], x["value"]) for x in self.js(
             "receiptInfoRows(input.r)", r=receipt(imageMeta={"time": "08:01", "printed_time": "08:01"})))
         self.assertNotIn("Printed time", same)

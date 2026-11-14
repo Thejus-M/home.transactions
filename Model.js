@@ -47,6 +47,44 @@ var _WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "F
 var _WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 var _MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
+// THE date format of the whole widget: "02-Nov-26". The year is dropped when it
+// is the current year ("02-Nov"), because it is only needed when it is not
+// obvious. Every date the UI shows goes through here; nothing else formats one.
+// `iso` is "YYYY-MM-DD" (anything after the 10th character is ignored).
+function formatDate(iso) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""))
+  if (!m) return String(iso || "")
+  var out = m[3] + "-" + (_MONTH_NAMES[Number(m[2]) - 1] || m[2])
+  if (Number(m[1]) !== new Date().getFullYear()) out += "-" + m[1].slice(2)
+  return out
+}
+
+// THE time format of the whole widget: 12-hour, "8:15 PM". `hhmm` is "HH:MM"
+// (24 hour, as stored; seconds are ignored). Anything else is handed back as is.
+function formatClock(hhmm) {
+  var m = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(String(hhmm || "").trim())
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return String(hhmm || "")
+  var h = Number(m[1])
+  return ((h % 12) || 12) + ":" + m[2] + " " + (h < 12 ? "AM" : "PM")
+}
+
+// The inverse, for the edit box: "8:15 PM", "8.15pm", "20:15" -> "20:15" (the
+// stored form). "" for an empty box, null when it is not a real time.
+function parseReceiptTime(text) {
+  var t = String(text || "").trim().toLowerCase()
+  if (t === "") return ""
+  var m = /^(\d{1,2})[:.](\d{2})\s*(am|pm|a\.m\.|p\.m\.)?$/.exec(t)
+  if (!m) return null
+  var h = Number(m[1]), min = Number(m[2])
+  var pm = m[3] ? m[3].charAt(0) === "p" : null
+  if (min > 59) return null
+  if (pm !== null) {
+    if (h < 1 || h > 12) return null
+    h = (h % 12) + (pm ? 12 : 0)
+  } else if (h > 23) return null
+  return ("0" + h).slice(-2) + ":" + ("0" + min).slice(-2)
+}
+
 // "Sat, Oct 5" — full (non-relative) date for the expanded transaction-card
 // detail panel, where "Today"/"Yesterday" phrasing (formatRelativeDate)
 // would be less useful than an unambiguous calendar date. No year: this
@@ -55,7 +93,7 @@ var _MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep
 function formatFullDate(dateIso) {
   var parts = dateIso.split("-")
   var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
-  return _WEEKDAY_SHORT[d.getDay()] + ", " + _MONTH_NAMES[d.getMonth()] + " " + d.getDate()
+  return _WEEKDAY_SHORT[d.getDay()] + ", " + formatDate(dateIso)
 }
 
 // "Today" / "Yesterday" / "Saturday, 4 Oct" (within the last week) /
@@ -70,7 +108,7 @@ function formatRelativeDate(dateIso) {
   d.setHours(0, 0, 0, 0)
 
   var diffDays = Math.round((today - d) / 86400000)
-  var dayMonth = d.getDate() + " " + _MONTH_NAMES[d.getMonth()]
+  var dayMonth = formatDate(dateIso)
 
   if (diffDays === 0) return "Today"
   if (diffDays === 1) return "Yesterday"
@@ -94,7 +132,7 @@ function dateGroupLabel(dateIso) {
   d.setHours(0, 0, 0, 0)
 
   var diffDays = Math.round((today - d) / 86400000)
-  var monthDay = _MONTH_FULL_NAMES[d.getMonth()] + " " + d.getDate()
+  var monthDay = formatDate(dateIso)
 
   if (diffDays === 0) return "Today, " + monthDay
   if (diffDays === 1) return "Yesterday, " + monthDay
@@ -586,11 +624,11 @@ function daysUntil(iso) {
   return Math.round((_localDate(iso) - today) / 86400000)
 }
 
-// "12 Oct", or "12 Oct 2026" with `withYear`.
+// "12-Oct" (this year) or "12-Oct-25". `withYear` is kept for the callers
+// but the year now shows only when it is not the current one (formatDate).
 function formatShortDate(iso, withYear) {
   if (!iso) return ""
-  var d = _localDate(iso)
-  return d.getDate() + " " + _MONTH_NAMES[d.getMonth()] + (withYear ? " " + d.getFullYear() : "")
+  return formatDate(iso)
 }
 
 // "18 days left" / "due tomorrow" / "due today" / "3 days overdue".
@@ -1080,12 +1118,7 @@ function receiptTitle(r) {
 // neither a printed date nor, sometimes, a priced item list).
 function receiptSubtitle(r) {
   var parts = []
-  if (r.date) {
-    var d = new Date(r.date + "T00:00:00")
-    if (!isNaN(d.getTime())) {
-      parts.push(d.toLocaleDateString(undefined, { day: "numeric", month: "short" }))
-    }
-  }
+  if (r.date) parts.push(formatDate(r.date))
   var n = (r.items || []).length
   if (n > 0) parts.push(n + (n === 1 ? " item" : " items"))
   var tax = receiptTaxTotal(r)
@@ -1093,11 +1126,10 @@ function receiptSubtitle(r) {
   return parts.join(" · ")
 }
 
-// "2026-11-05" -> "05-11-2026", the way a till prints it. Anything that is
-// not an ISO date is handed back untouched rather than mangled.
+// "2026-11-05" -> "05-Nov-26" (formatDate). Anything that is not an ISO date
+// is handed back untouched rather than mangled.
 function formatReceiptDate(iso) {
-  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "")
-  return m ? m[3] + "-" + m[2] + "-" + m[1] : (iso || "")
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso || "") ? formatDate(iso) : (iso || "")
 }
 
 // The inverse, for the edit box. Accepts what a person types: "05-11-2026",
@@ -1108,8 +1140,16 @@ function parseReceiptDate(text) {
   if (t === "") return ""
   var y, mo, d
   var m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t)
+  var named = /^(\d{1,2})[-\/. ]([A-Za-z]{3})[A-Za-z]*(?:[-\/. ](\d{2}|\d{4}))?$/.exec(t)
   if (m) { y = +m[1]; mo = +m[2]; d = +m[3] }
-  else {
+  else if (named) {
+    // "05-Nov-26", "5 nov", "05-Nov-2026": the way the widget shows dates.
+    mo = _MONTH_NAMES.map(function (n) { return n.toLowerCase() }).indexOf(named[2].toLowerCase()) + 1
+    if (mo === 0) return null
+    d = +named[1]
+    y = named[3] ? +named[3] : new Date().getFullYear()
+    if (named[3] && named[3].length === 2) y += 2000
+  } else {
     m = /^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2}|\d{4})$/.exec(t)
     if (!m) return null
     d = +m[1]; mo = +m[2]; y = +m[3]
@@ -1268,11 +1308,11 @@ function receiptPhotoNote(r) {
   return ""
 }
 
-// "2026-06-25 22:39:08" -> "25-06-2026 22:39"; a bare date loses the time.
+// "2026-06-25 22:39:08" -> "25-Jun-26 10:39 PM"; a bare date loses the time.
 function formatStamp(text) {
   var m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(text || "")
   if (!m) return text || ""
-  return m[3] + "-" + m[2] + "-" + m[1] + (m[4] ? " " + m[4] + ":" + m[5] : "")
+  return formatDate(m[1] + "-" + m[2] + "-" + m[3]) + (m[4] ? " " + formatClock(m[4] + ":" + m[5]) : "")
 }
 
 function formatBytes(n) {
@@ -1297,9 +1337,9 @@ function receiptInfoRows(r) {
   var src = m.date_source
   add("Date used", src === "taken" ? "photo taken date" : src === "modified" ? "file modified date"
     : src === "printed" ? "printed on the bill (photo has no date)" : "")
-  add("Bill time", m.time)
-  if (m.printed_date && m.printed_date !== r.date) add("Printed on the bill", m.printed_date)
-  if (m.printed_time && m.printed_time !== m.time) add("Printed time", m.printed_time)
+  add("Bill time", formatClock(m.time))
+  if (m.printed_date && m.printed_date !== r.date) add("Printed on the bill", formatReceiptDate(m.printed_date))
+  if (m.printed_time && m.printed_time !== m.time) add("Printed time", formatClock(m.printed_time))
   add("Camera", m.camera)
   var dims = m.width && m.height ? m.width + " × " + m.height + " px" : ""
   add("Image", [dims, m.format, formatBytes(m.size_bytes != null ? m.size_bytes : r.sourceSize)]
@@ -2438,12 +2478,12 @@ var _CASHEW_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Fri
 var _CASHEW_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
   "September", "October", "November", "December"]
 
-// "2026-11-08" -> "Sunday, November 8"; the text itself when it is not a date.
+// "2026-11-08" -> "Sunday, 08-Nov"; the text itself when it is not a date.
 function cashewDayLabel(date) {
   var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || "").trim())
   if (!m) return String(date || "")
   var wd = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).getUTCDay()
-  return _CASHEW_DAYS[wd] + ", " + (_CASHEW_MONTHS[Number(m[2]) - 1] || m[2]) + " " + Number(m[3])
+  return _CASHEW_DAYS[wd] + ", " + formatDate(m[1] + "-" + m[2] + "-" + m[3])
 }
 
 // "-1234.5" -> "₹1,234.50" (no sign; the caller adds the arrow).
@@ -2547,9 +2587,9 @@ function cashewLinkLabel(i, n, count, chars) {
     + "  ·  " + c + " characters"
 }
 
-// Transfer card line: "HDFC → SBI  ₹1.00  ·  2026-11-07".
+// Transfer card line: "HDFC → SBI  ₹1.00  ·  07-Nov".
 function cashewTransferLine(t) {
-  return (t.accountFrom || "?") + " → " + (t.accountTo || "?") + " " + cashewMoney(t.amount) + " · " + t.date
+  return (t.accountFrom || "?") + " → " + (t.accountTo || "?") + " " + cashewMoney(t.amount) + " · " + formatDate(t.date)
 }
 
 // "Mark 81 as tracked (8 transfers need a tap on Save in Cashew)?"
