@@ -314,9 +314,13 @@ def snapshot(conn: sqlite3.Connection, by_id: dict[str, dict]) -> dict:
     On the credit: refundOf (the purchase id, "" when it is not in the data), refundMode,
     refundNote. On the purchase: refundedBy (ids), refundedAmount, refundState
     ("full", "partial" or "pending")."""
+    try:
+        link_rows = conn.execute("SELECT * FROM refund_links").fetchall()
+    except sqlite3.OperationalError:                 # a read-only look at a database not yet migrated to v26
+        return {"refunds": [], "refundNot": [], "refundExpect": []}
     links = []
     refunded: dict[str, list[str]] = {}
-    for l in conn.execute("SELECT * FROM refund_links").fetchall():
+    for l in link_rows:
         credit = by_id.get(l["refund_id"])
         if credit is None:
             continue
