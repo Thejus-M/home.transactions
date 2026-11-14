@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="96" height="96" fill="none" stroke="#a371f7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Refund: money coming back. A return arrow curling round, a short bar (the amount) inside. -->
+  <path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/>
+  <path d="M4.5 3.8v3.7H8.2"/>
+  <path d="M9 12h6"/>
+</svg>

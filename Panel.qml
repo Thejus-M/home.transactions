@@ -754,6 +754,12 @@ Panel {
   // so 490 rows meant ~50k objects. "Show older" raises the limit.
   property int rowLimit: 120
   readonly property var allFlatRows: Model.flattenGroups(root.groupedTransactions)
+  // id -> row, for text that names the other side of a link ("Refund of FLIPKART ...").
+  readonly property var transactionById: {
+    var m = ({})
+    store.transactions.forEach(function (t) { m[t.id] = t })
+    return m
+  }
   readonly property var flatTransactionRows: allFlatRows.length > rowLimit ? allFlatRows.slice(0, rowLimit) : allFlatRows
   // Pushes flatTransactionRows into txnListModel (the ListModel actually
   // backing txnList) incrementally — see Model.syncFlatRowsModel. Keeps
@@ -1231,6 +1237,16 @@ Panel {
       recomputeReceipts()
       root.txdb(["receipt-unlink", id])
     }
+
+    // ---- refunds (txdb/refunds.py). Not optimistic: a link changes the month totals and the Cashew
+    // category, which only the snapshot knows, so each command is followed by a reload.
+    function linkRefund(refundId, originalId, note) { root.txdb(["refund-link", refundId, originalId || "-", note || ""]) }
+    function unlinkRefund(refundId) { root.txdb(["refund-unlink", refundId]) }
+    function markNotRefund(refundId) { root.txdb(["refund-not", refundId]) }
+    function allowRefund(refundId) { root.txdb(["refund-restore", refundId]); root.txdb(["refund-verify"]) }
+    function setRefundMode(refundId, mode) { root.txdb(["refund-mode", refundId, mode]) }
+    function expectRefund(originalId) { root.txdb(["refund-expect", originalId]) }
+    function unexpectRefund(originalId) { root.txdb(["refund-unexpect", originalId]) }
 
     function parkReceipt(id, state) {
       var o = Object.assign({}, receiptOverrides)
@@ -6881,6 +6897,13 @@ Panel {
             onClicked: root.cycleFilterPart("bill", ["any", "has", "none"])
             onCleared: root.setFilterPart("bill", "any")
           }
+          FilterChip {
+            label: root.filter.refund === "needs" ? "Needs refund link" : "Refunds"
+            active: !!root.filter.refund && root.filter.refund !== "any"
+            tip: "Click cycles any, refunds, credits that still need a link"
+            onClicked: root.cycleFilterPart("refund", ["any", "linked", "needs"])
+            onCleared: root.setFilterPart("refund", "any")
+          }
         }
       }
 
@@ -10585,6 +10608,8 @@ Panel {
     // The bill filed against this transaction, if any - its note icon opens it.
     readonly property var linkedReceipt: Model.linkedReceiptForTransaction(txn, store.receipts)
     readonly property bool isDebit: txn.amount < 0
+    // A credit linked to the purchase it refunds (refundOf is "" when that purchase is not in the data).
+    readonly property bool isRefundCredit: card.txn.refundOf !== undefined
     readonly property color directionColor: root.directionColor(txn)
     readonly property bool _hot: rowHover.hovered || card.activeFocus
     readonly property int collapsedHeight: Style.space(52)
@@ -10783,7 +10808,7 @@ Panel {
           width: parent.width
           spacing: Style.space(6)
           Text {
-            width: Math.min(implicitWidth, parent.width - (noteIconSlot.visible ? noteIconSlot.width + parent.spacing : 0))
+            width: Math.min(implicitWidth, parent.width - (noteIconSlot.visible ? noteIconSlot.width + parent.spacing : 0) - (refundSlot.visible ? refundSlot.width + parent.spacing : 0))
             textFormat: Text.PlainText
             text: card.displayMerchant
             color: root.foreground
@@ -10826,6 +10851,38 @@ Panel {
               ToolTip.text: (noteIconSlot.hasBill ? "Bill: " + Model.receiptTitle(card.linkedReceipt || {}) + " — open" : "")
                 + (noteIconSlot.hasBill && noteIconSlot.hasNote ? "\n" : "")
                 + (noteIconSlot.hasNote ? "Note: " + card.userNote : "")
+              ToolTip.delay: 300
+            }
+          }
+          // A refund: this credit gives back an earlier purchase, or this purchase has been (or is
+          // waiting to be) refunded. Click opens the row, where the link is shown and changed.
+          Item {
+            id: refundSlot
+            readonly property bool hasRefund: card.isRefundCredit || card.txn.refundState !== undefined
+            visible: hasRefund
+            width: Style.space(20)
+            height: Style.space(20)
+            anchors.verticalCenter: parent.verticalCenter
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.space(5)
+              color: refundMouse.containsMouse ? Util.alpha(root.foreground, 0.14) : Util.alpha(root.foreground, 0.06)
+              TxnMark {
+                anchors.centerIn: parent
+                markSize: Style.space(16)
+                kind: "refund"
+              }
+              MouseArea {
+                id: refundMouse
+                anchors.fill: parent
+                anchors.margins: -Style.space(3)
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                preventStealing: true
+                onClicked: card.expanded = !card.expanded
+              }
+              ToolTip.visible: refundMouse.containsMouse
+              ToolTip.text: card.isRefundCredit ? Model.refundOfText(card.txn, root.transactionById) : Model.refundedChip(card.txn)
               ToolTip.delay: 300
             }
           }
@@ -11339,6 +11396,160 @@ Panel {
         }
       }
 
+      // REFUND: a credit is linked to the purchase it gives back; a purchase can wait for its refund.
+      // Not optimistic: a link changes the month totals and the Cashew category, so the snapshot reloads.
+      Column {
+        id: refundBox
+        readonly property bool isCredit: card.txn.amount > 0 && !root.isTransferLeg(card.txn)
+        readonly property bool isPurchase: card.txn.amount < 0 && !root.isTransferLeg(card.txn)
+        property bool picking: false
+        property bool showAll: false
+        property bool noOriginal: false
+        visible: refundBox.isCredit || refundBox.isPurchase
+        width: parent.width
+        spacing: Style.space(6)
+
+        Text {
+          visible: card.isRefundCredit
+          width: parent.width
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          text: Model.refundOfText(card.txn, root.transactionById)
+          color: Qt.darker(root.foreground, 1.1)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        // How the Cashew export treats the pair (txdb/refunds.py, Model.cashewBuildLinks).
+        Row {
+          visible: card.isRefundCredit
+          spacing: Style.space(6)
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: "In Cashew:"
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          TxnBtn { label: "Income in its category"; primary: card.txn.refundMode === "income"; onClicked: store.setRefundMode(card.txn.id, "income") }
+          TxnBtn { label: "Skip both"; primary: card.txn.refundMode === "skip"; onClicked: store.setRefundMode(card.txn.id, "skip") }
+          TxnBtn { label: "Lent (manual)"; primary: card.txn.refundMode === "lent"; onClicked: store.setRefundMode(card.txn.id, "lent") }
+        }
+        Text {
+          visible: card.isRefundCredit && card.txn.refundMode === "lent"
+          width: parent.width
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          text: "Cashew links cannot create a Lent. Send the purchase as usual, then in Cashew edit it, set its type to Lent and tap collect when the money is back."
+          color: Qt.darker(root.foreground, 1.4)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          visible: refundBox.isPurchase && card.txn.refundState !== undefined
+          width: parent.width
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          text: Model.refundedChip(card.txn)
+          color: Qt.darker(root.foreground, 1.1)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        Flow {
+          width: parent.width
+          spacing: Style.space(6)
+          TxnBtn {
+            visible: refundBox.isCredit && !card.isRefundCredit
+            label: refundBox.picking ? "Hide purchases" : "Link to purchase"
+            onClicked: { refundBox.picking = !refundBox.picking; refundBox.noOriginal = false }
+          }
+          TxnBtn {
+            visible: refundBox.isCredit && !card.isRefundCredit
+            label: "Original not in my data"
+            primary: refundBox.noOriginal
+            onClicked: { refundBox.noOriginal = !refundBox.noOriginal; refundBox.picking = false }
+          }
+          TxnBtn {
+            visible: refundBox.isCredit && !card.isRefundCredit && !card.txn.refundNot
+            label: "Not a refund"
+            onClicked: { store.markNotRefund(card.txn.id); card.editing = false }
+          }
+          TxnBtn {
+            visible: refundBox.isCredit && !card.isRefundCredit && !!card.txn.refundNot
+            label: "Allow as a refund"
+            onClicked: store.allowRefund(card.txn.id)
+          }
+          TxnBtn {
+            visible: card.isRefundCredit
+            label: "Unlink refund"
+            onClicked: { store.unlinkRefund(card.txn.id); card.editing = false }
+          }
+          TxnBtn {
+            visible: refundBox.isPurchase && card.txn.refundState !== "pending" && card.txn.refundState === undefined
+            label: "Return pending"
+            onClicked: store.expectRefund(card.txn.id)
+          }
+          TxnBtn {
+            visible: refundBox.isPurchase && card.txn.refundState === "pending"
+            label: "Clear pending"
+            onClicked: store.unexpectRefund(card.txn.id)
+          }
+        }
+
+        // The purchases this credit may give back, best match first.
+        Flow {
+          visible: refundBox.picking
+          width: parent.width
+          spacing: Style.space(6)
+          Repeater {
+            model: refundBox.picking ? Model.refundCandidates(card.txn, store.transactions, { all: refundBox.showAll }) : []
+            delegate: TxnBtn {
+              required property var modelData
+              label: Model.formatDate(modelData.txn.date) + "  " + modelData.txn.merchant + "  "
+                + Model.currencySymbol(modelData.txn.currency) + Model.formatGrouped(Math.abs(modelData.txn.amount))
+                + (modelData.score > 0 ? "  ·  " + modelData.score + "%" : "")
+              primary: modelData.score >= 100
+              onClicked: { store.linkRefund(card.txn.id, modelData.txn.id, ""); refundBox.picking = false; card.editing = false }
+            }
+          }
+          TxnBtn {
+            visible: refundBox.picking && !refundBox.showAll
+            label: "Show every purchase of the last 90 days"
+            onClicked: refundBox.showAll = true
+          }
+        }
+        Text {
+          visible: refundBox.picking && Model.refundCandidates(card.txn, store.transactions, { all: false }).length === 0 && !refundBox.showAll
+          width: parent.width
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          text: "No purchase looks like the one this credit gives back."
+          color: Qt.darker(root.foreground, 1.4)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        // A refund whose purchase is not in the data: say what it was.
+        Row {
+          visible: refundBox.noOriginal
+          spacing: Style.space(6)
+          TextField {
+            id: refundNoteField
+            width: Style.space(260)
+            placeholderText: "What was it? (optional)"
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            Keys.onReturnPressed: { store.linkRefund(card.txn.id, "", text); refundBox.noOriginal = false; card.editing = false }
+          }
+          TxnBtn {
+            label: "Link"
+            primary: true
+            onClicked: { store.linkRefund(card.txn.id, "", refundNoteField.text); refundBox.noOriginal = false; card.editing = false }
+          }
+        }
+      }
+
       Row {
         spacing: Style.space(6)
         TxnBtn {
@@ -11422,6 +11633,18 @@ Panel {
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         text: "Note: " + card.userNote
+        color: Qt.darker(root.foreground, 1.1)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      // The other side of a refund link, in the expanded view.
+      Text {
+        visible: card.isRefundCredit || card.txn.refundState !== undefined
+        width: parent.width
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        text: card.isRefundCredit ? Model.refundOfText(card.txn, root.transactionById) : Model.refundedChip(card.txn)
         color: Qt.darker(root.foreground, 1.1)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption

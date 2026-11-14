@@ -5,7 +5,7 @@ import QtQuick.Shapes
 // or "has both". Vector, drawn on a 24x24 grid; the path data is the same as
 // icons/bill.svg, icons/note.svg and icons/both.svg (keep them in step).
 //
-// kind: "bill" | "note" | "both"
+// kind: "bill" | "note" | "both" | "refund" (icons/refund.svg)
 // billColor / noteColor: the two parts of "both" keep their own colour.
 Item {
   id: root
@@ -13,6 +13,7 @@ Item {
   property real markSize: 20
   property color billColor: "#3fb950"
   property color noteColor: "#58a6ff"
+  property color refundColor: "#a371f7"
 
   readonly property bool showBill: kind === "bill" || kind === "both"
   readonly property bool showNote: kind === "note" || kind === "both"
@@ -67,6 +68,16 @@ Item {
       fillColor: "transparent"
       capStyle: ShapePath.RoundCap
       PathSvg { path: "M8 8h8M8 11.5h5" }
+    }
+
+    // ---- refund: a return arrow curling round, a short bar inside
+    ShapePath {
+      strokeColor: root.kind === "refund" ? root.refundColor : "transparent"
+      strokeWidth: 1.6
+      fillColor: "transparent"
+      capStyle: ShapePath.RoundCap
+      joinStyle: ShapePath.RoundJoin
+      PathSvg { path: "M4.5 12a7.5 7.5 0 1 0 2.2-5.3 M4.5 3.8v3.7H8.2 M9 12h6" }
     }
 
     // ---- both: receipt behind (upper left), note in front (lower right)
