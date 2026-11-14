@@ -713,7 +713,12 @@ Panel {
   readonly property var groupedTransactions: Model.groupByDate(Model.collapseTransfers(root.filteredTransactions, store.transfers))
   // Flat, one-row-per-entry version of groupedTransactions for txnList (the
   // virtualized ListView below) — see Model.flattenGroups.
-  readonly property var flatTransactionRows: Model.flattenGroups(root.groupedTransactions)
+  // Only the newest rowLimit rows get a delegate: every row costs ~100 QML
+  // objects, and the list is not virtualised (the outer Flickable scrolls it),
+  // so 490 rows meant ~50k objects. "Show older" raises the limit.
+  property int rowLimit: 120
+  readonly property var allFlatRows: Model.flattenGroups(root.groupedTransactions)
+  readonly property var flatTransactionRows: allFlatRows.length > rowLimit ? allFlatRows.slice(0, rowLimit) : allFlatRows
   // Pushes flatTransactionRows into txnListModel (the ListModel actually
   // backing txnList) incrementally — see Model.syncFlatRowsModel. Keeps
   // rows' delegate Items alive across a filter/tracked/etc. change
@@ -893,6 +898,7 @@ Panel {
   onOpenedChanged: if (!opened) {
     filterOpen = false          // the filter layer never outlives the popup
     infoOpenId = ""
+    root.rowLimit = 120
     // The "new" marks stay while the popup is open; closing it means they were seen.
     if (store.transfers.some(function (t) { return t.isNew })) root.txdb(["transfers-mark-seen"])
   } else {
@@ -3279,6 +3285,19 @@ Panel {
                 Component { id: txnCardC; TransactionCard { txn: rowWrap.modelData; selectable: true; rowIndex: rowWrap.index } }
                 Component { id: transferCardC; TransferCard { transfer: rowWrap.modelData; rowIndex: rowWrap.index } }
               }
+            }
+          }
+
+          Item {
+            visible: root.allFlatRows.length > root.rowLimit
+            width: parent.width
+            height: showOlder.height + Style.space(8)
+            TextAction {
+              id: showOlder
+              anchors.horizontalCenter: parent.horizontalCenter
+              anchors.verticalCenter: parent.verticalCenter
+              label: "Show older (" + (root.allFlatRows.length - root.rowLimit) + " more)"
+              onTriggered: root.rowLimit += 150
             }
           }
 
@@ -10395,7 +10414,7 @@ Panel {
     property real slide: (card._hot || card.infoOpen) && !card.editing ? Style.space(62) : 0
     Behavior on slide { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
     function saveEdit() {
-      store.setTransactionName(card.groupKey, editField.text)
+      store.setTransactionName(card.groupKey, (editFieldLoader.item ? editFieldLoader.item.text : ""))
       if (noteArea.text.trim() !== card.userNote) store.setTxnNote(card.txn.id, noteArea.text)
       card.editing = false
       Qt.callLater(function () { card.forceActiveFocus() })
@@ -10658,23 +10677,27 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
           }
 
-          HdfcLogo {
-            variant: "icon"
-            visible: card.txn.accountType === "checking" && card.txn.bank === "HDFC"
-            markSize: Style.spaceReal(9)
+          // Bank logos: only the one that applies is built (these were four
+          // always-instantiated vector logos per row, ~225 ms over 489 rows).
+          Loader {
+            active: card.txn.accountType === "checking" && card.txn.bank === "HDFC"
+            visible: active
             anchors.verticalCenter: parent.verticalCenter
+            sourceComponent: HdfcLogo { variant: "icon"; markSize: Style.spaceReal(9) }
           }
 
-          AxisLogo {
-            visible: card.txn.accountType === "checking" && card.txn.bank === "AXIS"
-            markSize: Style.spaceReal(9)
+          Loader {
+            active: card.txn.accountType === "checking" && card.txn.bank === "AXIS"
+            visible: active
             anchors.verticalCenter: parent.verticalCenter
+            sourceComponent: AxisLogo { markSize: Style.spaceReal(9) }
           }
 
-          SbiLogo {
-            visible: card.isSbiSavings
-            markSize: Style.spaceReal(9)
+          Loader {
+            active: card.isSbiSavings
+            visible: active
             anchors.verticalCenter: parent.verticalCenter
+            sourceComponent: SbiLogo { markSize: Style.spaceReal(9) }
           }
 
           // One side of a transfer between your own accounts whose other side is
@@ -10777,17 +10800,20 @@ Panel {
         onClicked: card.editing = true
       }
 
-      TextField {
-        id: editField
-        visible: card.editing
+      // Built only while renaming: a TextField per idle row was wasted work.
+      Loader {
+        id: editFieldLoader
+        active: card.editing
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: Style.spacing.rowPaddingX
         anchors.verticalCenter: parent.verticalCenter
+        sourceComponent: TextField {
+        id: editField
         text: card.displayMerchant
         font.family: Style.font.family
         font.pixelSize: Style.font.body
-        onVisibleChanged: if (visible) { text = card.displayMerchant; selectAll(); forceActiveFocus() }
+        Component.onCompleted: { text = card.displayMerchant; selectAll(); forceActiveFocus() }
         onAccepted: card.saveEdit()
         // card.editing = false hides this field, but a hidden item keeps
         // activeFocus until something else explicitly takes it (QtQuick
@@ -10802,6 +10828,7 @@ Panel {
         Keys.onEscapePressed: {
           card.editing = false
           Qt.callLater(function () { card.forceActiveFocus() })
+        }
         }
       }
     }
@@ -10867,7 +10894,7 @@ Panel {
           lines.push(d.replace(/\|/g, " ") + " | " + (q !== "" && !isNaN(parseFloat(q)) ? parseFloat(q) : "")
             + " | " + (pr !== "" && !isNaN(parseFloat(pr)) ? parseFloat(pr) : ""))
         }
-        store.setTransactionName(card.groupKey, editField.text)
+        store.setTransactionName(card.groupKey, (editFieldLoader.item ? editFieldLoader.item.text : ""))
         store.noteBill(card.txn.id, lines.join("\n"))
         card.editing = false
       }
