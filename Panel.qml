@@ -3404,6 +3404,18 @@ Panel {
     property string taxKind: "split"
     // The photo's info panel (taken, camera, size, where it came from).
     property bool showInfo: false
+    // The info panel is the last thing in a long column, so switching it on used to
+    // look like nothing happened: scroll to it.
+    onShowInfoChanged: if (showInfo) Qt.callLater(function () {
+      var y = fsInfoBox.mapToItem(fsColumn, 0, 0).y
+      fsDetailsFlick.contentY = Math.max(0, Math.min(y - Style.space(8), fsDetailsFlick.contentHeight - fsDetailsFlick.height))
+    })
+    // The AI re-read output: open while it runs, then folds down to one line.
+    property bool outputExpanded: false
+    Connections {
+      target: receiptReparseProc
+      function onRunningChanged() { if (!receiptReparseProc.running) receiptFullScreen.outputExpanded = false }
+    }
     // The bill card folded down to its title and total.
     property bool billCollapsed: false
     // The whole right side (toolbar + bill) folded to a thin strip, so the
@@ -5021,6 +5033,7 @@ Panel {
             // What the photo file knew, and where the bill came from - shown
             // from the info button in the toolbar.
             Rectangle {
+              id: fsInfoBox
               visible: receiptFullScreen.showInfo
               width: parent.width
               implicitHeight: infoCol.implicitHeight + Style.space(20)
@@ -5138,15 +5151,46 @@ Panel {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            height: Style.space(150)
+            readonly property bool open: receiptReparseProc.running || receiptFullScreen.outputExpanded
+            height: open ? Style.space(150) : Style.space(26)
             visible: !parent.folded && receiptReparseProc.receiptId === receiptFullScreen.r.id
               && (receiptReparseProc.running || receiptReparseOutput.text.length > 0)
             clip: true
 
             Rectangle { anchors.fill: parent; radius: Style.cornerRadius; color: Util.alpha(root.foreground, 0.05) }
 
+            // Folded: one line, click to read the output again.
+            Item {
+              visible: !fsOutputBox.open
+              anchors.fill: parent
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(10)
+                textFormat: Text.PlainText
+                text: "AI output  ·  click to show"
+                color: Qt.darker(root.foreground, 1.4)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: receiptFullScreen.outputExpanded = true
+              }
+            }
+            TextAction {
+              visible: fsOutputBox.open && !receiptReparseProc.running
+              z: 2
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(6)
+              label: "Collapse"
+              onTriggered: receiptFullScreen.outputExpanded = false
+            }
             Flickable {
               id: fsOutputFlick
+              visible: fsOutputBox.open
               anchors.fill: parent
               anchors.margins: Style.space(6)
               clip: true
