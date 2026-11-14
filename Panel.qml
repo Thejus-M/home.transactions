@@ -1001,6 +1001,9 @@ Panel {
         root.cashewStale = true
         root.cashewStateLoaded = false
         if (root.cashewOpen && !root.cashewGuessing) root.cashewLoad()
+        // The row's category circle comes from the snapshot, which txn-category
+        // never touches .changed for: reload it or the circle stays stale.
+        root.refreshData()
       }
       root.runNextWrite()
     }
@@ -1063,13 +1066,17 @@ Panel {
   Process {
     id: receiptCompressProc
     command: ["bash", "-c", "cd '" + root.receiptStitcherDir + "' && .venv/bin/python -m src.main compress-linked 2>&1"]
+    // compress-linked prints one line per photo it changed. No line, nothing
+    // written, so no reason to reload the whole snapshot.
+    property int changed: 0
+    onRunningChanged: if (running) changed = 0
     stdout: SplitParser {
       splitMarker: "\n"
-      onRead: function (line) { if (line.length > 0) console.log("receipt photo: " + line) }
+      onRead: function (line) { if (line.length > 0) { receiptCompressProc.changed++; console.log("receipt photo: " + line) } }
     }
     onExited: function (exitCode) {
       if (exitCode !== 0) console.warn("Receipt photo compress exited " + exitCode)
-      root.refreshData()
+      if (receiptCompressProc.changed > 0) root.refreshData()
     }
   }
 
@@ -1122,8 +1129,8 @@ Panel {
       if (text === store.lastSnapshotText) return
       var snap
       try { snap = JSON.parse(text) } catch (e) { console.warn("txdb snapshot unreadable: " + e); return }
-      store.lastSnapshotText = text
       if (root.txdbQueue.length > 0 || txdbWriteProc.running) { root.refreshPending = true; return }
+      store.lastSnapshotText = text
       var cards = {}
       var overviews = snap.cardOverviews || []
       for (var i = 0; i < overviews.length; i++) {

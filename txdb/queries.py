@@ -32,7 +32,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     # The category of each row, for the circle on its card: the same pick the Cashew
     # export makes (taught answer, rule, linked bill, payee name). Transfers keep their
     # own mark, and a row with no answer gets "". No model is asked here.
-    picks = {d["id"]: d for d in cashew.drafts(conn, cashew.load_state(), all_rows=True)}
+    picks = {d["id"]: d for d in cashew.drafts(conn, cashew.load_state(), all_rows=True, with_notes=False)}
     for t in transactions:
         d = picks.get(t["id"])
         ok = d and d["kind"] != "transfer" and (d["category"], d["subcategory"]) != cashew.UNCATEGORIZED

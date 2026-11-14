@@ -14,6 +14,7 @@ read-only look at the database. The widget's own choices (categories taught per
 merchant, account-name overrides) live in a small state file, not in the DB."""
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -143,7 +144,7 @@ def set_category(conn, txn_id: str, category: str, sub: str = "", only_this: boo
     if category and not only_this:
         # A payee-wide answer loses to a category set on this row's own bill, so check that
         # this row really took it; if not, pin it on the row as well.
-        got = {d["id"]: d for d in drafts(conn, state, all_rows=True)}.get(txn_id)
+        got = {d["id"]: d for d in drafts(conn, state, all_rows=True, with_notes=False)}.get(txn_id)
         if got and got["kind"] != "transfer" and (got["category"], got["subcategory"]) != (category, sub or ""):
             pins = dict(state.get("txn") or {})
             pins[txn_id] = {"category": category, "subcategory": sub or ""}
@@ -193,12 +194,17 @@ def _friend_fits(cat: str, sub: str, negative: bool) -> bool:
     return cat == FRIEND and sub == FRIEND_SUB
 
 
+@functools.lru_cache(maxsize=None)
+def _rx(pattern: str):
+    return re.compile(pattern, re.I)
+
+
 def _rule_hit(rule: dict, text: str) -> bool:
     m = rule.get("match")
     if isinstance(m, list):
         low = text.lower()
         return any(str(k).lower() in low for k in m)
-    return bool(m) and re.search(m, text, re.I) is not None
+    return bool(m) and _rx(m).search(text) is not None
 
 
 _NAME_DENY = {"upi", "app", "items", "unknown", "others", "other", "item"}
@@ -448,8 +454,9 @@ def open_readonly(path) -> sqlite3.Connection:
 
 # ---------------------------------------------------------------------- drafts
 
-def drafts(conn, state: dict | None = None, all_rows: bool = False) -> list[dict]:
+def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: bool = True) -> list[dict]:
     # all_rows: also tracked and unsettled rows (the widget's rows show a category for those too).
+    # with_notes=False skips the Cashew note text (one bill query per row): the snapshot only needs the category.
     state = state or empty_state()
     types, rules = _types(), load_rules()
     rows = [dict(r) for r in conn.execute(
@@ -513,7 +520,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False) -> list[dict
             "id": r["id"], "include": not (leg and leg.get("partnerTracked") and not r["tracked"]), "pending": r["status"] != "settled", "fromBill": from_bill, "partnerTracked": bool(leg and leg.get("partnerTracked")), "date": r["date"], "title": title,
             "amount": format_amount(r["amount_paise"]), "category": cat, "subcategory": sub,
             "account": account or "",
-            "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title)),
+            "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title)) if with_notes else "",
             "kind": kind, "bank": r["bank"], "last4": r["last4"], "accountId": aid,
             "groupKey": r["group_key"], "merchant": r["merchant"] or "", "pairId": leg["pairId"] if leg else "", "warn": warn,
         })
