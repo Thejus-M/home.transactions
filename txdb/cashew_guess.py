@@ -74,6 +74,12 @@ SYSTEM = (
     '"Money out", "Money in", "DEBIT" or "CREDIT" themselves. '
     "A UPI payment to or from a person (a personal name, no shop) is Friend Settlement. "
     "Use the merchant text, the UPI remark and the notes as clues. "
+    "A row may also carry: \"UPI remark\" (the free text the payer typed), \"my note\" (written by the "
+    "account owner, so trust it), and \"bill\" (the itemised receipt photographed for this very payment: its "
+    "merchant, what was bought, the time of day and the total). The bill and my note are the strongest clues, "
+    "stronger than the bank's merchant text. If the owner already chose a category for the bill (\"bill "
+    "category I chose\"), use it. For a Food Out meal, pick Breakfast, Brunch, Lunch or Dinner from the time "
+    "of day on the bill; Delivery is for an app delivery order, Others for a snack or a drink. "
     "If you are not sure use Uncategorized / Unknown. Never invent a category."
 )
 
@@ -120,15 +126,126 @@ def _clip(v) -> str:
     return s[:FIELD_MAX]
 
 
+def meal_period(clock) -> str:
+    """The meal a HH:MM (24 hour) time of day points to ("" when unknown). Same windows as the
+    receipt-ledger-stitcher's bill prompt (src/meta.py meal_period): keep the two in step."""
+    try:
+        hh, mm = str(clock).split(":")[:2]
+        minutes = int(hh) * 60 + int(mm)
+    except (ValueError, TypeError):
+        return ""
+    if not 0 <= minutes < 24 * 60:
+        return ""
+    for limit, name in ((5 * 60, "late night"), (10 * 60 + 30, "breakfast"), (11 * 60 + 30, "brunch"),
+                        (15 * 60 + 30, "lunch"), (18 * 60 + 30, "evening snack")):
+        if minutes < limit:
+            return name
+    return "dinner"
+
+
+def _clock12(clock) -> str:
+    try:
+        hh, mm = str(clock).split(":")[:2]
+        h = int(hh)
+        return f"{(h % 12) or 12}:{int(mm):02d} {'AM' if h < 12 else 'PM'}"
+    except (ValueError, TypeError):
+        return ""
+
+
+def bill_text(bill) -> str:
+    """One prompt segment for the bill linked to a payment, or ''."""
+    if not isinstance(bill, dict):
+        return ""
+    bits = []
+    if bill.get("merchant"):
+        bits.append(f'merchant "{_clip(bill["merchant"])}"')
+    if bill.get("platform"):
+        bits.append(f'via {_clip(bill["platform"])}')
+    clock = bill.get("time")
+    if clock:
+        meal = meal_period(clock)
+        bits.append(f"made at {_clock12(clock)}" + (f" ({meal} time)" if meal else ""))
+    items = [_clip(i)[:80] for i in (bill.get("items") or []) if _clip(i)]   # a long item name must not eat the prompt
+    if items:
+        more = int(bill.get("moreItems") or 0)
+        bits.append("items: " + "; ".join(items) + (f"; +{more} more" if more else ""))
+    if bill.get("total"):
+        bits.append(f"bill total {bill['total']}")
+    out = "bill: " + ", ".join(bits) if bits else ""
+    chosen = bill.get("categoryChosen")
+    if chosen:
+        out += (" | " if out else "") + f'bill category I chose: "{_clip(chosen)}"'
+    return out
+
+
+BILL_ITEMS = 12
+
+
+def enrich(rows: list[dict], db_path=None) -> list[dict]:
+    """Add what the database knows about each row: the UPI remark, the owner's own note and the
+    bill linked to the payment (merchant, time of day, items, the category the owner gave it).
+    Read only. A missing or unreadable database leaves the rows as they came."""
+    from . import db as _db
+    try:
+        conn = cashew.open_readonly(db_path or _db.DB_PATH)
+    except Exception:
+        return rows
+    out = []
+    try:
+        for r in rows:
+            r = dict(r)
+            tid = r.get("id")
+            try:
+                t = conn.execute("SELECT t.merchant, a.bank FROM transactions t JOIN accounts a ON a.id = t.account_id "
+                                 "WHERE t.id = ?", (tid,)).fetchone()
+                if t:
+                    remark = cashew.upi_remark(t["merchant"], t["bank"])
+                    if remark and not r.get("upi"):
+                        r["upi"] = remark
+                n = conn.execute("SELECT note FROM txn_notes WHERE transaction_id = ?", (tid,)).fetchone()
+                if n and n["note"].strip() and not r.get("userNote"):
+                    r["userNote"] = n["note"].strip()
+                b = conn.execute(
+                    "SELECT r.id, r.merchant, r.platform, r.time, r.total_paise, r.printed_total_paise, r.currency "
+                    "FROM receipt_links l JOIN receipts r ON r.id = l.receipt_id "
+                    "WHERE l.transaction_id = ? AND l.state = 'linked'", (tid,)).fetchone()
+                if b and not r.get("bill"):
+                    items = [x[0] for x in conn.execute(
+                        "SELECT description FROM receipt_items WHERE receipt_id = ? ORDER BY line_no", (b["id"],))
+                        if (x[0] or "").strip()]
+                    paise = b["printed_total_paise"] if b["printed_total_paise"] is not None else b["total_paise"]
+                    cat = conn.execute("SELECT category, subcategory FROM receipt_categories "
+                                       "WHERE receipt_id = ? AND source = 'user'", (b["id"],)).fetchone()
+                    r["bill"] = {
+                        "merchant": b["merchant"] or "", "platform": b["platform"] or "", "time": b["time"] or "",
+                        "items": items[:BILL_ITEMS], "moreItems": max(0, len(items) - BILL_ITEMS),
+                        "total": (f"{(paise or 0) / 100:.2f}" if paise else ""),
+                        "categoryChosen": (cat["category"] + (f" / {cat['subcategory']}" if cat["subcategory"] else ""))
+                                          if cat and cat["category"] else ""}
+            except Exception:
+                pass                                   # one odd row never stops the batch
+            out.append(r)
+    finally:
+        conn.close()
+    return out
+
+
 def row_line(n: int, row: dict) -> str:
     amount = str(row.get("amount") or "")
     neg = amount.startswith("-")
     size = amount.lstrip("-+")
     parts = [f"{n}. {'DEBIT' if neg else 'CREDIT'} {size}"]
-    for key, label in (("title", "title"), ("merchant", "merchant text"), ("notes", "notes")):
+    detailed = bool(row.get("upi") or row.get("userNote") or row.get("bill"))
+    # `notes` is those same facts glued into one string for Cashew; once they are
+    # given separately it would only repeat them.
+    for key, label in (("title", "title"), ("merchant", "merchant text"),
+                       ("upi", "UPI remark"), ("userNote", "my note")) + (() if detailed else (("notes", "notes"),)):
         val = _clip(row.get(key))
         if val:
             parts.append(f'{label}: "{val}"')
+    bill = bill_text(row.get("bill"))
+    if bill:
+        parts.append(bill)
     acct = " ".join(x for x in (_clip(row.get("bank")), _clip(row.get("accountType"))) if x)
     if acct:
         parts.append(f"account: {acct}")
@@ -322,6 +439,7 @@ def run(payload: dict, model: str = DEFAULT_MODEL, workers: int = DEFAULT_WORKER
         batch: int = DEFAULT_BATCH, url: str = DEFAULT_URL, timeout: float = DEFAULT_TIMEOUT) -> int:
     rows = [r for r in (payload.get("rows") or []) if isinstance(r, dict) and r.get("id") is not None]
     taught = payload.get("taught") if isinstance(payload.get("taught"), dict) else {}
+    rows = enrich(rows)
     total = len(rows)
     started = time.monotonic()
     categories = cashew.load_categories()

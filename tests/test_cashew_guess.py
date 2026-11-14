@@ -239,3 +239,64 @@ class StreamingTests(unittest.TestCase):
             cg.generate = orig
         self.assertEqual([c[1] for c in calls], [cg.DEFAULT_NUM_PREDICT, cg.CAPPED_NUM_PREDICT, cg.CAPPED_NUM_PREDICT])
         self.assertEqual(len(out), 2)
+
+
+class WhatTheModelIsToldAboutARow(unittest.TestCase):
+    """The prompt carries the UPI remark, the owner's note and the linked bill (with the meal)."""
+
+    def setUp(self):
+        import tempfile
+        from txdb import db, ingest
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = Path(self.dir.name) / "t.db"
+        self.conn = db.connect(self.path)
+        aid = ingest.ensure_account(self.conn, "HDFC", "credit", "0220")
+        ingest.upsert_rows(self.conn, aid, [{"id": "t1", "date": "2026-11-05", "merchant": "UPI-CAKE WORLD-x@ybl-ICIC0-1-Birthday cake",
+                                             "amount": -149.0, "seq": 1, "status": "settled"}])
+        self.tid = self.conn.execute("SELECT id FROM transactions").fetchone()[0]
+        self.conn.execute("INSERT INTO txn_notes (transaction_id, note, updated_at) VALUES (?, 'for Anu', 'now')", (self.tid,))
+        self.conn.execute("INSERT INTO receipts (id, image_sha256, stored_path, merchant, time, total_paise, parsed_at, imported_at) "
+                          "VALUES ('rcpt-1', 'sha', 'p', 'CAKE WORLD', '15:09:26', 14900, 'now', 'now')")
+        self.conn.execute("INSERT INTO receipt_items (receipt_id, line_no, description) VALUES ('rcpt-1', 1, 'MILK BROWNIE BOX')")
+        self.conn.execute("INSERT INTO receipt_links (receipt_id, transaction_id, state, linked_at) VALUES ('rcpt-1', ?, 'linked', 'now')", (self.tid,))
+        self.conn.execute("INSERT INTO receipt_categories (receipt_id, category, subcategory, source, updated_at) "
+                          "VALUES ('rcpt-1', 'Food Out', 'Lunch', 'user', 'now')")
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+        self.dir.cleanup()
+
+    def test_the_meal_follows_the_time_of_day(self):
+        for clock, meal in (("06:00", "breakfast"), ("10:45", "brunch"), ("13:10", "lunch"), ("16:40", "evening snack"),
+                            ("20:15", "dinner"), ("01:30", "late night"), ("15:09:26", "lunch")):
+            self.assertEqual(g.meal_period(clock), meal, clock)
+        self.assertEqual(g.meal_period(""), "")
+        self.assertEqual(g.meal_period("soon"), "")
+
+    def test_enrich_adds_the_remark_the_note_and_the_bill(self):
+        row = {"id": self.tid, "amount": "-149.00", "title": "Cake World", "merchant": "m", "notes": "glued", "bank": "HDFC",
+               "accountType": "credit"}
+        out = g.enrich([row], self.path)[0]
+        self.assertEqual(out["userNote"], "for Anu")
+        self.assertEqual(out["bill"]["merchant"], "CAKE WORLD")
+        self.assertEqual(out["bill"]["items"], ["MILK BROWNIE BOX"])
+        self.assertEqual(out["bill"]["categoryChosen"], "Food Out / Lunch")
+        line = g.row_line(1, out)
+        self.assertIn('my note: "for Anu"', line)
+        self.assertIn("made at 3:09 PM (lunch time)", line)
+        self.assertIn("items: MILK BROWNIE BOX", line)
+        self.assertIn('bill category I chose: "Food Out / Lunch"', line)
+        self.assertNotIn("glued", line)        # the glued `notes` would only repeat these facts
+
+    def test_a_row_with_no_extra_facts_keeps_its_notes_and_a_missing_database_changes_nothing(self):
+        plain = {"id": "nope", "amount": "-10", "title": "x", "merchant": "m", "notes": "just notes", "bank": "SBI",
+                 "accountType": "checking"}
+        self.assertEqual(g.enrich([plain], self.path), [plain])
+        self.assertIn('notes: "just notes"', g.row_line(1, plain))
+        self.assertEqual(g.enrich([plain], Path(self.dir.name) / "missing.db"), [plain])
+
+    def test_the_prompt_explains_the_new_fields(self):
+        text = g.build_prompt([{"id": "a", "amount": "-1"}], CATS)
+        self.assertIn("my note", text)
+        self.assertIn("Breakfast, Brunch, Lunch or Dinner", text)

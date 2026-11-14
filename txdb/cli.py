@@ -57,7 +57,8 @@
                                          "taught":{key:{category,subcategory}}} and ask the local Ollama model for a
                                          Cashew category per row; batches run in parallel; one NDJSON line per
                                          finished batch {"results":[{id,category,subcategory}],done,total}, then
-                                         {"finished":true,...}; errors as {"error":"..."} (read only, no database)
+                                         {"finished":true,...}; errors as {"error":"..."} (read only; looks up each row's UPI
+                                         remark, note and linked bill in the database)
 
 Arguments come as separate argv entries (no shell), so names and ids need
 no quoting."""
