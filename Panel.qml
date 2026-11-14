@@ -384,7 +384,8 @@ Panel {
   property var cashewState: ({ version: 1, categories: {}, accounts: {} })
   property string cashewStateSavedJson: ""
   property bool cashewStateLoaded: false
-  property bool cashewOnlyFilter: false
+  // The window carries the same filter bar as the main list and always follows it.
+  property bool cashewOnlyFilter: true
   property bool cashewGuessedOnly: false   // the list shows only rows guessed by the model
   property var cashewLinks: []
   property var cashewTransfers: []    // paired transfers: one addTransferRoute page each
@@ -7886,11 +7887,6 @@ Panel {
           CashewBtn { label: "Include all"; onClicked: root.cashewSetAll(true) }
           CashewBtn { label: "Exclude all"; onClicked: root.cashewSetAll(false) }
           CashewBtn {
-            label: "Only the current filter"
-            active: root.cashewOnlyFilter
-            onClicked: root.cashewOnlyFilter = !root.cashewOnlyFilter
-          }
-          CashewBtn {
             label: "Guessed only"
             active: root.cashewGuessedOnly
             enabled: root.cashewGuessedOnly || root.cashewGuessedCount > 0
@@ -7901,6 +7897,21 @@ Panel {
             label: "Accept guesses  ·  " + root.cashewGuessedCount
             onClicked: root.cashewAcceptGuesses()
           }
+        }
+      }
+
+      // ---- the same filter bar as the main list (search, accounts, direction, month,
+      // amount range, bill, pending, tracked). It is the SAME filter (root.filter), so what
+      // is set here is what the main list shows, and the table below follows it.
+      Item {
+        id: cwFilterHost
+        anchors { top: cwOptions.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors.topMargin: Style.space(10)
+        anchors.rightMargin: Style.space(12)
+        height: cwFilterBar.implicitHeight
+        FilterBar {
+          id: cwFilterBar
+          width: parent.width
         }
       }
 
@@ -8330,7 +8341,7 @@ Panel {
         id: cwResults
         visible: cashewWin.resultsOpen
         z: 20
-        anchors { top: cwOptions.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors { top: cwFilterHost.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
         anchors.topMargin: Style.space(10)
         anchors.rightMargin: Style.space(12)
         radius: Style.space(12)
@@ -8648,7 +8659,7 @@ Panel {
       // ---- left pane: the drafts
       Item {
         id: cwLeft
-        anchors { top: cwOptions.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
+        anchors { top: cwFilterHost.bottom; bottom: parent.bottom; left: parent.left; right: cwRight.left; margins: Style.space(16) }
         anchors.topMargin: Style.space(10)
         anchors.rightMargin: Style.space(12)
 
