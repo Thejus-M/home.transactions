@@ -175,7 +175,8 @@ def main(argv: list[str]) -> int:
     conn = connect()
     if cmd == "snapshot":
         from . import queries
-        json.dump(queries.snapshot(conn), sys.stdout, ensure_ascii=False, separators=(",", ":"))
+        # dumps, not dump: dump to a stream skips the C encoder and is about 3x slower.
+        sys.stdout.write(json.dumps(queries.snapshot(conn), ensure_ascii=False, separators=(",", ":")))
         sys.stdout.write("\n")
     elif cmd == "set-tracked":
         _set_tracked(conn, [args[0]], args[1] == "1")

@@ -59,12 +59,27 @@ BANK_NAMES = {"HDFC": "HDFC", "SBI": "SBI", "AXIS": "Axis", "ICICI": "ICICI"}
 
 # ------------------------------------------------------------------ data files
 
+_JSON_CACHE: dict[str, tuple[int, object]] = {}
+
+
+def _load_json(name: str):
+    """Parse a data file once per process; reparse when the file changes on disk."""
+    path = HERE / name
+    stamp = path.stat().st_mtime_ns
+    hit = _JSON_CACHE.get(name)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    data = json.loads(path.read_text(encoding="utf-8"))
+    _JSON_CACHE[name] = (stamp, data)
+    return data
+
+
 def load_categories() -> list[dict]:
-    return json.loads((HERE / "cashew_categories.json").read_text(encoding="utf-8"))
+    return _load_json("cashew_categories.json")
 
 
 def load_rules() -> list[dict]:
-    return json.loads((HERE / "cashew_rules.json").read_text(encoding="utf-8"))
+    return _load_json("cashew_rules.json")
 
 
 def empty_state() -> dict:
