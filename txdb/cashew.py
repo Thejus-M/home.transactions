@@ -428,9 +428,10 @@ def bill_note(conn, txn_id: str, title: str) -> str:
     return "\n".join(out)
 
 
-def build_notes(bank: str, merchant: str, widget_note: str | None, bill: str) -> str:
-    """Empty unless something means something: the UPI remark, the user's own note, the bill."""
-    parts = []
+def build_notes(bank: str, merchant: str, widget_note: str | None, bill: str, lead: str = "") -> str:
+    """Empty unless something means something: a lead line (a refund says what it refunds), the UPI
+    remark, the user's own note, the bill."""
+    parts = [lead] if lead else []
     remark = upi_remark(merchant, bank)
     if remark:
         parts.append(remark)
@@ -450,6 +451,29 @@ def open_readonly(path) -> sqlite3.Connection:
     conn = sqlite3.connect(uri, uri=True, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# --------------------------------------------------------------------- refunds
+
+def _refund_links(conn) -> dict[str, dict]:
+    """credit id -> {original, mode, note} from refund_links (txdb/refunds.py); {} before v26."""
+    try:
+        return {r[0]: {"original": r[1] or "", "mode": r[2], "note": r[3] or ""} for r in conn.execute(
+            "SELECT refund_id, original_id, cashew_mode, original_note FROM refund_links")}
+    except sqlite3.Error:
+        return {}
+
+
+_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _day(iso: str) -> str:
+    """2026-11-02 -> 02-Nov-26 (always with the year: a note in Cashew stays readable for years)."""
+    try:
+        y, m, d = iso.split("-")
+        return f"{d}-{_MONTHS[int(m) - 1]}-{y[2:]}"
+    except (ValueError, IndexError, AttributeError):
+        return iso or ""
 
 
 # ---------------------------------------------------------------------- drafts
@@ -486,10 +510,17 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
     acct_over = state.get("accounts") or {}
     bill_cats, linked = _bill_categories(conn), _linked_ids(conn)
 
-    out = []
-    for r in rows:
-        if not all_rows and r["tracked"]:
-            continue
+    refund_of = _refund_links(conn)
+    refunded: dict[str, int] = {}                  # purchase id -> paise refunded to it
+    skipped: dict[str, int] = {}                   # ... of which in "skip both" mode
+    for cid, link in refund_of.items():
+        if link["original"] and cid in by_id and link["original"] in by_id:
+            refunded[link["original"]] = refunded.get(link["original"], 0) + by_id[cid]["amount_paise"]
+            if link["mode"] == "skip":
+                skipped[link["original"]] = skipped.get(link["original"], 0) + by_id[cid]["amount_paise"]
+
+    def classify(r):
+        """(kind, category, subcategory, warn, from_bill, title, leg) for one row."""
         negative = r["amount_paise"] < 0
         title = display_title(r["bank"], r["merchant"], r["group_key"], r["counterparty"], overrides)
         warn = ""
@@ -514,16 +545,58 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
                 friend_default=(r["bank"] == "HDFC" and r["account_type"] == "checking" and r["id"] not in linked),
                 assigned_name=overrides.get(r["group_key"]),
                 txn_pick=_txn_pick(state, r["id"]))
+        return kind, cat, sub, warn, from_bill, title, leg
+
+    out = []
+    for r in rows:
+        if not all_rows and r["tracked"]:
+            continue
+        kind, cat, sub, warn, from_bill, title, leg = classify(r)
+        include = not (leg and leg.get("partnerTracked") and not r["tracked"])
+        notes_lead, refund_mode, refund_to = "", "", None
+        link = refund_of.get(r["id"])
+        if link and r["amount_paise"] > 0 and not leg:
+            # A credit that gives back a purchase (txdb/refunds.py). "income": it is filed under the
+            # purchase's own category, as income. "skip": the purchase and the refund cancel out and
+            # neither is exported (only when the refunds fully cancel it). "lent": the refund is not
+            # exported; the purchase is, and the person turns it into a Lent in Cashew by hand.
+            refund_mode, refund_to = link["mode"], link["original"]
+            orig = by_id.get(link["original"]) if link["original"] else None
+            if refund_mode == "skip" and not (orig and skipped.get(orig["id"], 0) >= -orig["amount_paise"]):
+                refund_mode = "income"             # a partial refund cannot cancel the whole purchase
+            if orig is not None:
+                o_kind, o_cat, o_sub, o_warn, _o_bill, o_title, _o_leg = classify(orig)
+                if o_cat != UNCATEGORIZED[0]:
+                    cat, sub, warn = o_cat, o_sub, ""
+                title = f"Refund: {o_title}"
+                notes_lead = f"Refund of {o_title} {_day(orig['date'])} {_money(-orig['amount_paise'])}"
+            elif link["note"]:
+                notes_lead = f"Refund of {link['note']}"
+            kind = "refund"
+            if refund_mode in ("skip", "lent"):
+                include = False
+        elif r["id"] in refunded and r["amount_paise"] < 0 and not leg:
+            # the purchase: gone from the export when every refund cancels it
+            if skipped.get(r["id"], 0) >= -r["amount_paise"]:
+                include = False
+                refund_mode = "skip"
+            elif any(refund_of[c]["mode"] == "lent" for c in refund_of if refund_of[c]["original"] == r["id"]):
+                refund_mode = "lent"               # kept, with a checklist line in the widget
         aid = r["account_id"]
         account = acct_over[aid] if aid in acct_over else ACCOUNT_MAP.get(aid, "")
-        out.append({
-            "id": r["id"], "include": not (leg and leg.get("partnerTracked") and not r["tracked"]), "pending": r["status"] != "settled", "fromBill": from_bill, "partnerTracked": bool(leg and leg.get("partnerTracked")), "date": r["date"], "title": title,
+        d = {
+            "id": r["id"], "include": include, "pending": r["status"] != "settled", "fromBill": from_bill, "partnerTracked": bool(leg and leg.get("partnerTracked")), "date": r["date"], "title": title,
             "amount": format_amount(r["amount_paise"]), "category": cat, "subcategory": sub,
             "account": account or "",
-            "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title)) if with_notes else "",
+            "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title), notes_lead) if with_notes else "",
             "kind": kind, "bank": r["bank"], "last4": r["last4"], "accountId": aid,
             "groupKey": r["group_key"], "merchant": r["merchant"] or "", "pairId": leg["pairId"] if leg else "", "warn": warn,
-        })
+        }
+        if refund_to is not None:
+            d["refundOf"] = refund_to
+        if refund_mode:
+            d["refundMode"] = refund_mode
+        out.append(d)
     return out
 
 
@@ -543,7 +616,7 @@ def _entry(d: dict, warnings: list[str], types: dict[str, str]) -> dict:
     if cat == UNCATEGORIZED[0] and sub != "Miscellaneous":      # Miscellaneous is a deliberate choice
         warnings.append(f"no category: {label}")
     elif cat in types and not _fits(types[cat], amount.startswith("-")) \
-            and not _friend_fits(cat, sub, amount.startswith("-")):
+            and not _friend_fits(cat, sub, amount.startswith("-")) and d.get("kind") != "refund":
         warnings.append(f"category {cat!r} does not fit the amount sign: {label}")
     e = {"amount": amount, "title": escape_percent(title), "date": str(d.get("date") or ""),
          "notes": escape_percent(notes), "category": escape_percent(cat)}

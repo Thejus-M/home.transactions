@@ -2826,7 +2826,8 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
     else if (types.hasOwnProperty(cat)) {
       var t = types[cat], neg = amount.charAt(0) === "-"
       var friendOk = cat === "Friend Settlement" && sub === "Split Paid"
-      if (!(t === "balance" || (neg ? t === "expense" : t === "income")) && !friendOk)
+      // a linked refund is a credit filed under its purchase's expense category on purpose
+      if (!(t === "balance" || (neg ? t === "expense" : t === "income")) && !friendOk && d.kind !== "refund")
         warnings.push("category " + _cashewRepr(cat) + " does not fit the amount sign: " + label)
     }
     var e = { amount: amount, title: _cashewPct(title), date: _cashewStr(d.date), notes: _cashewPct(notes), category: _cashewPct(cat) }
