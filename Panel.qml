@@ -897,7 +897,9 @@ Panel {
     if (store.transfers.some(function (t) { return t.isNew })) root.txdb(["transfers-mark-seen"])
   } else {
     root.todayIso = Model.todayIso()
-    root.refreshData()
+    // No refresh here: data/.changed (dbChangedFile) already reloads on every
+    // write by any process, and the shell loads once at start. Re-running the
+    // snapshot on each open rebuilt every row for nothing.
     // Reopening deep inside a list hides the summary the panel exists to
     // show, so every open starts at the top. The popup's content may not
     // be built yet on the first open, hence the guard.
@@ -1040,7 +1042,14 @@ Panel {
     interval: 30 * 60 * 1000
     running: true
     repeat: true
-    triggeredOnStart: true
+    onTriggered: { root.queueCompress(); root.runAutoLink() }
+  }
+
+  // First catch-up runs a minute after start, not during it, so the OCR-sized
+  // Python imports do not compete with the shell and the first popup open.
+  Timer {
+    interval: 60 * 1000
+    running: true
     onTriggered: { root.queueCompress(); root.runAutoLink() }
   }
 
@@ -1106,9 +1115,14 @@ Panel {
     // so the widget keeps showing the last good data. Everything is set
     // together before bill reminders run, so "marked paid" is never lost
     // to load order.
+    property string lastSnapshotText: ""
     function applySnapshot(text) {
+      // An identical snapshot (a touch with no real change) would only
+      // re-assign every array and re-run every row binding.
+      if (text === store.lastSnapshotText) return
       var snap
       try { snap = JSON.parse(text) } catch (e) { console.warn("txdb snapshot unreadable: " + e); return }
+      store.lastSnapshotText = text
       if (root.txdbQueue.length > 0 || txdbWriteProc.running) { root.refreshPending = true; return }
       var cards = {}
       var overviews = snap.cardOverviews || []
@@ -10389,7 +10403,7 @@ Panel {
     readonly property bool infoOpen: root.infoOpenId === card.infoId && !card.editing
     function toggleInfo() { root.infoOpenId = root.infoOpenId === card.infoId ? "" : card.infoId }
 
-    implicitHeight: card.collapsedHeight + cInfo.height + (card.editing ? editPanel.implicitHeight + Style.space(10) : 0) + (card.showDetails ? detailsPanel.implicitHeight + Style.space(10) : 0)
+    implicitHeight: card.collapsedHeight + cInfo.height + (card.editing ? editLoader.implicitHeight + Style.space(10) : 0) + (card.showDetails ? detailsLoader.implicitHeight + Style.space(10) : 0)
     radius: Style.cornerRadius
     opacity: cardMouse.pressed ? 0.75 : 1.0
     color: card.selected ? Util.alpha(Color.accent, 0.16)
@@ -10804,15 +10818,19 @@ Panel {
 
     // Edit panel: shows while editing. Name is the field in the row above.
     // It is either a Note or a Bill (typed here, item by item), never both.
-    Column {
-      id: editPanel
-      visible: card.editing
+    Loader {
+      id: editLoader
+      active: card.editing
       anchors.top: cInfo.bottom
       anchors.topMargin: Style.space(2)
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.leftMargin: Style.spacing.rowPaddingX
       anchors.rightMargin: Style.spacing.rowPaddingX
+      // Built only while editing: ~490 idle rows used to each carry this whole panel.
+      sourceComponent: Component { Column {
+      id: editPanel
+      width: parent.width
       spacing: Style.space(6)
       property bool billMode: false
       property bool picking: false
@@ -11050,6 +11068,7 @@ Panel {
           font.pixelSize: Style.font.body
           background: null
           onVisibleChanged: if (visible) text = card.userNote
+          Component.onCompleted: text = card.userNote
           Keys.onEscapePressed: { card.editing = false; Qt.callLater(function () { card.forceActiveFocus() }) }
         }
       }
@@ -11155,17 +11174,21 @@ Panel {
           }
         }
       }
-    }
+    } }  // Column, Component
+    }  // Loader
 
-    Column {
-      id: detailsPanel
-      visible: card.showDetails
+    Loader {
+      id: detailsLoader
+      active: card.showDetails
       anchors.top: cInfo.bottom
       anchors.topMargin: Style.space(6)
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.leftMargin: Style.spacing.rowPaddingX + Style.space(46)
       anchors.rightMargin: Style.spacing.rowPaddingX
+      sourceComponent: Component { Column {
+      id: detailsPanel
+      width: parent.width
       spacing: Style.space(4)
 
       Rectangle {
@@ -11322,6 +11345,7 @@ Panel {
           onClicked: store.setTracked(card.txn.id, !card.txn.tracked)
         }
       }
-    }
+    } }  // Column, Component
+    }  // Loader
   }
 }
