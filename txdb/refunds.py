@@ -312,7 +312,7 @@ def snapshot(conn: sqlite3.Connection, by_id: dict[str, dict]) -> dict:
     """Tag the snapshot rows (`by_id`: id -> row dict, edited in place) and return the top-level keys.
 
     On the credit: refundOf (the purchase id, "" when it is not in the data), refundMode,
-    refundNote. On the purchase: refundedBy (ids), refundedAmount, refundState
+    refundNote; refundNot (true) on a credit said not to be a refund. On the purchase: refundedBy (ids), refundedAmount, refundState
     ("full", "partial" or "pending")."""
     try:
         link_rows = conn.execute("SELECT * FROM refund_links").fetchall()
@@ -345,6 +345,10 @@ def snapshot(conn: sqlite3.Connection, by_id: dict[str, dict]) -> dict:
         o["refundedBy"] = ids
         o["refundedAmount"] = total
         o["refundState"] = "full" if total >= -o["amount"] - 0.004 else "partial"
+    not_ids = sorted(r[0] for r in conn.execute("SELECT txn_id FROM refund_not"))
+    for tid in not_ids:
+        if tid in by_id:
+            by_id[tid]["refundNot"] = True
     pending = []
     for oid, e in expect.items():
         o = by_id.get(oid)
@@ -355,5 +359,5 @@ def snapshot(conn: sqlite3.Connection, by_id: dict[str, dict]) -> dict:
         if "refundState" not in o:
             o["refundState"] = "pending"
     return {"refunds": links,
-            "refundNot": sorted(r[0] for r in conn.execute("SELECT txn_id FROM refund_not")),
+            "refundNot": not_ids,
             "refundExpect": pending}

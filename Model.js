@@ -1046,6 +1046,7 @@ function monthSummary(transactions, referenceDateIso) {
   var ym = (referenceDateIso || new Date().toISOString().slice(0, 10)).slice(0, 7)
   var spent = 0
   var income = 0
+  var refunded = 0
   for (var i = 0; i < transactions.length; i++) {
     var t = transactions[i]
     if (t.date.slice(0, 7) !== ym) continue
@@ -1053,11 +1054,16 @@ function monthSummary(transactions, referenceDateIso) {
     // is neither spending nor income.
     if (t.transferId || t.transferSelf) continue
     if (t.amount < 0) spent += -t.amount
+    // A credit linked to the purchase it refunds takes that money back off "spent" (in the month the
+    // refund arrived) instead of counting as income. Unlinked credits stay income.
+    else if (t.refundOf !== undefined) refunded += t.amount
     else income += t.amount
   }
+  spent = Math.max(0, spent - refunded)
   return {
     spent: spent,
     income: income,
+    refunded: refunded,
     net: income - spent,
     currency: transactions.length > 0 ? transactions[0].currency : "INR",
     monthLabel: _MONTH_FULL_NAMES[Number(ym.slice(5, 7)) - 1]
@@ -1486,6 +1492,14 @@ function _daysBetween(a, b) {
   return Math.round(Math.abs(da - db) / 86400000)
 }
 
+// Whole days from `earlier` to `later` (negative when `later` is before `earlier`); null for a bad date.
+function _daysFrom(earlier, later) {
+  if (!earlier || !later) return null
+  var da = new Date(earlier + "T00:00:00"), db = new Date(later + "T00:00:00")
+  if (isNaN(da.getTime()) || isNaN(db.getTime())) return null
+  return Math.round((db - da) / 86400000)
+}
+
 // 0-100 and why; 0 = disqualified. Mirrors receipt-ledger-stitcher's
 // src/match.py:score() against a shared set of cases (tests/test_receipts_js.py)
 // so the picker here and the offline auto-match cannot silently drift apart.
@@ -1543,6 +1557,98 @@ function receiptMatchScore(receipt, txn) {
 // Same-day rows sort first regardless of score, then by score, so the
 // picker reads as "here's what happened that day" rather than "here's
 // what the arithmetic liked".
+// ---- refunds: which purchase does a credit give back? (txdb/refunds.py is the same logic.)
+
+var _REFUND_STOP = {
+  PVT: 1, PRIVATE: 1, LTD: 1, LIMITED: 1, LLP: 1, INDIA: 1, INTERNET: 1, THE: 1, AND: 1, PAYMENTS: 1, PAYMENT: 1,
+  TECHNOLOGIES: 1, SERVICES: 1, STORE: 1, STORES: 1, UPI: 1, COM: 1, ONLINE: 1, BANGALORE: 1, BENGALURU: 1,
+  MUMBAI: 1, DELHI: 1, CHENNAI: 1, HYDERABAD: 1, PUNE: 1, KOCHI: 1, TRIVANDRUM: 1, GURGAON: 1, NOIDA: 1,
+  TRANSFER: 1, FROM: 1, REFUND: 1, REVERSAL: 1, DEBIT: 1, CREDIT: 1, NEFT: 1, IMPS: 1, RTGS: 1, CARD: 1, TXN: 1,
+  BANK: 1, PURCHASE: 1, ECOM: 1, FOR: 1, WITH: 1
+}
+var REFUND_WINDOW_DAYS = 90
+
+// The words of a merchant that say who was paid, as an object used as a set.
+function refundTokens(merchant) {
+  var s = String(merchant || "").toUpperCase().replace(/^UPI[- ]+/, "").replace(/\s-\s*[A-Z ]+$/, "")
+  var words = s.match(/[A-Z]{3,}/g) || []
+  var out = {}
+  words.forEach(function (w) { if (!_REFUND_STOP[w]) out[w] = true })
+  return out
+}
+
+function _upiRef(txn) {
+  if (txn.reference) return txn.reference
+  var m = /(?:^|[^\d])(\d{12})(?!\d)/.exec(txn.merchant || "")
+  return m ? m[1] : ""
+}
+
+function _accountKey(t) { return t.bank + "|" + t.accountType + "|" + t.last4 }
+
+// How well `txn` (money out) fits as the purchase behind `credit` (money in), or null. A shared UPI
+// reference, or a shared merchant word, is required: an amount alone is never evidence.
+// { score, ref, exact, full, sameAccount, days }
+function refundMatchScore(credit, txn) {
+  if (!(credit.amount > 0) || !(txn.amount < 0)) return null
+  var cp = Math.round(credit.amount * 100), op = Math.round(-txn.amount * 100)
+  if (cp > op) return null                                    // a refund is never more than the purchase
+  var days = _daysFrom(txn.date, credit.date)                 // refund day minus purchase day
+  if (days === null || days < 0 || days > REFUND_WINDOW_DAYS) return null
+  var rc = _upiRef(credit), ro = _upiRef(txn)
+  var ref = !!(rc && rc === ro)
+  var a = refundTokens(credit.merchant), b = refundTokens(txn.merchant)
+  var na = Object.keys(a).length, nb = Object.keys(b).length, common = 0
+  Object.keys(a).forEach(function (k) { if (b[k]) common++ })
+  var full = common > 0 && common === Math.min(na, nb)
+  if (!ref && common === 0) return null
+  var exact = cp === op
+  var same = _accountKey(credit) === _accountKey(txn)
+  var score = ref ? 100 : 0
+  if (!ref) score += full ? 35 : 15
+  score += exact ? 45 : 25
+  score += days <= 7 ? 15 : days <= 30 ? 10 : days <= 60 ? 5 : 0
+  score += same ? 10 : (credit.bank === txn.bank ? 3 : 0)
+  return { score: score, ref: ref, exact: exact, full: full, sameAccount: same, days: days }
+}
+
+// The purchases a credit may refund, best first: [{ txn, score, ref, exact, ... }].
+// opts.all: also list every other purchase of the last 90 days (score 0) after the matches, for a
+// person who knows better; opts.limit: cap the matches (default 12).
+function refundCandidates(credit, transactions, opts) {
+  opts = opts || {}
+  var matches = [], rest = []
+  for (var i = 0; i < transactions.length; i++) {
+    var t = transactions[i]
+    if (t.id === credit.id || t.amount >= 0 || _isTransferRow(t)) continue
+    var m = refundMatchScore(credit, t)
+    if (m) { m.txn = t; matches.push(m) }
+    else if (opts.all) {
+      var d = _daysFrom(t.date, credit.date)
+      if (d !== null && d >= 0 && d <= REFUND_WINDOW_DAYS) rest.push({ txn: t, score: 0, days: d })
+    }
+  }
+  matches.sort(function (x, y) { return y.score - x.score || x.days - y.days })
+  rest.sort(function (x, y) { return x.days - y.days })
+  return matches.slice(0, opts.limit || 12).concat(rest.slice(0, 40))
+}
+
+// One line for the "i" panel and chips: "Refund of FLIPKART INTERNET PVT L · 02-Nov · ₹3,816".
+function refundOfText(credit, byId) {
+  if (credit.refundOf === undefined) return ""
+  var o = credit.refundOf ? byId[credit.refundOf] : null
+  if (!o) return "Refund of an earlier purchase" + (credit.refundNote ? ": " + credit.refundNote : " (not in your data)")
+  return "Refund of " + o.merchant + " · " + formatDate(o.date) + " · " + currencySymbol(o.currency) + formatGrouped(Math.abs(o.amount))
+}
+
+// The chip on a refunded purchase: "Refunded ₹3,816", "Refunded ₹1,000 of ₹3,816", "Refund pending".
+function refundedChip(txn) {
+  if (txn.refundState === "pending") return "Refund pending"
+  if (txn.refundState === "full") return "Refunded " + currencySymbol(txn.currency) + formatGrouped(txn.refundedAmount)
+  if (txn.refundState === "partial") return "Refunded " + currencySymbol(txn.currency) + formatGrouped(txn.refundedAmount)
+    + " of " + currencySymbol(txn.currency) + formatGrouped(Math.abs(txn.amount))
+  return ""
+}
+
 function receiptCandidates(receipt, transactions, opts) {
   opts = opts || {}
   var exclude = opts.excludeIds || {}
@@ -1739,7 +1845,7 @@ function txnExplain(t, ctx) {
 // Pure functions only, so tests/test_filter_js.py can run them under node.
 
 function defaultFilter() {
-  return { q: "", accounts: [], dir: "any", tracked: "any", transfers: "any", bill: "any", pending: "any", min: null, max: null, month: "" }
+  return { q: "", accounts: [], dir: "any", tracked: "any", transfers: "any", bill: "any", pending: "any", refund: "any", min: null, max: null, month: "" }
 }
 
 function _pad2(n) { return (n < 10 ? "0" : "") + n }
@@ -1773,6 +1879,14 @@ function monthLabel(ym) {
   if (!_YM_RE.test(ym || "")) return ""
   var p = ym.split("-")
   return _MONTH_NAMES[Number(p[1]) - 1] + " " + p[0]
+}
+
+// The refund part of the filter. "linked": a credit linked to its purchase, or a purchase that has been
+// (or is waiting to be) refunded. "needs": a credit that could be a refund and has no link yet.
+function _refundFilterHit(t, want) {
+  if (want === "linked") return t.refundOf !== undefined || t.refundState !== undefined
+  if (want === "needs") return t.amount > 0 && !_isTransferRow(t) && t.refundOf === undefined && !t.refundNot
+  return true
 }
 
 function _isTransferRow(t) { return !!(t.transferId || t.transferSelf) }
@@ -1852,6 +1966,7 @@ function filterTransactions(rows, f, ctx) {
   var transfersWant = f.transfers === "any" ? null : f.transfers === "only"
   var billWant = f.bill === "any" ? null : f.bill === "has"
   var pendingWant = !f.pending || f.pending === "any" ? null : f.pending === "only"
+  var refundWant = !f.refund || f.refund === "any" ? null : f.refund   // "linked" | "needs"
   var out = []
   for (var i = 0; i < rows.length; i++) {
     var t = rows[i]
@@ -1867,6 +1982,7 @@ function filterTransactions(rows, f, ctx) {
     if (transfersWant !== null && transfersWant !== _isTransferRow(t)) continue
     if (billWant !== null && billWant !== !!linked[t.id]) continue
     if (pendingWant !== null && pendingWant !== (t.status !== "settled")) continue
+    if (refundWant !== null && !_refundFilterHit(t, refundWant)) continue
     if (hasMin || hasMax) {
       var abs = Math.abs(Number(t.amount))
       if (abs !== abs) continue               // NaN amount: never inside a range
@@ -1926,6 +2042,7 @@ function activeFilterChips(f, options) {
   if (f.transfers !== "any") chips.push({ id: "transfers", label: f.transfers === "only" ? "Transfers only" : "No transfers" })
   if (f.pending && f.pending !== "any") chips.push({ id: "pending", label: f.pending === "only" ? "Pending" : "Settled only" })
   if (f.bill !== "any") chips.push({ id: "bill", label: f.bill === "has" ? "Has bill" : "No bill" })
+  if (f.refund && f.refund !== "any") chips.push({ id: "refund", label: f.refund === "linked" ? "Refunds" : "Needs refund link" })
   if (f.min !== null && f.min !== undefined && f.min > 0) chips.push({ id: "min", label: "≥ " + _amountText(f.min) })
   if (f.max !== null && f.max !== undefined) chips.push({ id: "max", label: "≤ " + _amountText(f.max) })
   if (f.month === "30d") chips.push({ id: "month", label: "Last 30 days" })
@@ -1945,6 +2062,7 @@ function removeFilterPart(f, id) {
   else if (id === "tracked") n.tracked = "any"
   else if (id === "transfers") n.transfers = "any"
   else if (id === "bill") n.bill = "any"
+  else if (id === "refund") n.refund = "any"
   else if (id === "pending") n.pending = "any"
   else if (id === "min") n.min = null
   else if (id === "max") n.max = null
@@ -1975,7 +2093,7 @@ function parseAmountInput(s) {
 function serializeFilter(f) {
   return JSON.stringify({
     accounts: f.accounts.slice().sort(), dir: f.dir, tracked: f.tracked,
-    transfers: f.transfers, bill: f.bill, min: f.min, max: f.max
+    transfers: f.transfers, bill: f.bill, refund: f.refund, min: f.min, max: f.max
   })
 }
 
@@ -1993,6 +2111,7 @@ function restoreFilter(json, options) {
   if (["tracked", "untracked"].indexOf(data.tracked) !== -1) f.tracked = data.tracked
   if (["only", "hide"].indexOf(data.transfers) !== -1) f.transfers = data.transfers
   if (["has", "none"].indexOf(data.bill) !== -1) f.bill = data.bill
+  if (["linked", "needs"].indexOf(data.refund) !== -1) f.refund = data.refund
   ;["min", "max"].forEach(function (k) {
     var v = data[k]
     if (typeof v === "number" && isFinite(v) && v > 0 && v <= _MAX_AMOUNT) f[k] = v
