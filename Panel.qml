@@ -704,6 +704,41 @@ Panel {
     }
   }
   function cashewQueueLinks() { if (root.cashewOpen) cashewLinksTimer.restart() }
+
+  // One click sends every selected row to the Cashew web app
+  // (https://budget-track.web.app/): the same links the cards below hold, but
+  // always the web ones whatever the Cashew: App / Web toggle says, opened one
+  // after another in the browser (a short pause between them so the browser
+  // and the page keep up). Rows without the tick, and rows hidden by the
+  // filter, are not sent, exactly like the cards.
+  property var cashewSendQueue: []
+  property int cashewSendTotal: 0
+  readonly property bool cashewSending: cashewSendQueue.length > 0
+  property string cashewSendNote: ""
+  function cashewSendAll() {
+    if (root.cashewSending || !root.cashewVerifyGate()) return
+    var out
+    try { out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, "web") }
+    catch (e) { root.cashewSendNote = "Could not build the links: " + e; return }
+    var urls = out.links.map(function (l) { return l.url }).concat(out.transfers.map(function (t) { return t.url }))
+    if (urls.length === 0) { root.cashewSendNote = "Nothing selected to send."; return }
+    root.cashewSendTotal = urls.length
+    root.cashewSendNote = ""
+    root.cashewSendQueue = urls
+    root.cashewSendNext()
+    if (root.cashewSendQueue.length > 0) cashewSendTimer.restart()
+  }
+  function cashewSendNext() {
+    var q = root.cashewSendQueue
+    if (q.length === 0) return
+    Quickshell.execDetached(["xdg-open", q[0]])
+    root.cashewSendQueue = q.slice(1)
+    if (root.cashewSendQueue.length === 0) {
+      cashewSendTimer.stop()
+      root.cashewSendNote = "Sent " + root.cashewSendTotal + (root.cashewSendTotal === 1 ? " link" : " links") + " to Cashew web."
+    }
+  }
+  Timer { id: cashewSendTimer; interval: 1800; repeat: true; onTriggered: root.cashewSendNext() }
   Timer {
     id: cashewLinksTimer
     interval: 30
@@ -7916,6 +7951,27 @@ Panel {
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           font.bold: true
+        }
+
+        CashewBtn {
+          id: cwSendBtn
+          visible: !cashewWin.linksCollapsed
+          anchors { top: parent.top; right: cwBaseBtn.left; topMargin: Style.space(6); rightMargin: Style.space(6) }
+          primary: true
+          enabled: !root.cashewSending
+          label: root.cashewVerifyArmed ? "Unverified AI · click again"
+            : root.cashewSending ? ("Sending " + (root.cashewSendTotal - root.cashewSendQueue.length) + "/" + root.cashewSendTotal + "…")
+            : "Send all to Cashew web"
+          onClicked: root.cashewSendAll()
+        }
+        Text {
+          visible: !cashewWin.linksCollapsed && root.cashewSendNote !== ""
+          anchors { verticalCenter: cwSendBtn.verticalCenter; right: cwSendBtn.left; rightMargin: Style.space(8) }
+          textFormat: Text.PlainText
+          text: root.cashewSendNote
+          color: cashewWin.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
         }
 
         CashewBtn {
