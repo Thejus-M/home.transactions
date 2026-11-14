@@ -4880,6 +4880,13 @@ Panel {
                 for (var k = 0; k < list.length; k++) if (cur && list[k].name === cur.category) return list[k]
                 return null
               }
+              // Expense categories only: a bill is money out.
+              readonly property var choices: (store.receiptCategories || []).filter(function (c) { return c.type === "expense" })
+              readonly property var mainDef: {
+                var list = catBox.choices
+                for (var k = 0; k < list.length; k++) if (list[k].name === catBox.pickMain) return list[k]
+                return null
+              }
               width: parent.width
               height: catColumn.implicitHeight
               Column {
@@ -4913,51 +4920,85 @@ Panel {
                     onClicked: { catBox.pickMain = catBox.cur ? catBox.cur.category : ""; catBox.picking = !catBox.picking }
                   }
                 }
-                Flow {
-                  visible: catBox.picking
+                // Step 1: the main categories as tiles, the same look as the
+                // transaction edit panel. A bill is money out, so only expense
+                // categories are offered (not Salary, Rent Received, Balance...).
+                Grid {
+                  id: billCatGrid
+                  visible: catBox.picking && catBox.pickMain === ""
+                  columns: 4
+                  spacing: Style.space(6)
                   width: parent.width
-                  spacing: Style.space(4)
+                  readonly property real tileW: (width - 3 * spacing) / 4
                   Repeater {
-                    model: catBox.pickMain === "" ? (store.receiptCategories || []) : []
-                    delegate: TextAction {
+                    model: catBox.picking ? catBox.choices : []
+                    delegate: CatTile {
                       required property var modelData
-                      label: (modelData.icon ? modelData.icon + " " : "") + modelData.name
-                      onTriggered: {
-                        var def = modelData
-                        if ((def.subcategories || []).length > 0) catBox.pickMain = def.name
-                        else { store.setReceiptCategory(receiptFullScreen.r.id, def.name, ""); catBox.picking = false }
+                      width: billCatGrid.tileW
+                      glyph: modelData.icon || ""
+                      label: modelData.name
+                      tint: modelData.color || Color.accent
+                      selected: !!catBox.cur && catBox.cur.source === "user" && catBox.cur.category === modelData.name
+                      marked: !!catBox.cur && catBox.cur.source !== "user" && catBox.cur.category === modelData.name
+                      onClicked: {
+                        if ((modelData.subcategories || []).length > 0) catBox.pickMain = modelData.name
+                        else { store.setReceiptCategory(receiptFullScreen.r.id, modelData.name, ""); catBox.picking = false }
                       }
                     }
                   }
                 }
-                Flow {
+
+                // Step 2: the sub-categories of the chosen one, in the same place.
+                Column {
                   visible: catBox.picking && catBox.pickMain !== ""
                   width: parent.width
-                  spacing: Style.space(4)
-                  TextAction {
-                    label: "‹ " + catBox.pickMain
-                    onTriggered: catBox.pickMain = ""
-                  }
-                  TextAction {
-                    label: "no subcategory"
-                    onTriggered: { store.setReceiptCategory(receiptFullScreen.r.id, catBox.pickMain, ""); catBox.picking = false }
-                  }
-                  Repeater {
-                    model: {
-                      var list = store.receiptCategories || []
-                      for (var k = 0; k < list.length; k++) if (list[k].name === catBox.pickMain) return list[k].subcategories || []
-                      return []
+                  spacing: Style.space(6)
+                  Row {
+                    spacing: Style.space(8)
+                    TextAction { label: "‹ Back"; onTriggered: catBox.pickMain = "" }
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      textFormat: Text.PlainText
+                      text: (catBox.mainDef && catBox.mainDef.icon ? catBox.mainDef.icon + "  " : "") + catBox.pickMain
+                      color: catBox.mainDef && catBox.mainDef.color ? catBox.mainDef.color : root.foreground
+                      font.family: "JetBrainsMono Nerd Font"
+                      font.bold: true
+                      font.pixelSize: Style.font.subtitle
                     }
-                    delegate: TextAction {
-                      required property var modelData
-                      label: modelData
-                      onTriggered: { store.setReceiptCategory(receiptFullScreen.r.id, catBox.pickMain, modelData); catBox.picking = false }
+                    TextAction {
+                      anchors.verticalCenter: parent.verticalCenter
+                      visible: !!catBox.cur && catBox.cur.source === "user"
+                      label: "clear my choice"
+                      onTriggered: { store.setReceiptCategory(receiptFullScreen.r.id, "", ""); catBox.picking = false }
                     }
                   }
-                  TextAction {
-                    visible: !!catBox.cur && catBox.cur.source === "user"
-                    label: "clear my choice"
-                    onTriggered: { store.setReceiptCategory(receiptFullScreen.r.id, "", ""); catBox.picking = false }
+                  Grid {
+                    id: billSubGrid
+                    columns: 3
+                    spacing: Style.space(6)
+                    width: parent.width
+                    readonly property real tileW: (width - 2 * spacing) / 3
+                    CatTile {
+                      width: billSubGrid.tileW
+                      glyph: "󰄬"
+                      label: "Just " + catBox.pickMain
+                      tint: catBox.mainDef && catBox.mainDef.color ? catBox.mainDef.color : Color.accent
+                      primary: true
+                      selected: !!catBox.cur && catBox.cur.category === catBox.pickMain && !catBox.cur.subcategory
+                      onClicked: { store.setReceiptCategory(receiptFullScreen.r.id, catBox.pickMain, ""); catBox.picking = false }
+                    }
+                    Repeater {
+                      model: catBox.mainDef ? (catBox.mainDef.subcategories || []) : []
+                      delegate: CatTile {
+                        required property string modelData
+                        width: billSubGrid.tileW
+                        glyph: ((catBox.mainDef && catBox.mainDef.subIcons) || {})[modelData] || ""
+                        label: modelData
+                        tint: catBox.mainDef && catBox.mainDef.color ? catBox.mainDef.color : Color.accent
+                        selected: !!catBox.cur && catBox.cur.category === catBox.pickMain && catBox.cur.subcategory === modelData
+                        onClicked: { store.setReceiptCategory(receiptFullScreen.r.id, catBox.pickMain, modelData); catBox.picking = false }
+                      }
+                    }
                   }
                 }
               }
