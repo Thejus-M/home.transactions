@@ -4210,6 +4210,144 @@ Panel {
               }
             }
 
+            // The bill's category sits right above the bill, where it is seen
+            // first, not 600 lines down below the totals. It is a chip that opens a small picker right
+            // here in the card (no popup). Choosing writes the user's own
+            // category, which a later re-read never overwrites.
+            Item {
+              id: catBox
+              property bool picking: false
+              property string pickMain: ""
+              readonly property var cur: receiptFullScreen.r.category
+              readonly property var catDef: {
+                var list = store.receiptCategories || []
+                for (var k = 0; k < list.length; k++) if (cur && list[k].name === cur.category) return list[k]
+                return null
+              }
+              // Expense categories only: a bill is money out.
+              readonly property var choices: (store.receiptCategories || []).filter(function (c) { return c.type === "expense" })
+              readonly property var mainDef: {
+                var list = catBox.choices
+                for (var k = 0; k < list.length; k++) if (list[k].name === catBox.pickMain) return list[k]
+                return null
+              }
+              width: parent.width
+              height: catColumn.implicitHeight
+              Column {
+                id: catColumn
+                width: parent.width
+                spacing: Style.space(4)
+                Rectangle {
+                  implicitWidth: chipText.implicitWidth + Style.space(16)
+                  implicitHeight: chipText.implicitHeight + Style.space(8)
+                  width: implicitWidth; height: implicitHeight
+                  radius: height / 2
+                  color: Util.alpha(catBox.catDef && catBox.catDef.color ? catBox.catDef.color : Color.accent, 0.35)
+                  border.width: 1
+                  border.color: Util.alpha(root.foreground, 0.25)
+                  Text {
+                    id: chipText
+                    anchors.centerIn: parent
+                    textFormat: Text.PlainText
+                    text: catBox.cur
+                      ? ((catBox.catDef && catBox.catDef.icon ? catBox.catDef.icon + " " : "") + catBox.cur.category
+                         + (catBox.cur.subcategory ? " › " + catBox.cur.subcategory : "")
+                         + (catBox.cur.source === "user" ? "" : "  (suggested)"))
+                      : "＋ Category"
+                    color: root.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: { catBox.pickMain = catBox.cur ? catBox.cur.category : ""; catBox.picking = !catBox.picking }
+                  }
+                }
+                // Step 1: the main categories as tiles, the same look as the
+                // transaction edit panel. A bill is money out, so only expense
+                // categories are offered (not Salary, Rent Received, Balance...).
+                Grid {
+                  id: billCatGrid
+                  visible: catBox.picking && catBox.pickMain === ""
+                  columns: 4
+                  spacing: Style.space(6)
+                  width: parent.width
+                  readonly property real tileW: (width - 3 * spacing) / 4
+                  Repeater {
+                    model: catBox.picking ? catBox.choices : []
+                    delegate: CatTile {
+                      required property var modelData
+                      width: billCatGrid.tileW
+                      glyph: modelData.icon || ""
+                      label: modelData.name
+                      tint: modelData.color || Color.accent
+                      selected: !!catBox.cur && catBox.cur.source === "user" && catBox.cur.category === modelData.name
+                      marked: !!catBox.cur && catBox.cur.source !== "user" && catBox.cur.category === modelData.name
+                      onClicked: {
+                        if ((modelData.subcategories || []).length > 0) catBox.pickMain = modelData.name
+                        else { store.setReceiptCategory(receiptFullScreen.r.id, modelData.name, ""); catBox.picking = false }
+                      }
+                    }
+                  }
+                }
+
+                // Step 2: the sub-categories of the chosen one, in the same place.
+                Column {
+                  visible: catBox.picking && catBox.pickMain !== ""
+                  width: parent.width
+                  spacing: Style.space(6)
+                  Row {
+                    spacing: Style.space(8)
+                    TextAction { label: "‹ Back"; onTriggered: catBox.pickMain = "" }
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      textFormat: Text.PlainText
+                      text: (catBox.mainDef && catBox.mainDef.icon ? catBox.mainDef.icon + "  " : "") + catBox.pickMain
+                      color: catBox.mainDef && catBox.mainDef.color ? catBox.mainDef.color : root.foreground
+                      font.family: "JetBrainsMono Nerd Font"
+                      font.bold: true
+                      font.pixelSize: Style.font.subtitle
+                    }
+                    TextAction {
+                      anchors.verticalCenter: parent.verticalCenter
+                      visible: !!catBox.cur && catBox.cur.source === "user"
+                      label: "clear my choice"
+                      onTriggered: { store.setReceiptCategory(receiptFullScreen.r.id, "", ""); catBox.picking = false }
+                    }
+                  }
+                  Grid {
+                    id: billSubGrid
+                    columns: 3
+                    spacing: Style.space(6)
+                    width: parent.width
+                    readonly property real tileW: (width - 2 * spacing) / 3
+                    CatTile {
+                      width: billSubGrid.tileW
+                      glyph: "󰄬"
+                      label: "Just " + catBox.pickMain
+                      tint: catBox.mainDef && catBox.mainDef.color ? catBox.mainDef.color : Color.accent
+                      primary: true
+                      selected: !!catBox.cur && catBox.cur.category === catBox.pickMain && !catBox.cur.subcategory
+                      onClicked: { store.setReceiptCategory(receiptFullScreen.r.id, catBox.pickMain, ""); catBox.picking = false }
+                    }
+                    Repeater {
+                      model: catBox.mainDef ? (catBox.mainDef.subcategories || []) : []
+                      delegate: CatTile {
+                        required property string modelData
+                        width: billSubGrid.tileW
+                        glyph: ((catBox.mainDef && catBox.mainDef.subIcons) || {})[modelData] || ""
+                        label: modelData
+                        tint: catBox.mainDef && catBox.mainDef.color ? catBox.mainDef.color : Color.accent
+                        selected: !!catBox.cur && catBox.cur.category === catBox.pickMain && catBox.cur.subcategory === modelData
+                        onClicked: { store.setReceiptCategory(receiptFullScreen.r.id, catBox.pickMain, modelData); catBox.picking = false }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
             // The bill, laid out as the bill itself reads: wrapped merchant,
             // ==== / ---- rules, Date/Time, an ITEM QTY RATE AMOUNT table,
             // signed Bill Discount / Round Off, the tax split, item count,
@@ -4877,143 +5015,6 @@ Panel {
               color: Qt.darker(root.foreground, 1.5)
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
-            }
-
-            // The bill's category: a chip that opens a small picker right
-            // here in the card (no popup). Choosing writes the user's own
-            // category, which a later re-read never overwrites.
-            Item {
-              id: catBox
-              property bool picking: false
-              property string pickMain: ""
-              readonly property var cur: receiptFullScreen.r.category
-              readonly property var catDef: {
-                var list = store.receiptCategories || []
-                for (var k = 0; k < list.length; k++) if (cur && list[k].name === cur.category) return list[k]
-                return null
-              }
-              // Expense categories only: a bill is money out.
-              readonly property var choices: (store.receiptCategories || []).filter(function (c) { return c.type === "expense" })
-              readonly property var mainDef: {
-                var list = catBox.choices
-                for (var k = 0; k < list.length; k++) if (list[k].name === catBox.pickMain) return list[k]
-                return null
-              }
-              width: parent.width
-              height: catColumn.implicitHeight
-              Column {
-                id: catColumn
-                width: parent.width
-                spacing: Style.space(4)
-                Rectangle {
-                  implicitWidth: chipText.implicitWidth + Style.space(16)
-                  implicitHeight: chipText.implicitHeight + Style.space(8)
-                  width: implicitWidth; height: implicitHeight
-                  radius: height / 2
-                  color: Util.alpha(catBox.catDef && catBox.catDef.color ? catBox.catDef.color : Color.accent, 0.35)
-                  border.width: 1
-                  border.color: Util.alpha(root.foreground, 0.25)
-                  Text {
-                    id: chipText
-                    anchors.centerIn: parent
-                    textFormat: Text.PlainText
-                    text: catBox.cur
-                      ? ((catBox.catDef && catBox.catDef.icon ? catBox.catDef.icon + " " : "") + catBox.cur.category
-                         + (catBox.cur.subcategory ? " › " + catBox.cur.subcategory : "")
-                         + (catBox.cur.source === "user" ? "" : "  (suggested)"))
-                      : "＋ Category"
-                    color: root.foreground
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                  }
-                  MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: { catBox.pickMain = catBox.cur ? catBox.cur.category : ""; catBox.picking = !catBox.picking }
-                  }
-                }
-                // Step 1: the main categories as tiles, the same look as the
-                // transaction edit panel. A bill is money out, so only expense
-                // categories are offered (not Salary, Rent Received, Balance...).
-                Grid {
-                  id: billCatGrid
-                  visible: catBox.picking && catBox.pickMain === ""
-                  columns: 4
-                  spacing: Style.space(6)
-                  width: parent.width
-                  readonly property real tileW: (width - 3 * spacing) / 4
-                  Repeater {
-                    model: catBox.picking ? catBox.choices : []
-                    delegate: CatTile {
-                      required property var modelData
-                      width: billCatGrid.tileW
-                      glyph: modelData.icon || ""
-                      label: modelData.name
-                      tint: modelData.color || Color.accent
-                      selected: !!catBox.cur && catBox.cur.source === "user" && catBox.cur.category === modelData.name
-                      marked: !!catBox.cur && catBox.cur.source !== "user" && catBox.cur.category === modelData.name
-                      onClicked: {
-                        if ((modelData.subcategories || []).length > 0) catBox.pickMain = modelData.name
-                        else { store.setReceiptCategory(receiptFullScreen.r.id, modelData.name, ""); catBox.picking = false }
-                      }
-                    }
-                  }
-                }
-
-                // Step 2: the sub-categories of the chosen one, in the same place.
-                Column {
-                  visible: catBox.picking && catBox.pickMain !== ""
-                  width: parent.width
-                  spacing: Style.space(6)
-                  Row {
-                    spacing: Style.space(8)
-                    TextAction { label: "‹ Back"; onTriggered: catBox.pickMain = "" }
-                    Text {
-                      anchors.verticalCenter: parent.verticalCenter
-                      textFormat: Text.PlainText
-                      text: (catBox.mainDef && catBox.mainDef.icon ? catBox.mainDef.icon + "  " : "") + catBox.pickMain
-                      color: catBox.mainDef && catBox.mainDef.color ? catBox.mainDef.color : root.foreground
-                      font.family: "JetBrainsMono Nerd Font"
-                      font.bold: true
-                      font.pixelSize: Style.font.subtitle
-                    }
-                    TextAction {
-                      anchors.verticalCenter: parent.verticalCenter
-                      visible: !!catBox.cur && catBox.cur.source === "user"
-                      label: "clear my choice"
-                      onTriggered: { store.setReceiptCategory(receiptFullScreen.r.id, "", ""); catBox.picking = false }
-                    }
-                  }
-                  Grid {
-                    id: billSubGrid
-                    columns: 3
-                    spacing: Style.space(6)
-                    width: parent.width
-                    readonly property real tileW: (width - 2 * spacing) / 3
-                    CatTile {
-                      width: billSubGrid.tileW
-                      glyph: "󰄬"
-                      label: "Just " + catBox.pickMain
-                      tint: catBox.mainDef && catBox.mainDef.color ? catBox.mainDef.color : Color.accent
-                      primary: true
-                      selected: !!catBox.cur && catBox.cur.category === catBox.pickMain && !catBox.cur.subcategory
-                      onClicked: { store.setReceiptCategory(receiptFullScreen.r.id, catBox.pickMain, ""); catBox.picking = false }
-                    }
-                    Repeater {
-                      model: catBox.mainDef ? (catBox.mainDef.subcategories || []) : []
-                      delegate: CatTile {
-                        required property string modelData
-                        width: billSubGrid.tileW
-                        glyph: ((catBox.mainDef && catBox.mainDef.subIcons) || {})[modelData] || ""
-                        label: modelData
-                        tint: catBox.mainDef && catBox.mainDef.color ? catBox.mainDef.color : Color.accent
-                        selected: !!catBox.cur && catBox.cur.category === catBox.pickMain && catBox.cur.subcategory === modelData
-                        onClicked: { store.setReceiptCategory(receiptFullScreen.r.id, catBox.pickMain, modelData); catBox.picking = false }
-                      }
-                    }
-                  }
-                }
-              }
             }
 
             Repeater {
