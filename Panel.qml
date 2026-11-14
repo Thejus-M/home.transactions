@@ -10560,7 +10560,9 @@ Panel {
     Behavior on slide { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
     function saveEdit() {
       store.setTransactionName(card.groupKey, (editFieldLoader.item ? editFieldLoader.item.text : ""))
-      if (noteArea.text.trim() !== card.userNote) store.setTxnNote(card.txn.id, noteArea.text)
+      // noteArea lives inside the lazily built edit panel, so it is read through the Loader.
+      var noteText = editLoader.item ? editLoader.item.noteText : card.userNote
+      if (noteText.trim() !== card.userNote) store.setTxnNote(card.txn.id, noteText)
       card.editing = false
       Qt.callLater(function () { card.forceActiveFocus() })
     }
@@ -11010,6 +11012,7 @@ Panel {
       sourceComponent: Component { Column {
       id: editPanel
       width: parent.width
+      readonly property string noteText: noteArea.text
       spacing: Style.space(6)
       property bool billMode: false
       property bool picking: false
