@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="96" height="96" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Both: the receipt behind, the note in front at the lower right. -->
+  <g stroke="#3fb950">
+    <path d="M12 9V2H2v14.6l1.7 1.2 1.7-1.2 1.7 1.2 1.7-1.2"/>
+    <path d="M5 6h4M5 9.5h2.5"/>
+  </g>
+  <g stroke="#58a6ff">
+    <path d="M9 9h13v8.5L17.5 22H9z"/>
+    <path d="M22 17.5h-4.5V22"/>
+    <path d="M12 13.5h7M12 17h3"/>
+  </g>
+</svg>

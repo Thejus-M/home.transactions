@@ -10778,38 +10778,40 @@ Panel {
           }
           Item {
             id: noteIconSlot
-            visible: !!card.linkedReceipt
+            // A bill, a note, or both: one mark each (TxnMark.qml, icons/*.svg).
+            readonly property bool hasBill: !!card.linkedReceipt
+            readonly property bool hasNote: card.userNote !== ""
+            visible: hasBill || hasNote
             width: Style.space(20)
             height: Style.space(20)
             anchors.verticalCenter: parent.verticalCenter
-              // A small note: this transaction has a bill. Click it to open the bill.
-              Rectangle {
-                visible: !!card.linkedReceipt
-                anchors.verticalCenter: parent.verticalCenter
-                width: Style.space(20)
-                height: width
-                radius: Style.space(5)
-                color: noteMouse.containsMouse ? Util.alpha(root.creditColor, 0.32) : Util.alpha(root.creditColor, 0.16)
-                Text {
-                  anchors.centerIn: parent
-                  textFormat: Text.PlainText
-                  text: "󰎞"
-                  color: root.creditColor
-                  font.pixelSize: Style.font.caption
-                }
-                MouseArea {
-                  id: noteMouse
-                  anchors.fill: parent
-                  anchors.margins: -Style.space(3)
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  preventStealing: true
-                  onClicked: root.openReceiptDetail(card.linkedReceipt)
-                }
-                ToolTip.visible: noteMouse.containsMouse
-                ToolTip.text: "Bill: " + Model.receiptTitle(card.linkedReceipt || {}) + " — open"
-                ToolTip.delay: 300
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.space(5)
+              color: noteMouse.containsMouse ? Util.alpha(root.foreground, 0.14) : Util.alpha(root.foreground, 0.06)
+              TxnMark {
+                anchors.centerIn: parent
+                markSize: Style.space(16)
+                kind: noteIconSlot.hasBill && noteIconSlot.hasNote ? "both" : (noteIconSlot.hasBill ? "bill" : "note")
+                billColor: root.creditColor
+                noteColor: Color.accent
               }
+              MouseArea {
+                id: noteMouse
+                anchors.fill: parent
+                anchors.margins: -Style.space(3)
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                preventStealing: true
+                // A bill opens the bill; a note alone opens the editor, where the note is.
+                onClicked: noteIconSlot.hasBill ? root.openReceiptDetail(card.linkedReceipt) : card.editing = true
+              }
+              ToolTip.visible: noteMouse.containsMouse
+              ToolTip.text: (noteIconSlot.hasBill ? "Bill: " + Model.receiptTitle(card.linkedReceipt || {}) + " — open" : "")
+                + (noteIconSlot.hasBill && noteIconSlot.hasNote ? "\n" : "")
+                + (noteIconSlot.hasNote ? "Note: " + card.userNote : "")
+              ToolTip.delay: 300
+            }
           }
         }
 

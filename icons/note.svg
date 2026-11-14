@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="96" height="96" fill="none" stroke="#58a6ff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Note: a sticky note with a folded corner and two lines of writing. -->
+  <path d="M4.5 3.5h15v10.5l-5.5 5.5h-9.5z"/>
+  <path d="M19.5 14h-5.5v5.5"/>
+  <path d="M8 8h8M8 11.5h5"/>
+</svg>
