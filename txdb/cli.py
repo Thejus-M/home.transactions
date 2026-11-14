@@ -22,6 +22,14 @@
   txdb transfers-mark-seen               clear the "new" mark on newly matched transfers
   txdb transfer-split <txnId>...         say a detected transfer pair is NOT a transfer
   txdb transfer-restore <txnId>...       undo that
+  txdb refund-link <refundId> <originalId|-> [note]   a credit refunds that purchase ("-" = purchase not in the data)
+  txdb refund-unlink <refundId>...       remove the link; the credit is not auto-linked again
+  txdb refund-not <refundId>...          this credit is not a refund (same as unlink)
+  txdb refund-restore <refundId>...      let a credit be auto-linked again
+  txdb refund-mode <refundId> <income|skip|lent>   how the Cashew export treats the pair
+  txdb refund-expect <originalId> [amount] [note]  a return was started, the money is not back yet
+  txdb refund-unexpect <originalId>      undo that
+  txdb refund-verify                     link the credits that can be linked without asking (runs after every fetch)
   txdb receipt-add-fee <receiptId> <label> <amount> [original] [waived 0|1]   platform / delivery / service fee
   txdb receipt-edit-fee <receiptId> <lineNo> <label|amount|original|waived> <value>
   txdb receipt-set-category <receiptId> <category> [sub]   the user's category for a bill (empty = remove it)
@@ -275,6 +283,37 @@ def main(argv: list[str]) -> int:
         with write(conn):
             for tid in args:
                 conn.execute("DELETE FROM transfer_splits WHERE txn_id = ?", (tid,))
+    elif cmd.startswith("refund-"):
+        from . import refunds
+        try:
+            if cmd == "refund-link":
+                # refund-link <refundId> <originalId|-> [note...]  ("-" = the purchase is not in the data)
+                original = None if args[1] in ("-", "") else args[1]
+                refunds.set_link(conn, args[0], original, "manual", " ".join(args[2:]))
+            elif cmd == "refund-unlink":
+                for tid in args:
+                    refunds.clear_link(conn, tid)
+            elif cmd == "refund-not":
+                for tid in args:
+                    refunds.mark_not(conn, tid)
+            elif cmd == "refund-restore":
+                for tid in args:
+                    refunds.restore(conn, tid)
+            elif cmd == "refund-mode":
+                refunds.set_mode(conn, args[0], args[1])
+            elif cmd == "refund-expect":
+                paise = round(float(args[1]) * 100) if len(args) > 1 and args[1] not in ("", "-") else None
+                refunds.expect(conn, args[0], paise, " ".join(args[2:]))
+            elif cmd == "refund-unexpect":
+                refunds.unexpect(conn, args[0])
+            elif cmd == "refund-verify":
+                print(json.dumps(refunds.verify(conn)))
+            else:
+                print(f"Unknown command {cmd}", file=sys.stderr)
+                return 2
+        except (ValueError, IndexError) as e:
+            print(f"{cmd}: {e}", file=sys.stderr)
+            return 2
     elif cmd in ("bill-paid", "bill-notified"):
         aid = _account(conn, args[0])
         column, value = ("marked_paid", 1 if args[1] == "1" else 0) if cmd == "bill-paid" else ("notified_date", args[1])
@@ -310,6 +349,10 @@ def main(argv: list[str]) -> int:
         unlinked = conn.execute("SELECT COUNT(*) FROM receipts r WHERE NOT EXISTS "
                                 "(SELECT 1 FROM receipt_links l WHERE l.receipt_id = r.id)").fetchone()[0]
         print(f"receipt links: {links[0]} linked, {links[1]} orphaned, {unlinked} bills not filed")
+        from . import refunds as _refunds
+        rl = conn.execute("SELECT COUNT(*) FROM refund_links").fetchone()[0]
+        lost = _refunds.orphans(conn)
+        print(f"refund links: {rl} linked, {len(lost)} orphaned")
         from . import cashew
         off = cashew.category_mismatches(conn)
         print("categories:", "every saved answer is in force" if not off else f"{len(off)} rows do not use the answer you saved")
@@ -320,6 +363,9 @@ def main(argv: list[str]) -> int:
         print(f"  {counts[0]} rows carry a balance, {counts[1]} of them worked out rather than read")
         for table in [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]:
             print(f"  {table}: {conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]}")
+    elif cmd == "heal-refunds":
+        from . import refunds
+        print(json.dumps(refunds.heal(conn), indent=2))
     elif cmd == "heal-links":
         from . import ingest
         print(json.dumps(ingest.heal_links(conn), indent=2))

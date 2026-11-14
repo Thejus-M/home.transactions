@@ -347,6 +347,18 @@ def finish_run(conn: sqlite3.Connection, run_id: int, outcome: str, message: str
     except Exception as exc:      # noqa: BLE001 - a failed repair must not fail the fetch
         import sys
         print(f"link repair skipped: {exc}", file=sys.stderr)
+    try:
+        # Refund links: re-point any whose row got a new id, then link the credits that can be
+        # linked without asking (txdb/refunds.py). Never fails the fetch.
+        from . import refunds
+        refunds.heal(conn)
+        found = refunds.verify(conn)
+        if found["new"]:
+            n = found["new"]
+            message = f"{message}  ·  {n} refund{'s' if n != 1 else ''} linked"
+    except Exception as exc:      # noqa: BLE001
+        import sys
+        print(f"refund check skipped: {exc}", file=sys.stderr)
     with write(conn):
         conn.execute("UPDATE fetch_runs SET finished_at = ?, outcome = ?, message = ?, added = ?, total = ? "
                      "WHERE id = ?", (now(), outcome, message, added, total, run_id))

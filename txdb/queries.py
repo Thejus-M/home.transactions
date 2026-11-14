@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from . import cashew, portfolio, receipts, transfers
+from . import cashew, portfolio, receipts, refunds, transfers
 from .db import from_paise
 from .ingest import OVERVIEW_FIELDS
 
@@ -80,6 +80,8 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         ref = transfers.upi_ref(t["merchant"])
         if ref:
             t["reference"] = ref
+    # Refund links (txdb/refunds.py): tags the credit and the purchase, and the top-level lists.
+    refund_keys = refunds.snapshot(conn, by_id)
     # When each bank was last fetched successfully: "Axis was last fetched 20 Oct".
     last_fetched = {r["bank"]: r["finished_at"] for r in conn.execute(
         "SELECT bank, MAX(finished_at) AS finished_at FROM fetch_runs WHERE outcome = 'done' GROUP BY bank")}
@@ -135,6 +137,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         # predates them simply ignores the keys (see txdb/portfolio.py).
         **portfolio.snapshot(conn),
         **receipts.snapshot(conn),
+        **refund_keys,
     }
 
 

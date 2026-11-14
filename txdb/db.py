@@ -716,6 +716,42 @@ MIGRATIONS = [
     """
     ALTER TABLE card_cycles_raw ADD COLUMN minimum_due TEXT;
     """,
+    # v26: refunds. A credit linked to the purchase it gives back (txdb/refunds.py). No foreign
+    # keys: a re-fetch can rewrite transaction ids, so every side carries a fingerprint for `heal`.
+    # Several refunds may point at one purchase (a partial refund), so original_id is NOT unique;
+    # original_id NULL = the purchase is not in the data (original_note says what it was).
+    """
+    CREATE TABLE refund_links (
+        refund_id                 TEXT PRIMARY KEY,
+        original_id               TEXT,
+        original_note             TEXT NOT NULL DEFAULT '',
+        matched_by                TEXT NOT NULL CHECK (matched_by IN ('auto', 'manual', 'ref')),
+        score                     INTEGER,
+        cashew_mode               TEXT NOT NULL DEFAULT 'income' CHECK (cashew_mode IN ('income', 'skip', 'lent')),
+        linked_at                 TEXT NOT NULL,
+        fp_refund_account         TEXT,
+        fp_refund_date            TEXT,
+        fp_refund_amount_paise    INTEGER,
+        fp_refund_merchant        TEXT,
+        fp_original_account       TEXT,
+        fp_original_date          TEXT,
+        fp_original_amount_paise  INTEGER,
+        fp_original_merchant      TEXT
+    );
+    CREATE INDEX refund_links_by_original ON refund_links (original_id);
+    -- "this credit is not a refund": it is never linked automatically (like transfer_splits)
+    CREATE TABLE refund_not (
+        txn_id     TEXT PRIMARY KEY,
+        marked_at  TEXT NOT NULL
+    );
+    -- a return was started and the money has not arrived yet
+    CREATE TABLE refund_expect (
+        original_id    TEXT PRIMARY KEY,
+        expected_paise INTEGER,
+        note           TEXT NOT NULL DEFAULT '',
+        created_at     TEXT NOT NULL
+    );
+    """,
 ]
 
 
