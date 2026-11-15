@@ -2607,20 +2607,22 @@ function cashewShownIndexes(drafts, onlyFilter, idSet, closedSet) {
 function cashewRefundNotes(drafts, shown) {
   var keep = null
   if (shown) { keep = {}; shown.forEach(function (i) { keep[i] = true }) }
-  var income = 0, netted = 0, partial = 0, lent = []
+  var twin = 0, plain = 0, netted = 0, partial = 0, lent = []
   drafts.forEach(function (d, i) {
     if (keep && !keep[i]) return
     if (d.kind === "refund") {
       if (d.refundMode === "skip") netted++
-      else if (d.include !== false) income++
+      else if (d.include !== false) { if (d.categoryPk) twin++; else plain++ }
     } else if (d.refundMode === "net") partial++
     else if (d.refundMode === "lent") lent.push(d.title || d.id)
   })
   var out = []
+  if (twin > 0) out.push(twin + (twin === 1 ? " refund goes" : " refunds go") + " in as income under the income twin of its category (sent by id, so Cashew does not pick the expense one).")
+  if (plain > 0) out.push(plain + (plain === 1 ? " refund has" : " refunds have") + " no income twin in Cashew yet, so " + (plain === 1 ? "it goes" : "they go")
+    + " under Cashback & Rewards > Refund. Create an income category with the purchase's category name in Cashew, export a backup, then run: txdb cashew-twins --backup FILE")
   if (netted > 0) out.push(netted + (netted === 1 ? " refund is" : " refunds are") + " netted into " + (netted === 1 ? "its purchase" : "their purchases")
-    + " (same category): a fully refunded purchase is not sent, a partly refunded one is sent at its net amount. Cashew ignores the sign in a link, so a refund cannot be income under an expense category.")
+    + " (same category): a fully refunded purchase is not sent, a partly refunded one is sent at its net amount.")
   if (partial > 0) out.push(partial + (partial === 1 ? " purchase is" : " purchases are") + " sent at the amount left after a refund; the note says so.")
-  if (income > 0) out.push(income + (income === 1 ? " refund goes" : " refunds go") + " in as income under Cashback & Rewards > Refund. The note names the purchase and its category.")
   lent.slice(0, 5).forEach(function (t) {
     out.push("Lent: after sending, open \"" + t + "\" in Cashew, set its type to Lent and tap collect when the money is back (a link cannot create a Lent).")
   })
@@ -2875,15 +2877,24 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
     if (_cashewLen(notes) > 500) { warnings.push("notes cut to 500 characters: " + label); notes = _cashewCut(notes, 500) }
     var cat = _cashewStr(d.category), sub = _cashewStr(d.subcategory), acct = _cashewStr(d.account)
     var amount = _cashewStr(d.amount)
-    if (cat === "Uncategorized" && sub !== "Miscellaneous") warnings.push("no category: " + label)
+    var twinPk = _cashewStr(d.categoryPk), twinSubPk = _cashewStr(d.subcategoryPk)
+    if (twinPk) { /* an income twin chosen by id: its type is income, so the credit fits */ }
+    else if (cat === "Uncategorized" && sub !== "Miscellaneous") warnings.push("no category: " + label)
     else if (types.hasOwnProperty(cat)) {
       var t = types[cat], neg = amount.charAt(0) === "-"
       var friendOk = cat === "Friend Settlement" && sub === "Split Paid"
       if (!(t === "balance" || (neg ? t === "expense" : t === "income")) && !friendOk)
         warnings.push("category " + _cashewRepr(cat) + " does not fit the amount sign: " + label)
     }
-    var e = { amount: amount, title: _cashewPct(title), date: _cashewStr(d.date), notes: _cashewPct(notes), category: _cashewPct(cat) }
-    if (sub) e.subcategory = _cashewPct(sub)
+    var e = { amount: amount, title: _cashewPct(title), date: _cashewStr(d.date), notes: _cashewPct(notes) }
+    if (twinPk) {
+      // By id, never by name: the name "Shopping" would find the EXPENSE category and show the refund as spend.
+      e.categoryPk = twinPk
+      if (twinSubPk) e.subcategoryPk = twinSubPk
+    } else {
+      e.category = _cashewPct(cat)
+      if (sub) e.subcategory = _cashewPct(sub)
+    }
     if (acct) e.account = _cashewPct(acct)
     e.fallbackCategory = "Uncategorized"
     return JSON.stringify(e)

@@ -25,10 +25,10 @@ from . import transfers
 
 WINDOW_DAYS = 90            # a refund comes this many days after the purchase, at most
 MODES = ("income", "skip", "lent")
-# "skip" = net the refund against its purchase in the Cashew export (same category, right category total).
-# Cashew ignores the sign in a link and takes income/expense from the category type, so a refund cannot be
-# income under the purchase's expense category; "income" files it under an income category instead.
-DEFAULT_MODE = "skip"
+# "income" = the refund is income under the INCOME TWIN of the purchase's category (same name, income type; ids
+# read from a Cashew backup, txdb/cashew_twins.py), else under Cashback & Rewards > Refund. "skip" = net it
+# against the purchase. Cashew ignores the sign in a link and takes income/expense from the category type.
+DEFAULT_MODE = "income"
 
 # Words that say nothing about WHO was paid: legal suffixes, "internet", the city a bank
 # appends to a merchant on the purchase row but drops on the refund row.

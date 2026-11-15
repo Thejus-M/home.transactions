@@ -22,7 +22,7 @@ import sqlite3
 import urllib.parse
 from pathlib import Path
 
-from . import keys, transfers
+from . import cashew_twins, keys, transfers
 
 APP_BASE = "https://cashewapp.web.app/"            # the Android / iOS app
 WEB_BASE = "https://budget-track.web.app/"          # the Cashew web app
@@ -515,6 +515,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
     bill_cats, linked = _bill_categories(conn), _linked_ids(conn)
 
     refund_of = _refund_links(conn)
+    twins = cashew_twins.load()
     refunded: dict[str, int] = {}                  # purchase id -> paise refunded to it
     skipped: dict[str, int] = {}                   # ... of which netted into the purchase (mode "skip")
     netted_on: dict[str, list[str]] = {}           # purchase id -> dates of those refunds
@@ -561,6 +562,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
         include = not (leg and leg.get("partnerTracked") and not r["tracked"])
         amount_paise = r["amount_paise"]
         notes_lead, refund_mode, refund_to = "", "", None
+        refund_from, twin_pks = None, None
         link = refund_of.get(r["id"])
         if link and r["amount_paise"] > 0 and not leg:
             # A credit that gives back a purchase (txdb/refunds.py). Cashew (6.7.2) takes income or expense
@@ -585,7 +587,14 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
                 title = f"Refund: {o_title}"
                 notes_lead = f"Refund of {o_title} {_day(orig['date'])} {_money(-orig['amount_paise'])}"
                 if o_cat != UNCATEGORIZED[0]:
-                    notes_lead += f" · {o_cat}" + (f" › {o_sub}" if o_sub else "")
+                    refund_from = (o_cat, o_sub)
+                    twin = None if (own_pick and own_pick[0]) else cashew_twins.lookup(twins, o_cat, o_sub)
+                    if twin:
+                        # The income twin of the purchase's category (same name, income type), by id.
+                        cat, sub, warn = o_cat, o_sub, ""
+                        twin_pks = twin
+                    else:
+                        notes_lead += f" · {o_cat}" + (f" › {o_sub}" if o_sub else "")
             elif link["note"]:
                 notes_lead = f"Refund of {link['note']}"
             kind = "refund"
@@ -616,6 +625,10 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
         }
         if refund_to is not None:
             d["refundOf"] = refund_to
+        if refund_from:
+            d["refundCategory"], d["refundSubcategory"] = refund_from      # the purchase's category (the twin's name)
+        if twin_pks:
+            d["categoryPk"], d["subcategoryPk"] = twin_pks[0], twin_pks[1]
         if refund_mode:
             d["refundMode"] = refund_mode
         out.append(d)
@@ -635,15 +648,25 @@ def _entry(d: dict, warnings: list[str], types: dict[str, str]) -> dict:
         notes = notes[:NOTES_MAX]
     cat, sub, acct = str(d.get("category") or ""), str(d.get("subcategory") or ""), str(d.get("account") or "")
     amount = str(d.get("amount") or "")
-    if cat == UNCATEGORIZED[0] and sub != "Miscellaneous":      # Miscellaneous is a deliberate choice
+    twin_pk, twin_sub_pk = str(d.get("categoryPk") or ""), str(d.get("subcategoryPk") or "")
+    if twin_pk:
+        pass                                   # an income twin chosen by id: its type is income, the credit fits
+    elif cat == UNCATEGORIZED[0] and sub != "Miscellaneous":      # Miscellaneous is a deliberate choice
         warnings.append(f"no category: {label}")
     elif cat in types and not _fits(types[cat], amount.startswith("-")) \
             and not _friend_fits(cat, sub, amount.startswith("-")):
         warnings.append(f"category {cat!r} does not fit the amount sign: {label}")
     e = {"amount": amount, "title": escape_percent(title), "date": str(d.get("date") or ""),
-         "notes": escape_percent(notes), "category": escape_percent(cat)}
-    if sub:
-        e["subcategory"] = escape_percent(sub)
+         "notes": escape_percent(notes)}
+    if twin_pk:
+        # By id, never by name: the name "Shopping" would find the EXPENSE category and show the refund as spend.
+        e["categoryPk"] = twin_pk
+        if twin_sub_pk:
+            e["subcategoryPk"] = twin_sub_pk
+    else:
+        e["category"] = escape_percent(cat)
+        if sub:
+            e["subcategory"] = escape_percent(sub)
     if acct:
         e["account"] = escape_percent(acct)
     e["fallbackCategory"] = FALLBACK_CATEGORY      # never the forced "Select Category" prompt

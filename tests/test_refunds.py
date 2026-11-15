@@ -123,7 +123,7 @@ class InTheDatabase(Base):
         self.assertEqual(refunds.verify(self.conn), {"new": 1})
         row = self.conn.execute("SELECT * FROM refund_links").fetchone()
         self.assertEqual((row["refund_id"], row["original_id"], row["matched_by"], row["cashew_mode"]),
-                         (self.back, self.out, "auto", "skip"))     # new links net against the purchase
+                         (self.back, self.out, "auto", "income"))
         self.assertEqual(refunds.verify(self.conn), {"new": 0})
 
     def test_a_manual_link_rejects_wrong_directions(self):
@@ -181,7 +181,7 @@ class InTheSnapshot(Base):
         refunds.set_link(self.conn, self.back, self.out)
         rows = {t["id"]: t for t in queries.snapshot(self.conn)["transactions"]}
         self.assertEqual(rows[self.back]["refundOf"], self.out)
-        self.assertEqual(rows[self.back]["refundMode"], "skip")
+        self.assertEqual(rows[self.back]["refundMode"], "income")
         self.assertEqual(rows[self.out]["refundedBy"], [self.back])
         self.assertEqual((rows[self.out]["refundedAmount"], rows[self.out]["refundState"]), (3816.0, "full"))
         self.assertNotIn("refundOf", rows[self.other])

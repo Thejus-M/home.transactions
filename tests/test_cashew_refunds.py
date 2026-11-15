@@ -48,10 +48,10 @@ class Base(unittest.TestCase):
 
 
 class Export(Base):
-    def test_the_default_nets_the_refund_into_the_purchase_so_neither_is_exported_when_fully_refunded(self):
+    def test_net_mode_drops_both_when_the_refund_covers_the_purchase(self):
         # Cashew (6.7.2) takes income/expense from the category TYPE and ignores the sign, so a refund cannot be
         # income under the purchase's expense category. Netted: Shopping stays right in Cashew.
-        refunds.set_link(self.conn, self.back, self.out)
+        refunds.set_link(self.conn, self.back, self.out, mode="skip")
         got = self.drafts()
         self.assertEqual((got[self.back]["refundMode"], got[self.back]["include"]), ("skip", False))
         self.assertEqual((got[self.out]["refundMode"], got[self.out]["include"]), ("skip", False))
@@ -64,7 +64,7 @@ class Export(Base):
             {"id": "x4", "date": "2026-11-14", "merchant": "FLIPKART INTERNET PVT L", "amount": 1000.0,
              "currency": "INR", "rawStatementRowId": "4"}])
         part = self.conn.execute("SELECT id FROM transactions WHERE amount_paise = 100000").fetchone()[0]
-        refunds.set_link(self.conn, part, self.out)                       # default mode: net
+        refunds.set_link(self.conn, part, self.out, mode="skip")          # net mode
         got = self.drafts()
         buy = got[self.out]
         self.assertTrue(buy["include"])

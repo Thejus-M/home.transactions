@@ -12,6 +12,9 @@
   txdb receipt-cash <receiptId>          paid in cash: park it, stop asking
   txdb receipt-ignore <receiptId>        not a bill, or a duplicate photo
   txdb receipt-review <receiptId> <0|1>  raise or clear "check this parse"
+  txdb cashew-twins [--backup FILE] [--test-link]  income twins of the expense categories, so a refund is income in
+                                         "the same category": lists what the linked refunds need; --backup reads
+                                         their ids from a Cashew backup export; --test-link prints a one-row test
   txdb receipt-purge-sources [--dry-run] [--hours N]  delete the original photos in the KDE share of bills linked
                                          3+ hours ago that have a compressed copy in the database
   txdb receipt-forget <receiptId>        drop the row
@@ -171,6 +174,49 @@ def main(argv: list[str]) -> int:
         return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
+    if cmd == "cashew-twins":
+        # cashew-twins [--backup FILE] [--test-link]: income twins of the expense categories, for refunds
+        # (txdb/cashew_twins.py). No arguments: which twins the linked refunds need, and which are known.
+        from . import cashew, cashew_twins
+        if "--backup" in args:
+            try:
+                found = cashew_twins.read_backup(args[args.index("--backup") + 1])
+            except (ValueError, IndexError) as e:
+                print(f"cashew-twins: {e}", file=sys.stderr)
+                return 2
+            where = cashew_twins.save(found)
+            print(f"{len(found)} income categories read from the backup, saved to {where}")
+        twins = cashew_twins.load()
+        ro = cashew.open_readonly(DB_PATH)
+        try:
+            ds = cashew.drafts(ro, cashew.load_state(), all_rows=True, with_notes=False)
+        finally:
+            ro.close()
+        need = {}
+        for d in ds:
+            if d.get("kind") == "refund" and d.get("refundCategory"):
+                need[(d["refundCategory"], d.get("refundSubcategory") or "")] = None
+        for (cat, sub) in sorted(need):
+            got = cashew_twins.lookup(twins, cat, sub)
+            label = f"{cat} › {sub}" if sub else cat
+            state = ("ready" + ("" if (got and (got[1] or not sub)) else f" (the sub-category '{sub}' is missing in the twin)")) if got \
+                else f"MISSING: create an INCOME category named '{cat}'" + (f" with a sub-category '{sub}'" if sub else "") + " in Cashew"
+            print(f"  {label}: {state}")
+        if not need:
+            print("  no linked refund needs a twin yet")
+        if "--test-link" in args:
+            pick = next(((c, s_) for (c, s_) in sorted(need) if cashew_twins.lookup(twins, c, s_)), None)
+            if not pick:
+                print("cashew-twins: no twin is known yet; import a backup first (--backup FILE)", file=sys.stderr)
+                return 2
+            pk, sub_pk = cashew_twins.lookup(twins, *pick)
+            entry = {"amount": "1.00", "title": f"TEST income twin of {pick[0]}", "date": datetime.now().strftime("%Y-%m-%d"),
+                     "notes": "twin test, delete me", "categoryPk": pk, **({"subcategoryPk": sub_pk} if sub_pk else {}),
+                     "fallbackCategory": cashew.FALLBACK_CATEGORY}
+            url, _text = cashew._url([entry], cashew.WEB_BASE)
+            print("Open this link; the row must show GREEN (income) under the twin, then delete it:")
+            print(url)
+        return 0
     if cmd == "txn-category":
         # txdb txn-category <txnId> <category> [<sub>] [--only-this]; empty category clears
         from . import cashew
