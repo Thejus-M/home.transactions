@@ -9,7 +9,7 @@ own `income` flag; "Refund of Shoe" is +2,472, income, under Shopping), only a l
 
 So these rows are written into a copy of the database with the right flag, and you import that file in Cashew
 (Settings > import a backup). The base is the copy the browser keeps of the Cashew web app (cashew_twins.find_browser_copy),
-or a backup file you export. Rows already in the database (same day, amount and name) are never added twice.
+or a backup file you export. A row whose day and amount are already in the database is never added twice.
 """
 from __future__ import annotations
 
@@ -85,8 +85,10 @@ def _day(iso: str) -> int:
 def plan(drafts: list[dict], idx: Index, conn: sqlite3.Connection) -> list[dict]:
     """[{draft, cat, sub, wallet, income, amount, day, duplicate, problem}] for every viaFile draft."""
     out = []
-    seen = {(r[0], round(abs(r[1]), 2), (r[2] or "").lower()) for r in conn.execute(
-        "SELECT date_created, amount, name FROM transactions")}
+    # By calendar day, not by the exact second: a row added by hand in Cashew has a time of day, a link row has none.
+    # The NAME is not compared: a payment typed in by hand carries the person's own title, not the bank's.
+    seen = {(datetime.fromtimestamp(r[0]).strftime("%Y-%m-%d"), round(abs(r[1]), 2))
+            for r in conn.execute("SELECT date_created, amount FROM transactions")}
     for d in drafts:
         if not d.get("viaFile") or d.get("include") is False:
             continue
@@ -98,7 +100,7 @@ def plan(drafts: list[dict], idx: Index, conn: sqlite3.Connection) -> list[dict]
         problem = problem or ("" if wallet else f"Cashew has no account '{d.get('account')}'")
         out.append({"draft": d, "cat": got[0] if got else "", "sub": got[1] if got else "", "wallet": wallet or "",
                     "income": amount > 0, "amount": amount, "day": day, "problem": problem,
-                    "duplicate": (day, abs(amount), (d.get("title") or "").lower()) in seen})
+                    "duplicate": (d["date"], abs(amount)) in seen})
     return out
 
 

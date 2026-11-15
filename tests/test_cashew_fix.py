@@ -85,6 +85,17 @@ class Fix(unittest.TestCase):
         self.assertEqual([(bool(i["problem"]), i["duplicate"]) for i in items], [(False, False), (False, True), (True, False), (True, False)])
         self.assertTrue(items[0]["income"])
 
+    def test_a_row_added_by_hand_with_a_time_of_day_counts_as_already_there(self):
+        self.conn.execute("UPDATE transactions SET date_created = ? WHERE transaction_pk = 't-old'",
+                          (day("2026-10-01") + 16 * 3600 + 14 * 60 + 5,))
+        self.conn.commit()
+        known = draft(viaFile=True, title="OLD LINK ROW", amount="-5.00", date="2026-10-01", kind="spend", category="Food Out")
+        self.assertTrue(cashew_fix.plan([known], self.idx, self.conn)[0]["duplicate"])
+        renamed = dict(known, title="whatever the bank called it")          # the name is not compared
+        self.assertTrue(cashew_fix.plan([renamed], self.idx, self.conn)[0]["duplicate"])
+        other_day = dict(known, date="2026-10-02")
+        self.assertFalse(cashew_fix.plan([other_day], self.idx, self.conn)[0]["duplicate"])
+
     def test_apply_adds_an_income_row_in_the_expense_category_and_an_expense_row_in_the_income_category(self):
         refund = draft()
         friend = draft(id="f", viaFile=True, kind="spend", title="MIDHUN JAMES", amount="-14000.00", category="Friend Settlement",
