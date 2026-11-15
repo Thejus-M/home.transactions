@@ -516,12 +516,14 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
 
     refund_of = _refund_links(conn)
     refunded: dict[str, int] = {}                  # purchase id -> paise refunded to it
-    skipped: dict[str, int] = {}                   # ... of which in "skip both" mode
+    skipped: dict[str, int] = {}                   # ... of which netted into the purchase (mode "skip")
+    netted_on: dict[str, list[str]] = {}           # purchase id -> dates of those refunds
     for cid, link in refund_of.items():
         if link["original"] and cid in by_id and link["original"] in by_id:
             refunded[link["original"]] = refunded.get(link["original"], 0) + by_id[cid]["amount_paise"]
             if link["mode"] == "skip":
                 skipped[link["original"]] = skipped.get(link["original"], 0) + by_id[cid]["amount_paise"]
+                netted_on.setdefault(link["original"], []).append(by_id[cid]["date"])
 
     def classify(r):
         """(kind, category, subcategory, warn, from_bill, title, leg) for one row."""
@@ -557,19 +559,24 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
             continue
         kind, cat, sub, warn, from_bill, title, leg = classify(r)
         include = not (leg and leg.get("partnerTracked") and not r["tracked"])
+        amount_paise = r["amount_paise"]
         notes_lead, refund_mode, refund_to = "", "", None
         link = refund_of.get(r["id"])
         if link and r["amount_paise"] > 0 and not leg:
-            # A credit that gives back a purchase (txdb/refunds.py). "income": it is exported as income under
-            # REFUND_CATEGORY (an income-type category: Cashew would show it as spend under the purchase's
-            # expense category), and the note says which purchase it refunds and under what category.
-            # "skip": the purchase and the refund cancel out and neither is exported (only when the refunds
-            # fully cancel it). "lent": the refund is not exported; the purchase is, and the person turns it
-            # into a Lent in Cashew by hand.
+            # A credit that gives back a purchase (txdb/refunds.py). Cashew (6.7.2) takes income or expense
+            # ONLY from the category's type and ignores the sign in the link (tested on screen, 2026-11-15),
+            # so a refund can never be income under the purchase's own expense category. Hence:
+            #  "skip" (the default, "net against the purchase"): the refund is not exported; the purchase is
+            #     exported at its net amount in its own category, or not at all when fully refunded. The
+            #     category total in Cashew is then right.
+            #  "income": the refund is exported as income under REFUND_CATEGORY (an income-type category),
+            #     the note says which purchase and which category it belongs to.
+            #  "lent": the refund is not exported; the purchase is, and the person turns it into a Lent in
+            #     Cashew by hand.
             refund_mode, refund_to = link["mode"], link["original"]
             orig = by_id.get(link["original"]) if link["original"] else None
-            if refund_mode == "skip" and not (orig and skipped.get(orig["id"], 0) >= -orig["amount_paise"]):
-                refund_mode = "income"             # a partial refund cannot cancel the whole purchase
+            if refund_mode == "skip" and orig is None:
+                refund_mode = "income"             # nothing to net against: the purchase is not in the data
             own_pick = _txn_pick(state, r["id"])
             if not (own_pick and own_pick[0]):           # a category the person chose on the refund itself wins
                 cat, sub, warn = REFUND_CATEGORY[0], REFUND_CATEGORY[1], ""
@@ -585,17 +592,23 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
             if refund_mode in ("skip", "lent"):
                 include = False
         elif r["id"] in refunded and r["amount_paise"] < 0 and not leg:
-            # the purchase: gone from the export when every refund cancels it
-            if skipped.get(r["id"], 0) >= -r["amount_paise"]:
+            # the purchase: gone from the export when refunds netted into it cancel it, else sent at its net amount
+            cut = skipped.get(r["id"], 0)
+            if cut >= -r["amount_paise"]:
                 include = False
                 refund_mode = "skip"
+            elif cut > 0:
+                amount_paise = r["amount_paise"] + cut
+                when = ", ".join(_day(x) for x in sorted(netted_on.get(r["id"], [])))
+                notes_lead = f"Paid {_money(-r['amount_paise'])}, {_money(cut)} refunded {when}: net {_money(-amount_paise)}"
+                refund_mode = "net"
             elif any(refund_of[c]["mode"] == "lent" for c in refund_of if refund_of[c]["original"] == r["id"]):
                 refund_mode = "lent"               # kept, with a checklist line in the widget
         aid = r["account_id"]
         account = acct_over[aid] if aid in acct_over else ACCOUNT_MAP.get(aid, "")
         d = {
             "id": r["id"], "include": include, "pending": r["status"] != "settled", "fromBill": from_bill, "partnerTracked": bool(leg and leg.get("partnerTracked")), "date": r["date"], "title": title,
-            "amount": format_amount(r["amount_paise"]), "category": cat, "subcategory": sub,
+            "amount": format_amount(amount_paise), "category": cat, "subcategory": sub,
             "account": account or "",
             "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title), notes_lead) if with_notes else "",
             "kind": kind, "bank": r["bank"], "last4": r["last4"], "accountId": aid,

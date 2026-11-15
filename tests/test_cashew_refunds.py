@@ -48,10 +48,36 @@ class Base(unittest.TestCase):
 
 
 class Export(Base):
+    def test_the_default_nets_the_refund_into_the_purchase_so_neither_is_exported_when_fully_refunded(self):
+        # Cashew (6.7.2) takes income/expense from the category TYPE and ignores the sign, so a refund cannot be
+        # income under the purchase's expense category. Netted: Shopping stays right in Cashew.
+        refunds.set_link(self.conn, self.back, self.out)
+        got = self.drafts()
+        self.assertEqual((got[self.back]["refundMode"], got[self.back]["include"]), ("skip", False))
+        self.assertEqual((got[self.out]["refundMode"], got[self.out]["include"]), ("skip", False))
+        self.assertTrue(got[self.other]["include"])
+        out = cashew.build_links(list(got.values()))
+        self.assertNotIn("3816.00", json.dumps(out["links"]))
+
+    def test_a_partial_refund_is_netted_into_the_purchase_amount_in_the_same_category(self):
+        ingest.upsert_rows(self.conn, self.card, [
+            {"id": "x4", "date": "2026-11-14", "merchant": "FLIPKART INTERNET PVT L", "amount": 1000.0,
+             "currency": "INR", "rawStatementRowId": "4"}])
+        part = self.conn.execute("SELECT id FROM transactions WHERE amount_paise = 100000").fetchone()[0]
+        refunds.set_link(self.conn, part, self.out)                       # default mode: net
+        got = self.drafts()
+        buy = got[self.out]
+        self.assertTrue(buy["include"])
+        self.assertEqual(buy["amount"], "-2816.00")                       # 3816 less the 1000 refunded
+        self.assertEqual((buy["category"], buy["subcategory"]), ("Shopping", "Footwear"))
+        self.assertTrue(buy["notes"].startswith("Paid ₹3816, ₹1000 refunded 14-Nov-26: net ₹2816"))
+        self.assertEqual(buy["refundMode"], "net")
+        self.assertFalse(got[part]["include"])                            # the refund itself is not exported
+
     def test_a_linked_refund_is_income_under_an_income_category_and_the_note_names_the_purchase(self):
         # The deployed Cashew shows a credit under an EXPENSE category ("Shopping") as spend, whatever the
         # sign in the link (seen on screen), so a refund goes under an income-type category.
-        refunds.set_link(self.conn, self.back, self.out)
+        refunds.set_link(self.conn, self.back, self.out, mode="income")
         got = self.drafts()
         credit, buy = got[self.back], got[self.out]
         self.assertEqual((credit["kind"], credit["refundMode"], credit["refundOf"]), ("refund", "income", self.out))
@@ -66,8 +92,8 @@ class Export(Base):
         self.assertEqual(credit["warn"], "")
         self.assertTrue(credit["include"] and buy["include"])
 
-    def test_the_link_builder_sends_the_refund_as_a_positive_amount_with_no_warning(self):
-        refunds.set_link(self.conn, self.back, self.out)
+    def test_the_link_builder_sends_the_income_mode_refund_as_a_positive_amount_with_no_warning(self):
+        refunds.set_link(self.conn, self.back, self.out, mode="income")
         out = cashew.build_links([x for x in self.drafts().values() if x["id"] in (self.out, self.back)])
         self.assertEqual(out["warnings"], [])
         text = urllib.parse.unquote(out["links"][0]["url"].split("JSON=")[1])
@@ -88,24 +114,6 @@ class Export(Base):
         plain = [d(1, amount="10.00", category="Shopping", subcategory="Footwear", kind="income")]
         self.assertTrue([w for w in cashew.build_links(plain)["warnings"] if "does not fit" in w])
 
-    def test_skip_both_drops_the_purchase_and_the_refund(self):
-        refunds.set_link(self.conn, self.back, self.out, mode="skip")
-        got = self.drafts()
-        self.assertFalse(got[self.back]["include"])
-        self.assertFalse(got[self.out]["include"])
-        self.assertTrue(got[self.other]["include"])
-
-    def test_skip_with_a_partial_refund_falls_back_to_income(self):
-        ingest.upsert_rows(self.conn, self.card, [
-            {"id": "x4", "date": "2026-11-14", "merchant": "FLIPKART INTERNET PVT L", "amount": 1000.0,
-             "currency": "INR", "rawStatementRowId": "4"}])
-        part = self.conn.execute("SELECT id FROM transactions WHERE amount_paise = 100000").fetchone()[0]
-        refunds.set_link(self.conn, part, self.out, mode="skip")
-        got = self.drafts()
-        self.assertTrue(got[self.out]["include"])
-        self.assertTrue(got[part]["include"])
-        self.assertEqual(got[part]["refundMode"], "income")
-
     def test_lent_keeps_the_purchase_and_drops_the_refund(self):
         refunds.set_link(self.conn, self.back, self.out, mode="lent")
         got = self.drafts()
@@ -114,7 +122,7 @@ class Export(Base):
         self.assertEqual(got[self.out]["refundMode"], "lent")
 
     def test_a_refund_whose_purchase_is_not_in_the_data_is_also_income_and_keeps_the_note(self):
-        refunds.set_link(self.conn, self.other, None, note="Razorpay order")
+        refunds.set_link(self.conn, self.other, None, note="Razorpay order")      # nothing to net against: income
         got = self.drafts()[self.other]
         self.assertEqual((got["kind"], got["refundOf"]), ("refund", ""))
         self.assertIn("Refund of Razorpay order", got["notes"])

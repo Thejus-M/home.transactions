@@ -25,6 +25,10 @@ from . import transfers
 
 WINDOW_DAYS = 90            # a refund comes this many days after the purchase, at most
 MODES = ("income", "skip", "lent")
+# "skip" = net the refund against its purchase in the Cashew export (same category, right category total).
+# Cashew ignores the sign in a link and takes income/expense from the category type, so a refund cannot be
+# income under the purchase's expense category; "income" files it under an income category instead.
+DEFAULT_MODE = "skip"
 
 # Words that say nothing about WHO was paid: legal suffixes, "internet", the city a bank
 # appends to a merchant on the purchase row but drops on the refund row.
@@ -179,7 +183,7 @@ def set_link(conn: sqlite3.Connection, refund_id: str, original_id: str | None, 
             "fp_original_account, fp_original_date, fp_original_amount_paise, fp_original_merchant) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (refund_id, original_id, (note or "").strip(), matched_by, score,
-             mode or (old["cashew_mode"] if old else "income"), now(),
+             mode or (old["cashew_mode"] if old else DEFAULT_MODE), now(),
              refund["account_id"], refund["date"], refund["amount_paise"], refund["merchant"],
              original["account_id"] if original else None, original["date"] if original else None,
              original["amount_paise"] if original else None, original["merchant"] if original else None))

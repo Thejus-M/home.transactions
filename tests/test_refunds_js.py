@@ -119,16 +119,18 @@ class RefundJs(unittest.TestCase):
             {"id": "a", "kind": "refund", "refundMode": "income", "include": True, "title": "Refund: X"},
             {"id": "b", "kind": "refund", "refundMode": "skip", "include": False, "title": "Refund: Y"},
             {"id": "c", "kind": "spend", "refundMode": "skip", "include": False, "title": "Y"},
+            {"id": "n", "kind": "spend", "refundMode": "net", "include": True, "title": "Z"},
             {"id": "d", "kind": "spend", "refundMode": "lent", "include": True, "title": "Shoes"},
             {"id": "e", "kind": "spend", "include": True, "title": "Coffee"},
         ]
         notes = self.js("cashewRefundNotes(input.d, null)", d=drafts)
-        self.assertEqual(len(notes), 3)
-        self.assertIn("1 refund goes in as income", notes[0])
-        self.assertIn("Cashback & Rewards > Refund", notes[0])
-        self.assertIn("1 refund and its purchase cancel out", notes[1])
-        self.assertIn('open "Shoes" in Cashew', notes[2])
-        self.assertEqual(self.js("cashewRefundNotes(input.d, [4])", d=drafts), [])      # only shown rows count
+        self.assertEqual(len(notes), 4)
+        self.assertIn("1 refund is netted into its purchase", notes[0])
+        self.assertIn("ignores the sign", notes[0])
+        self.assertIn("1 purchase is sent at the amount left", notes[1])
+        self.assertIn("1 refund goes in as income under Cashback & Rewards > Refund", notes[2])
+        self.assertIn('open "Shoes" in Cashew', notes[3])
+        self.assertEqual(self.js("cashewRefundNotes(input.d, [5])", d=drafts), [])      # only shown rows count
         self.assertEqual(self.js("cashewRefundNotes([], null)"), [])
 
     def test_the_texts(self):

@@ -2607,17 +2607,20 @@ function cashewShownIndexes(drafts, onlyFilter, idSet, closedSet) {
 function cashewRefundNotes(drafts, shown) {
   var keep = null
   if (shown) { keep = {}; shown.forEach(function (i) { keep[i] = true }) }
-  var income = 0, skipped = 0, lent = []
+  var income = 0, netted = 0, partial = 0, lent = []
   drafts.forEach(function (d, i) {
     if (keep && !keep[i]) return
     if (d.kind === "refund") {
-      if (d.refundMode === "skip") skipped++
+      if (d.refundMode === "skip") netted++
       else if (d.include !== false) income++
-    } else if (d.refundMode === "lent") lent.push(d.title || d.id)
+    } else if (d.refundMode === "net") partial++
+    else if (d.refundMode === "lent") lent.push(d.title || d.id)
   })
   var out = []
-  if (income > 0) out.push(income + (income === 1 ? " refund goes" : " refunds go") + " in as income under Cashback & Rewards > Refund (Cashew shows a credit under an expense category as spend). The note names the purchase and its category.")
-  if (skipped > 0) out.push(skipped + (skipped === 1 ? " refund and its purchase cancel" : " refunds and their purchases cancel") + " out, so neither is sent.")
+  if (netted > 0) out.push(netted + (netted === 1 ? " refund is" : " refunds are") + " netted into " + (netted === 1 ? "its purchase" : "their purchases")
+    + " (same category): a fully refunded purchase is not sent, a partly refunded one is sent at its net amount. Cashew ignores the sign in a link, so a refund cannot be income under an expense category.")
+  if (partial > 0) out.push(partial + (partial === 1 ? " purchase is" : " purchases are") + " sent at the amount left after a refund; the note says so.")
+  if (income > 0) out.push(income + (income === 1 ? " refund goes" : " refunds go") + " in as income under Cashback & Rewards > Refund. The note names the purchase and its category.")
   lent.slice(0, 5).forEach(function (t) {
     out.push("Lent: after sending, open \"" + t + "\" in Cashew, set its type to Lent and tap collect when the money is back (a link cannot create a Lent).")
   })
