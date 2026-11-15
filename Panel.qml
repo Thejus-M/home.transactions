@@ -11440,6 +11440,23 @@ Panel {
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }
+        // The bill of the purchase this refund gives back, when there is one.
+        Row {
+          id: refundBillRow
+          readonly property var bill: card.isRefundCredit && card.txn.refundOf
+            ? Model.linkedReceiptForTransaction(root.transactionById[card.txn.refundOf] || ({}), store.receipts) : null
+          visible: !!bill
+          spacing: Style.space(6)
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: "Bill of that purchase: " + (refundBillRow.bill ? Model.receiptTitle(refundBillRow.bill) : "")
+            color: Qt.darker(root.foreground, 1.1)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          TxnBtn { label: "Open bill"; onClicked: { card.editing = false; root.openReceiptDetail(refundBillRow.bill) } }
+        }
         // How the Cashew export treats the pair (txdb/refunds.py, Model.cashewBuildLinks).
         Row {
           visible: card.isRefundCredit
@@ -11527,9 +11544,13 @@ Panel {
             model: refundBox.picking ? Model.refundCandidates(card.txn, store.transactions, { all: refundBox.showAll }) : []
             delegate: TxnBtn {
               required property var modelData
+              // A purchase that has a bill says so, with what the bill is: that is often the quickest way to
+              // see which purchase a refund belongs to.
+              readonly property var bill: Model.linkedReceiptForTransaction(modelData.txn, store.receipts)
               label: Model.formatDate(modelData.txn.date) + "  " + modelData.txn.merchant + "  "
                 + Model.currencySymbol(modelData.txn.currency) + Model.formatGrouped(Math.abs(modelData.txn.amount))
                 + (modelData.score > 0 ? "  ·  " + modelData.score + "%" : "")
+                + (bill ? "  ·  bill: " + Model.receiptTitle(bill) : "")
               primary: modelData.score >= 100
               onClicked: { store.linkRefund(card.txn.id, modelData.txn.id, ""); refundBox.picking = false; card.editing = false }
             }
