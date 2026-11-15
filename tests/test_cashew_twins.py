@@ -19,6 +19,8 @@ from txdb import cashew, cashew_twins, refunds  # noqa: E402
 import test_cashew_refunds as R  # noqa: E402
 import test_cashew_parity as P  # noqa: E402
 
+os.environ.setdefault("TXDB_NO_BROWSER_COPY", "1")      # never read the real browser in a test
+
 
 def fake_backup(path):
     """The part of a Cashew backup that matters: the categories table."""
@@ -124,13 +126,17 @@ class Export(R.Base):
         self.assertEqual((purchase["category"], purchase["subcategory"]), ("Shopping", "Footwear"))
         self.assertNotIn("categoryPk", purchase)
 
-    def test_without_a_twin_the_refund_falls_back_to_the_refund_category(self):
+    def test_without_a_twin_the_refund_is_added_by_file_in_its_own_category(self):
         cashew_twins.save({}, self.tw)
         refunds.set_link(self.conn, self.back, self.out, mode="income")
         credit = self.drafts()[self.back]
-        self.assertEqual((credit["category"], credit["subcategory"]), cashew.REFUND_CATEGORY)
+        self.assertEqual((credit["category"], credit["subcategory"]), ("Shopping", "Footwear"))
+        self.assertTrue(credit["viaFile"])
         self.assertNotIn("categoryPk", credit)
-        self.assertEqual(credit["refundCategory"], "Shopping")     # still known, for `txdb cashew-twins`
+
+    def test_with_a_twin_no_file_is_needed(self):
+        refunds.set_link(self.conn, self.back, self.out, mode="income")
+        self.assertNotIn("viaFile", self.drafts()[self.back])
 
 
 class CommandLine(R.Base):

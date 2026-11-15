@@ -562,7 +562,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
         include = not (leg and leg.get("partnerTracked") and not r["tracked"])
         amount_paise = r["amount_paise"]
         notes_lead, refund_mode, refund_to = "", "", None
-        refund_from, twin_pks = None, None
+        refund_from, twin_pks, file_row = None, None, False
         link = refund_of.get(r["id"])
         if link and r["amount_paise"] > 0 and not leg:
             # A credit that gives back a purchase (txdb/refunds.py). Cashew (6.7.2) takes income or expense
@@ -588,13 +588,15 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
                 notes_lead = f"Refund of {o_title} {_day(orig['date'])} {_money(-orig['amount_paise'])}"
                 if o_cat != UNCATEGORIZED[0]:
                     refund_from = (o_cat, o_sub)
+                    if not (own_pick and own_pick[0]):
+                        cat, sub, warn = o_cat, o_sub, ""            # the purchase's own category: the SAME one
                     twin = None if (own_pick and own_pick[0]) else cashew_twins.lookup(twins, o_cat, o_sub)
                     if twin:
-                        # The income twin of the purchase's category (same name, income type), by id.
-                        cat, sub, warn = o_cat, o_sub, ""
-                        twin_pks = twin
+                        twin_pks = twin           # an income twin of it was set up in Cashew: sent by id, no file needed
                     else:
-                        notes_lead += f" · {o_cat}" + (f" › {o_sub}" if o_sub else "")
+                        # A link would file it under the expense category as SPEND (Cashew takes the type from the
+                        # category). It is written into Cashew's database with the income flag instead (cashew_fix).
+                        file_row = True
             elif link["note"]:
                 notes_lead = f"Refund of {link['note']}"
             kind = "refund"
@@ -629,6 +631,8 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
             d["refundCategory"], d["refundSubcategory"] = refund_from      # the purchase's category (the twin's name)
         if twin_pks:
             d["categoryPk"], d["subcategoryPk"] = twin_pks[0], twin_pks[1]
+        if file_row and include:
+            d["viaFile"], d["fileReason"] = True, "refund in its purchase's category"
         if refund_mode:
             d["refundMode"] = refund_mode
         out.append(d)
@@ -718,7 +722,9 @@ def build_links(draft_list: list[dict], max_chars: int = DEFAULT_MAX_CHARS, base
     accountFrom, accountTo, ids}], "warnings": [..]}. `base` is "app" or "web"."""
     types, warnings = _types(), []
     root = normalize_base(base)
-    inc = [d for d in draft_list if d.get("include", True)]
+    # `viaFile` rows (txdb/cashew_fix.py) are written into Cashew's database, not sent: a link cannot give them the
+    # right income/expense flag.
+    inc = [d for d in draft_list if d.get("include", True) and not d.get("viaFile")]
     inc.sort(key=lambda d: (str(d.get("date") or ""), str(d.get("id") or "")))
     paired = _pair_legs(inc)
     leg_ids = {id(x) for pair in paired.values() for x in pair}

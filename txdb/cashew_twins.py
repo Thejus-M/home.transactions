@@ -75,6 +75,8 @@ def find_browser_copy(home: Path | None = None) -> Path | None:
     import shutil
     import tempfile
 
+    if home is None and os.environ.get("TXDB_NO_BROWSER_COPY"):
+        return None                       # tests and scripts switch the lookup off
     home = home or Path.home()
     found = []
     for pattern in (".config/*/*/storage/default/https+++budget-track.web.app/idb/*.files/*",

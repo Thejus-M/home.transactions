@@ -12,6 +12,8 @@ sys.path.insert(0, str(ROOT))
 
 from txdb import db, ingest, queries, refunds  # noqa: E402
 
+os.environ.setdefault("TXDB_NO_BROWSER_COPY", "1")      # never read the real browser in a test
+
 
 def r(i, date, paise, merchant, account="ICICI|credit|4002", kind="credit", bank="ICICI"):
     return {"id": i, "date": date, "merchant": merchant, "amount_paise": paise, "account_id": account,

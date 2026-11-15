@@ -1,5 +1,6 @@
 """Linked refunds in the Cashew export: income in the purchase's category, skip both, lent, no-original."""
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from txdb import cashew, db, ingest, refunds  # noqa: E402
 import test_cashew_parity as P  # noqa: E402
+
+os.environ.setdefault("TXDB_NO_BROWSER_COPY", "1")      # never read the real browser in a test
 
 d = P.d
 
@@ -74,34 +77,30 @@ class Export(Base):
         self.assertEqual(buy["refundMode"], "net")
         self.assertFalse(got[part]["include"])                            # the refund itself is not exported
 
-    def test_a_linked_refund_is_income_under_an_income_category_and_the_note_names_the_purchase(self):
-        # The deployed Cashew shows a credit under an EXPENSE category ("Shopping") as spend, whatever the
-        # sign in the link (seen on screen), so a refund goes under an income-type category.
+    def test_an_income_mode_refund_keeps_the_purchases_category_and_is_added_by_file_not_by_link(self):
+        # Cashew (6.7.2) stores a link row's income flag from the category TYPE: a refund sent under Shopping came out
+        # as spend. Cashew itself allows income under Shopping (a row has its own flag), so the refund is written into
+        # a copy of its database (txdb/cashew_fix.py) and left out of the links.
         refunds.set_link(self.conn, self.back, self.out, mode="income")
         got = self.drafts()
         credit, buy = got[self.back], got[self.out]
         self.assertEqual((credit["kind"], credit["refundMode"], credit["refundOf"]), ("refund", "income", self.out))
-        self.assertEqual((credit["category"], credit["subcategory"]), cashew.REFUND_CATEGORY)
-        self.assertEqual(dict((c["name"], c["type"]) for c in cashew.load_categories())[credit["category"]], "income")
-        self.assertEqual((buy["category"], buy["subcategory"]), ("Shopping", "Footwear"))     # the purchase is untouched
-        self.assertEqual(credit["amount"], "3816.00")                                          # money in: positive
-        self.assertEqual(buy["amount"], "-3816.00")                                            # money out: negative
+        self.assertEqual((credit["category"], credit["subcategory"]), ("Shopping", "Footwear"))     # the SAME category
+        self.assertEqual((buy["category"], buy["subcategory"]), ("Shopping", "Footwear"))
+        self.assertEqual(credit["amount"], "3816.00")                                                # money in: positive
+        self.assertEqual(buy["amount"], "-3816.00")
+        self.assertTrue(credit["viaFile"])
         self.assertTrue(credit["title"].startswith("Refund: "))
-        self.assertTrue(credit["notes"].startswith("Refund of "))
-        self.assertIn("02-Nov-26 ₹3816 · Shopping › Footwear", credit["notes"])
-        self.assertEqual(credit["warn"], "")
+        self.assertIn("02-Nov-26 ₹3816", credit["notes"])
         self.assertTrue(credit["include"] and buy["include"])
+        self.assertNotIn("viaFile", buy)
 
-    def test_the_link_builder_sends_the_income_mode_refund_as_a_positive_amount_with_no_warning(self):
+    def test_the_link_builder_leaves_the_file_row_out_and_sends_only_the_purchase(self):
         refunds.set_link(self.conn, self.back, self.out, mode="income")
         out = cashew.build_links([x for x in self.drafts().values() if x["id"] in (self.out, self.back)])
         self.assertEqual(out["warnings"], [])
-        text = urllib.parse.unquote(out["links"][0]["url"].split("JSON=")[1])
-        entries = {e["amount"]: e for e in json.loads(text)["transactions"]}
-        self.assertEqual(set(entries), {"-3816.00", "3816.00"})
-        refund = entries["3816.00"]
-        self.assertEqual((refund["category"], refund["subcategory"]), cashew.REFUND_CATEGORY)
-        self.assertEqual(entries["-3816.00"]["category"], "Shopping")
+        entries = json.loads(urllib.parse.unquote(out["links"][0]["url"].split("JSON=")[1]))["transactions"]
+        self.assertEqual([e["amount"] for e in entries], ["-3816.00"])
 
     def test_an_expense_category_chosen_on_the_refund_itself_wins_but_warns(self):
         # The person's own pick is kept; the builder warns, because Cashew would show it as spend.
@@ -146,6 +145,20 @@ class RefundParity(P.Parity):
         ]
         py = self.both(drafts)
         self.assertEqual(len([w for w in py["warnings"] if "does not fit" in w]), 1)
+
+
+class FileRowParity(P.Parity):
+    def test_rows_added_by_file_are_not_sent_by_either_builder(self):
+        drafts = [d(1, amount="-14000.00", category="Friend Settlement", subcategory="Split Paid", viaFile=True),
+                  d(2, kind="refund", amount="3816.00", category="Shopping", subcategory="Footwear", viaFile=True, refundOf="x"),
+                  d(3, amount="-20.00")]
+        py = self.both(drafts)
+        self.assertEqual([l["count"] for l in py["links"]], [1])
+        self.assertEqual(py["warnings"], [])
+
+
+for _name in [n for n in dir(P.Parity) if n.startswith("test_")]:
+    setattr(FileRowParity, _name, None)
 
 
 # the inherited parity cases already run in test_cashew_parity itself; do not run them twice

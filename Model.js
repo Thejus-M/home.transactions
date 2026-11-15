@@ -2607,19 +2607,21 @@ function cashewShownIndexes(drafts, onlyFilter, idSet, closedSet) {
 function cashewRefundNotes(drafts, shown) {
   var keep = null
   if (shown) { keep = {}; shown.forEach(function (i) { keep[i] = true }) }
-  var twin = 0, plain = 0, netted = 0, partial = 0, lent = []
+  var twin = 0, plain = 0, files = 0, netted = 0, partial = 0, lent = []
   drafts.forEach(function (d, i) {
     if (keep && !keep[i]) return
-    if (d.kind === "refund") {
+    if (d.include === false && d.refundMode !== "skip") return
+    if (d.viaFile && d.include !== false) files++
+    else if (d.kind === "refund") {
       if (d.refundMode === "skip") netted++
       else if (d.include !== false) { if (d.categoryPk) twin++; else plain++ }
     } else if (d.refundMode === "net") partial++
     else if (d.refundMode === "lent") lent.push(d.title || d.id)
   })
   var out = []
-  if (twin > 0) out.push(twin + (twin === 1 ? " refund goes" : " refunds go") + " in as income under the income twin of its category (sent by id, so Cashew does not pick the expense one).")
-  if (plain > 0) out.push(plain + (plain === 1 ? " refund has" : " refunds have") + " no income twin in Cashew yet, so " + (plain === 1 ? "it goes" : "they go")
-    + " under Cashback & Rewards > Refund. Create an income category with the purchase's category name in Cashew, export a backup, then run: txdb cashew-twins --backup FILE")
+  if (files > 0) out.push(files + (files === 1 ? " row is" : " rows are") + " added by file, not by link: a link would store a refund as spend and a payment under an income category as income (Cashew takes the type from the category). Run: txdb cashew-fix, then import the file it writes in Cashew.")
+  if (twin > 0) out.push(twin + (twin === 1 ? " refund goes" : " refunds go") + " in as income under the income twin of its category (sent by id).")
+  if (plain > 0) out.push(plain + (plain === 1 ? " refund has" : " refunds have") + " no purchase to copy a category from, so " + (plain === 1 ? "it goes" : "they go") + " under Cashback & Rewards > Refund.")
   if (netted > 0) out.push(netted + (netted === 1 ? " refund is" : " refunds are") + " netted into " + (netted === 1 ? "its purchase" : "their purchases")
     + " (same category): a fully refunded purchase is not sent, a partly refunded one is sent at its net amount.")
   if (partial > 0) out.push(partial + (partial === 1 ? " purchase is" : " purchases are") + " sent at the amount left after a refund; the note says so.")
@@ -2856,7 +2858,7 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
   for (var i = 0; i < drafts.length; i++) {
     var dd = drafts[i]
     if (keep && !keep[i]) continue
-    if (dd.include === undefined ? true : dd.include) inc.push(dd)
+    if ((dd.include === undefined ? true : dd.include) && !dd.viaFile) inc.push(dd)
   }
   var key = function (d) { return [_cashewStr(d.date), _cashewStr(d.id)] }
   var cmp = function (a, b) {

@@ -116,6 +116,8 @@ class RefundJs(unittest.TestCase):
 
     def test_the_cashew_window_notes_about_refunds(self):
         drafts = [
+            {"id": "f", "kind": "refund", "refundMode": "income", "include": True, "viaFile": True, "title": "Refund: F"},
+            {"id": "g", "kind": "spend", "include": True, "viaFile": True, "title": "Friend"},
             {"id": "a", "kind": "refund", "refundMode": "income", "include": True, "categoryPk": "i-shop", "title": "Refund: X"},
             {"id": "p", "kind": "refund", "refundMode": "income", "include": True, "title": "Refund: P"},
             {"id": "b", "kind": "refund", "refundMode": "skip", "include": False, "title": "Refund: Y"},
@@ -125,14 +127,15 @@ class RefundJs(unittest.TestCase):
             {"id": "e", "kind": "spend", "include": True, "title": "Coffee"},
         ]
         notes = self.js("cashewRefundNotes(input.d, null)", d=drafts)
-        self.assertEqual(len(notes), 5)
-        self.assertIn("1 refund goes in as income under the income twin", notes[0])
-        self.assertIn("1 refund has no income twin in Cashew yet", notes[1])
-        self.assertIn("txdb cashew-twins --backup", notes[1])
-        self.assertIn("1 refund is netted into its purchase", notes[2])
-        self.assertIn("1 purchase is sent at the amount left", notes[3])
-        self.assertIn('open "Shoes" in Cashew', notes[4])
-        self.assertEqual(self.js("cashewRefundNotes(input.d, [6])", d=drafts), [])      # only shown rows count
+        self.assertEqual(len(notes), 6)
+        self.assertIn("2 rows are added by file, not by link", notes[0])
+        self.assertIn("txdb cashew-fix", notes[0])
+        self.assertIn("1 refund goes in as income under the income twin", notes[1])
+        self.assertIn("1 refund has no purchase to copy a category from", notes[2])
+        self.assertIn("1 refund is netted into its purchase", notes[3])
+        self.assertIn("1 purchase is sent at the amount left", notes[4])
+        self.assertIn('open "Shoes" in Cashew', notes[5])
+        self.assertEqual(self.js("cashewRefundNotes(input.d, [8])", d=drafts), [])      # only shown rows count
         self.assertEqual(self.js("cashewRefundNotes([], null)"), [])
 
     def test_the_texts(self):

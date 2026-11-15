@@ -13,6 +13,8 @@ sys.path.insert(0, str(ROOT))
 
 from txdb import cashew, db, ingest  # noqa: E402
 
+os.environ.setdefault("TXDB_NO_BROWSER_COPY", "1")      # never read the real browser in a test
+
 BASE = cashew.BASE_URL
 SBI_OUT = "UPI- TRANSFER TO 4897692162094 UPI/DR/125045259403/THEJUS M/HDFC/8921768575/NO RE"
 HDFC_IN = "UPI-THEJUS M-THEJUSM@OKSBI-SBIN0070528-125045259403-UPI"

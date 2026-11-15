@@ -12,6 +12,9 @@
   txdb receipt-cash <receiptId>          paid in cash: park it, stop asking
   txdb receipt-ignore <receiptId>        not a bill, or a duplicate photo
   txdb receipt-review <receiptId> <0|1>  raise or clear "check this parse"
+  txdb cashew-fix [--base FILE] [--out FILE] [--dry-run]  add the rows a Cashew link would get wrong (a refund in its
+                                         purchase's category, a payment under an income category) to a COPY of the Cashew
+                                         database with the right income flag; import the file in Cashew
   txdb cashew-twins [--backup FILE | --from-browser] [--test-link]  income twins of the expense categories, so a refund is income in
                                          "the same category": lists what the linked refunds need; --backup reads
                                          their ids from a Cashew backup export (or, with --from-browser, from the copy the browser
@@ -127,6 +130,23 @@ def backup(conn, keep: int = 14) -> Path:
     return target
 
 
+def _mark_file_rows(items: list[dict]) -> None:
+    """Best effort: when the browser keeps a copy of the Cashew web database, mark the drafts a link would get
+    wrong (a credit under an expense category, a payment under an income category) so they are not sent by link
+    but added by file (`txdb cashew-fix`). Without that copy only refunds are marked (by cashew.drafts itself)."""
+    try:
+        from . import cashew_fix, cashew_twins
+        copy = cashew_twins.find_browser_copy()
+        if copy is not None:
+            conn = sqlite3.connect(f"{copy.as_uri()}?mode=ro", uri=True)
+            try:
+                cashew_fix.flag(items, cashew_fix.Index(conn))
+            finally:
+                conn.close()
+    except Exception:                    # noqa: BLE001 - a missing copy must never stop the drafts
+        pass
+
+
 def _cashew(cmd: str, args: list[str]) -> int:
     """The Cashew commands never write: the database is opened read only."""
     from . import cashew
@@ -148,6 +168,7 @@ def _cashew(cmd: str, args: list[str]) -> int:
     conn = cashew.open_readonly(DB_PATH)
     state = cashew.load_state(state_path)
     items = cashew.drafts(conn, state)
+    _mark_file_rows(items)
     if cmd == "cashew-draft":
         out({"categories": cashew.load_categories(), "accountNames": cashew.account_names(state),
              "drafts": items, "state": state})
@@ -175,6 +196,44 @@ def main(argv: list[str]) -> int:
         return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
+    if cmd == "cashew-fix":
+        # cashew-fix [--base FILE] [--out FILE] [--dry-run]: add the rows a Cashew link would get wrong (a refund in
+        # its purchase's category, a payment under an income category) to a copy of the Cashew database, with the
+        # right income flag. Import the file in Cashew. The base is the browser's copy of the Cashew web app unless
+        # --base names a backup file. (txdb/cashew_fix.py)
+        from . import cashew, cashew_fix, cashew_twins
+        try:
+            base = Path(args[args.index("--base") + 1]) if "--base" in args else cashew_twins.find_browser_copy()
+            if base is None:
+                raise ValueError("no Cashew database found in the browser; export a backup and pass --base FILE")
+            out_path = Path(args[args.index("--out") + 1]) if "--out" in args else Path.home() / "Downloads" / "cashew-import.sql"
+            ro = cashew.open_readonly(DB_PATH)
+            try:
+                items = cashew.drafts(ro, cashew.load_state())
+            finally:
+                ro.close()
+            cdb = sqlite3.connect(f"{Path(base).resolve().as_uri()}?mode=ro", uri=True)
+            try:
+                idx = cashew_fix.Index(cdb)
+                cashew_fix.flag(items, idx)
+                steps = cashew_fix.plan(items, idx, cdb)
+            finally:
+                cdb.close()
+            todo = [x for x in steps if not x["problem"] and not x["duplicate"]]
+            for x in steps:
+                d = x["draft"]
+                status = x["problem"] and f"SKIPPED: {x['problem']}" or (x["duplicate"] and "already in Cashew" or "will be added")
+                print(f"  {d['date']} {d['amount']:>10}  {d['title'][:34]:34}  {d['category']} › {d.get('subcategory') or '-'}"
+                      f"  [{'income' if x['income'] else 'expense'}]  {status}")
+            if "--dry-run" in args or not todo:
+                print(f"{len(todo)} rows to add" + ("" if todo else "; nothing to do") + " (dry run: no file written)" if "--dry-run" in args else f"{len(todo)} rows to add; nothing to do")
+                return 0
+            added = cashew_fix.apply(base, out_path, steps)
+            print(f"{added} rows added. Import this file in Cashew: {out_path}")
+        except (ValueError, IndexError, sqlite3.Error, OSError) as e:
+            print(f"cashew-fix: {e}", file=sys.stderr)
+            return 2
+        return 0
     if cmd == "cashew-twins":
         # cashew-twins [--backup FILE] [--test-link]: income twins of the expense categories, for refunds
         # (txdb/cashew_twins.py). No arguments: which twins the linked refunds need, and which are known.
