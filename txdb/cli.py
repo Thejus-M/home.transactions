@@ -12,6 +12,8 @@
   txdb receipt-cash <receiptId>          paid in cash: park it, stop asking
   txdb receipt-ignore <receiptId>        not a bill, or a duplicate photo
   txdb receipt-review <receiptId> <0|1>  raise or clear "check this parse"
+  txdb receipt-purge-sources [--dry-run] [--hours N]  delete the original photos in the KDE share of bills linked
+                                         3+ hours ago that have a compressed copy in the database
   txdb receipt-forget <receiptId>        drop the row
   txdb receipt-edit <receiptId> <field> [value]   empty value clears it
   txdb receipt-edit-item <receiptId> <lineNo> <field> [value]
@@ -230,6 +232,12 @@ def main(argv: list[str]) -> int:
             receipts.set_link(conn, args[0], transaction_id=None,
                               state="cash" if cmd == "receipt-cash" else "ignored",
                               matched_by="manual")
+        elif cmd == "receipt-purge-sources":
+            # receipt-purge-sources [--dry-run] [--hours N]: delete the original photos in the KDE share
+            # of bills linked N (default 3) hours ago whose compressed copy is in the database.
+            hours = float(args[args.index("--hours") + 1]) if "--hours" in args else receipts.PURGE_AFTER_HOURS
+            for item in receipts.purge_source_photos(conn, hours, dry_run="--dry-run" in args):
+                print(f"{item['id']}: {item['action']}  {item['path']}")
         elif cmd == "receipt-review":
             receipts.set_review(conn, args[0], args[1] == "1")
         elif cmd == "receipt-forget":

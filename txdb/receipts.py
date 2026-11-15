@@ -19,8 +19,10 @@ name is the same receipt, and re-importing a folder is free.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 from .db import now, to_paise, write
 
@@ -307,6 +309,54 @@ def export_image(conn: sqlite3.Connection, rid: str, dest) -> bool:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(found[0])
     return True
+
+
+PHOTO_FOLDER = Path(os.environ.get("RECEIPTS_DIR", "/run/media/pc/MY Drive/KDE Share"))
+PURGE_AFTER_HOURS = 3
+
+
+def purge_source_photos(conn: sqlite3.Connection, hours: float = PURGE_AFTER_HOURS, folder: Path | str | None = None,
+                        dry_run: bool = False) -> list[dict]:
+    """Delete the ORIGINAL photo of a bill from the folder it was imported from (the KDE Connect share),
+    `hours` after the bill was linked to a transaction. The compressed copy in the database (receipt_images)
+    stays: it is what the bill window shows and what a re-read uses.
+
+    A file is deleted only when ALL of these hold, so nothing the person still needs can go:
+      - the bill is linked and the link is at least `hours` old,
+      - the database holds a non-empty compressed copy of it,
+      - the file lies directly in `folder` (nothing outside the share is ever touched),
+      - the file's sha256 is the one the bill was imported under (it is that exact photo).
+    Returns [{id, path, action}] where action is "deleted" ("would delete" for a dry run), or why it was kept."""
+    import hashlib
+    from datetime import datetime, timedelta
+
+    folder = Path(folder or PHOTO_FOLDER).resolve()
+    cutoff = (datetime.now() - timedelta(hours=hours)).isoformat(timespec="seconds")
+    out = []
+    for r in conn.execute(
+            "SELECT r.id, r.source_path, r.image_sha256, l.linked_at, COALESCE(i.bytes, 0) AS saved "
+            "FROM receipts r JOIN receipt_links l ON l.receipt_id = r.id AND l.state = 'linked' "
+            "LEFT JOIN receipt_images i ON i.receipt_id = r.id "
+            "WHERE r.source_path IS NOT NULL AND r.source_path != ''").fetchall():
+        path = Path(r["source_path"])
+        if not path.is_file():
+            continue                                                  # already gone: nothing to do
+        if (r["linked_at"] or "") > cutoff:
+            out.append({"id": r["id"], "path": str(path), "action": f"kept: linked less than {hours:g} h ago"})
+            continue
+        if not r["saved"]:
+            out.append({"id": r["id"], "path": str(path), "action": "kept: no compressed copy in the database"})
+            continue
+        if path.resolve().parent != folder:
+            out.append({"id": r["id"], "path": str(path), "action": "kept: not in the photo folder"})
+            continue
+        if hashlib.sha256(path.read_bytes()).hexdigest() != r["image_sha256"]:
+            out.append({"id": r["id"], "path": str(path), "action": "kept: not the photo the bill was imported from"})
+            continue
+        if not dry_run:
+            path.unlink()
+        out.append({"id": r["id"], "path": str(path), "action": "would delete" if dry_run else "deleted"})
+    return out
 
 
 def linked_without_saved_image(conn: sqlite3.Connection) -> list[dict]:
