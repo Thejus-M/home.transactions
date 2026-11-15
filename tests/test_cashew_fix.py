@@ -79,6 +79,17 @@ class Fix(unittest.TestCase):
         self.assertTrue(rows[0]["viaFile"])
         self.assertFalse(any(r.get("viaFile") for r in rows[1:]))
 
+    def test_the_purchase_of_a_file_refund_goes_by_file_too(self):
+        purchase = draft(id="p1", kind="spend", viaFile=False, title="FLIPKART", amount="-3816.00", date="2026-11-02", refundMode=None)
+        purchase.pop("refundMode")
+        refund = draft(id="r1", refundOf="p1")
+        unrelated = draft(id="u", viaFile=False, kind="spend", category="Food Out", subcategory="", amount="-20.00")
+        cashew_fix.flag([purchase, refund, unrelated], self.idx)
+        self.assertTrue(purchase["viaFile"])
+        self.assertFalse(unrelated.get("viaFile"))
+        items = cashew_fix.plan([purchase, refund, unrelated], self.idx, self.conn)
+        self.assertEqual(sorted((i["amount"], i["income"]) for i in items), [(-3816.0, False), (3816.0, True)])
+
     def test_plan_flags_problems_and_duplicates(self):
         known = draft(viaFile=True, title="old link row", amount="-5.00", date="2026-10-01", kind="spend", category="Food Out")
         items = cashew_fix.plan([draft(), known, draft(account="Nowhere"), draft(category="Nope")], self.idx, self.conn)

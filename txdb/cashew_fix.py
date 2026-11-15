@@ -61,6 +61,15 @@ def flag(drafts: list[dict], idx: Index) -> int:
     """Mark the drafts a link would get wrong (`viaFile`): a refund filed under its purchase's category, or a
     credit/debit whose sign disagrees with the type of its Cashew category. Returns how many were marked."""
     n = 0
+    by_id = {d.get("id"): d for d in drafts}
+    for d in list(drafts):
+        # The purchase a file-added refund belongs to goes by file too, so the pair is added together and the
+        # refund really cancels it (a purchase sent later by link is fine too, but one deleted by hand is not there).
+        if d.get("viaFile") and d.get("kind") == "refund" and d.get("refundOf"):
+            orig = by_id.get(d["refundOf"])
+            if orig is not None and orig.get("include") is not False and not orig.get("viaFile"):
+                orig["viaFile"], orig["fileReason"] = True, "the purchase of a refund added by file"
+                n += 1
     for d in drafts:
         if d.get("kind") == "transfer" or d.get("include") is False:
             continue
