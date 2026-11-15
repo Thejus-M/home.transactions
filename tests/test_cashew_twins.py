@@ -68,6 +68,30 @@ class Backup(unittest.TestCase):
         self.assertEqual(cashew_twins.load(Path(self.dir.name) / "none.json"), {})
 
 
+class BrowserCopy(unittest.TestCase):
+    def tree(self, home, name, make):
+        folder = Path(home) / ".config" / "zen" / "profile" / "storage" / "default" / "https+++budget-track.web.app" / "idb" / "x.files"
+        folder.mkdir(parents=True, exist_ok=True)
+        make(folder / name)
+        return folder / name
+
+    def test_the_newest_sqlite_blob_with_categories_is_copied_and_read(self):
+        with tempfile.TemporaryDirectory() as home:
+            old = self.tree(home, "351", lambda p: fake_backup(p))
+            new = self.tree(home, "384", lambda p: fake_backup(p))
+            os.utime(old, (1, 1))
+            junk = self.tree(home, "400", lambda p: p.write_bytes(b"x" * 9000))            # not sqlite: skipped
+            found = cashew_twins.find_browser_copy(Path(home))
+            self.assertIsNotNone(found)
+            self.assertNotEqual(found, new)                                                # a copy, never the original
+            self.assertEqual(set(cashew_twins.read_backup(found)), {"Shopping", "Salary"})
+            self.assertTrue(new.exists() and junk.exists())
+
+    def test_nothing_found_is_none(self):
+        with tempfile.TemporaryDirectory() as home:
+            self.assertIsNone(cashew_twins.find_browser_copy(Path(home)))
+
+
 class Export(R.Base):
     def setUp(self):
         super().setUp()

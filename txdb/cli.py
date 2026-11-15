@@ -12,9 +12,10 @@
   txdb receipt-cash <receiptId>          paid in cash: park it, stop asking
   txdb receipt-ignore <receiptId>        not a bill, or a duplicate photo
   txdb receipt-review <receiptId> <0|1>  raise or clear "check this parse"
-  txdb cashew-twins [--backup FILE] [--test-link]  income twins of the expense categories, so a refund is income in
+  txdb cashew-twins [--backup FILE | --from-browser] [--test-link]  income twins of the expense categories, so a refund is income in
                                          "the same category": lists what the linked refunds need; --backup reads
-                                         their ids from a Cashew backup export; --test-link prints a one-row test
+                                         their ids from a Cashew backup export (or, with --from-browser, from the copy the browser
+                                         keeps of the Cashew web app); --test-link prints a one-row test
   txdb receipt-purge-sources [--dry-run] [--hours N]  delete the original photos in the KDE share of bills linked
                                          3+ hours ago that have a compressed copy in the database
   txdb receipt-forget <receiptId>        drop the row
@@ -178,9 +179,15 @@ def main(argv: list[str]) -> int:
         # cashew-twins [--backup FILE] [--test-link]: income twins of the expense categories, for refunds
         # (txdb/cashew_twins.py). No arguments: which twins the linked refunds need, and which are known.
         from . import cashew, cashew_twins
-        if "--backup" in args:
+        if "--backup" in args or "--from-browser" in args:
             try:
-                found = cashew_twins.read_backup(args[args.index("--backup") + 1])
+                if "--from-browser" in args:
+                    copy = cashew_twins.find_browser_copy()
+                    if copy is None:
+                        raise ValueError("no Cashew database found in the browser's storage for budget-track.web.app")
+                    found = cashew_twins.read_backup(copy)
+                else:
+                    found = cashew_twins.read_backup(args[args.index("--backup") + 1])
             except (ValueError, IndexError) as e:
                 print(f"cashew-twins: {e}", file=sys.stderr)
                 return 2

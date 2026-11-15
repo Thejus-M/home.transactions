@@ -68,6 +68,35 @@ def read_backup(file: Path | str) -> dict:
     return twins
 
 
+def find_browser_copy(home: Path | None = None) -> Path | None:
+    """A copy of the Cashew web app's database that the browser keeps for https://budget-track.web.app (an
+    IndexedDB blob that is the sqlite file itself). The newest one that has a categories table, or None.
+    Read only: the file is copied to a temp folder first and the browser's own file is never opened."""
+    import shutil
+    import tempfile
+
+    home = home or Path.home()
+    found = []
+    for pattern in (".config/*/*/storage/default/https+++budget-track.web.app/idb/*.files/*",
+                    ".mozilla/firefox/*/storage/default/https+++budget-track.web.app/idb/*.files/*"):
+        found += [p for p in home.glob(pattern) if p.is_file() and p.stat().st_size > 4096]
+    for path in sorted(found, key=lambda p: p.stat().st_mtime, reverse=True):
+        copy = Path(tempfile.mkdtemp(prefix="cashew-web-")) / "cashew.sqlite"
+        shutil.copyfile(path, copy)
+        try:
+            with open(copy, "rb") as fh:
+                if not fh.read(16).startswith(b"SQLite format 3"):
+                    continue
+            conn = sqlite3.connect(f"{copy.as_uri()}?mode=ro", uri=True)
+            ok = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'categories'").fetchone()
+            conn.close()
+        except (sqlite3.Error, OSError):
+            continue
+        if ok:
+            return copy
+    return None
+
+
 def lookup(twins: dict, category: str, subcategory: str) -> tuple[str, str] | None:
     """(categoryPk, subcategoryPk) of the income twin of an expense category, or None when there is none.
     subcategoryPk is "" when the twin has no sub-category of that name."""
