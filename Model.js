@@ -2601,6 +2601,31 @@ function cashewShownIndexes(drafts, onlyFilter, idSet, closedSet) {
   return out
 }
 
+// How many of the shown rows are added by file (`viaFile`, txdb/cashew_fix.py) instead of by link.
+function cashewFileRows(drafts, shown) {
+  var keep = null
+  if (shown) { keep = {}; shown.forEach(function (i) { keep[i] = true }) }
+  var n = 0
+  ;(drafts || []).forEach(function (d, i) {
+    if (keep && !keep[i]) return
+    if (d.viaFile && d.include !== false) n++
+  })
+  return n
+}
+
+// What the Create-file button printed: { path, message }. `path` is "" when no file was written.
+function cashewFixResult(stdout, stderr) {
+  var text = String(stdout || "")
+  var m = /Import this file in Cashew:\s*(.+)\s*$/m.exec(text)
+  if (m) {
+    var added = /(\d+) rows? added/.exec(text)
+    return { path: m[1].trim(), message: (added ? added[1] : "Some") + " rows are in the file." }
+  }
+  if (/nothing to do/i.test(text)) return { path: "", message: "Nothing to add: Cashew already has these rows." }
+  var err = String(stderr || "").trim().split("\n").pop()
+  return { path: "", message: err ? err : "No file was made." }
+}
+
 // Plain notes for the Cashew window about linked refunds in the shown rows (not warnings):
 // income refunds need the Income box ticked in Cashew's budget filter, skipped pairs are not sent,
 // and a "lent" purchase needs a hand edit in Cashew (a link cannot create a Lent).

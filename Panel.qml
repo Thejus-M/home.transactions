@@ -391,6 +391,31 @@ Panel {
   property var cashewTransfers: []    // paired transfers: one addTransferRoute page each
   property var cashewWarnings: []
   readonly property var cashewRefundNotes: Model.cashewRefundNotes(root.cashewDrafts, root.cashewShown)
+  // Rows a Cashew link would store wrongly (a refund in its purchase's category, a payment under an income
+  // category) are added by file. The button in the window makes that file (txdb cashew-fix).
+  readonly property int cashewFileRows: Model.cashewFileRows(root.cashewDrafts, root.cashewShown)
+  property bool cashewFixing: false
+  property string cashewFixPath: ""
+  property string cashewFixMessage: ""
+  function cashewFixStart() {
+    if (root.cashewFixing || cashewFixProc.running || !root.cashewVerifyGate()) return
+    root.cashewFixing = true
+    root.cashewFixPath = ""
+    root.cashewFixMessage = ""
+    cashewFixProc.running = true
+  }
+  Process {
+    id: cashewFixProc
+    command: ["python3", root.txdbBin, "cashew-fix"]
+    stdout: StdioCollector { id: cashewFixOut }
+    stderr: StdioCollector { id: cashewFixErr }
+    onExited: function (exitCode) {
+      var r = Model.cashewFixResult(cashewFixOut.text, cashewFixErr.text)
+      root.cashewFixPath = r.path
+      root.cashewFixMessage = r.message
+      root.cashewFixing = false
+    }
+  }
   property string cashewLinksError: ""
   // Same set the Python side drafts: untracked and settled.
   readonly property int cashewCount: transactions.filter(function (t) { return !t.tracked && !t.accountClosed }).length
@@ -8103,6 +8128,60 @@ Panel {
                 textFormat: Text.PlainText
                 text: "+" + (root.cashewWarnings.length - 5) + " more"
                 color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            // Rows added by file: the widget makes the file with one click.
+            Column {
+              visible: root.cashewFileRows > 0 || root.cashewFixMessage !== ""
+              width: parent.width
+              spacing: Style.space(6)
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: "Added by file · " + root.cashewFileRows
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+                text: "A link cannot store these rows with the right type. The button makes a file. Import it in Cashew: Settings, then import a backup."
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+              Row {
+                spacing: Style.space(6)
+                CashewBtn {
+                  label: root.cashewVerifyArmed ? "Unverified AI · click again" : (root.cashewFixing ? "Making the file…" : "Create the Cashew file")
+                  primary: true
+                  enabled: !root.cashewFixing
+                  onClicked: root.cashewFixStart()
+                }
+                CashewBtn {
+                  visible: root.cashewFixPath !== ""
+                  label: "Copy path"
+                  onClicked: Quickshell.execDetached(["wl-copy", root.cashewFixPath])
+                }
+                CashewBtn {
+                  visible: root.cashewFixPath !== ""
+                  label: "Open Cashew"
+                  onClicked: Quickshell.execDetached(["xdg-open", "https://budget-track.web.app/"])
+                }
+              }
+              Text {
+                visible: root.cashewFixMessage !== ""
+                width: parent.width
+                wrapMode: Text.WrapAnywhere
+                textFormat: Text.PlainText
+                text: root.cashewFixMessage + (root.cashewFixPath !== "" ? "  " + root.cashewFixPath : "")
+                color: root.cashewFixPath !== "" ? root.creditColor : cashewWin.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
               }

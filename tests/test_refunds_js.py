@@ -138,6 +138,18 @@ class RefundJs(unittest.TestCase):
         self.assertEqual(self.js("cashewRefundNotes(input.d, [8])", d=drafts), [])      # only shown rows count
         self.assertEqual(self.js("cashewRefundNotes([], null)"), [])
 
+    def test_the_file_button_counts_its_rows_and_reads_the_result(self):
+        drafts = [{"id": "a", "viaFile": True, "include": True}, {"id": "b", "viaFile": True, "include": False},
+                  {"id": "c", "include": True}, {"id": "d", "viaFile": True}]
+        self.assertEqual(self.js("cashewFileRows(input.d, null)", d=drafts), 2)
+        self.assertEqual(self.js("cashewFileRows(input.d, [0, 1])", d=drafts), 1)         # only shown rows
+        ok = self.js("cashewFixResult(input.o, '')", o="  2026-11-12 ... will be added\n7 rows added. Import this file in Cashew: /home/pc/Downloads/cashew-import.sql\n")
+        self.assertEqual(ok, {"path": "/home/pc/Downloads/cashew-import.sql", "message": "7 rows are in the file."})
+        self.assertEqual(self.js("cashewFixResult('0 rows to add; nothing to do', '')")["path"], "")
+        self.assertIn("Nothing to add", self.js("cashewFixResult('0 rows to add; nothing to do', '')")["message"])
+        self.assertEqual(self.js("cashewFixResult('', 'x\\ncashew-fix: no Cashew database found')")["message"], "cashew-fix: no Cashew database found")
+        self.assertEqual(self.js("cashewFixResult('', '')")["message"], "No file was made.")
+
     def test_the_texts(self):
         byid = {"o1": OUT}
         self.assertEqual(self.js("refundOfText(input.c, input.b)", c=dict(BACK, refundOf="o1"), b=byid),
