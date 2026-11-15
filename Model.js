@@ -743,8 +743,13 @@ function billParts(overviewEntry) {
   // that a payment covering the bill is in the card's transactions
   // ("awaiting"). The bank rounds a bill up to the rupee (588.82 shown as
   // 589.00), hence the 1 rupee slack.
+  // The page itself says the bill is settled (the SBI reader sets "PAID" from the wording beside the
+  // due lines): nothing is owed, whatever the statement figure still prints. This is the bank's page
+  // saying so, so it is not the "BILL SENT" wait below.
+  var pageSaysPaid = String(overviewEntry.payment_status || "").toUpperCase() === "PAID"
+  if (pageSaysPaid && payNow > 0) payNow = 0
   var paidSince = Number(overviewEntry.paidSinceBill) || 0
-  var awaiting = !overviewEntry.unbilled_credits && payNow > 0 && paidSince > 0 && paidSince + 1 >= payNow
+  var awaiting = !pageSaysPaid && !overviewEntry.unbilled_credits && payNow > 0 && paidSince > 0 && paidSince + 1 >= payNow
 
   return {
     billThisMonth: hasBreakdown ? _money(parseCurrencyString(overviewEntry.last_statement_amount)) : 0,

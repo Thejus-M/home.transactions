@@ -8,6 +8,14 @@ from .db import from_paise
 from .ingest import OVERVIEW_FIELDS
 
 
+def _paid_since(conn: sqlite3.Connection, account_id: str, since: str) -> dict:
+    """{"paidSinceBill", "paidSinceDate"}: the card payments (not refunds or other credits) on or after `since`."""
+    paid = [(r["date"], r["amount_paise"]) for r in conn.execute(
+        "SELECT date, amount_paise, merchant FROM transactions WHERE account_id = ? AND amount_paise > 0 AND date >= ?",
+        (account_id, since)) if transfers._CARD_PAYMENT.search(r["merchant"] or "")]
+    return {"paidSinceBill": from_paise(sum(p for _d, p in paid)), "paidSinceDate": max((d for d, _p in paid), default="")}
+
+
 def snapshot(conn: sqlite3.Connection) -> dict:
     transactions = [{
         "id": r["id"], "date": r["date"], "merchant": r["merchant"], "amount": from_paise(r["amount_paise"]),
@@ -100,14 +108,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         **{f: r[f] or "" for f in OVERVIEW_FIELDS},
         "billingDay": r["statement_day"], "statementDate": r["statement_date"] or "",
         "nextStatementDate": r["next_statement_date"] or "", "dueDate": r["due_date"] or "",
-        # Money paid into the card since its last bill closed, from the card's own transactions.
+        # Money PAID into the card since its last bill closed, from the card's own transactions.
         # SBI's page does not net a payment off the bill (588.82 paid, "AMOUNT DUE 589.00" kept).
-        "paidSinceBill": from_paise(conn.execute(
-            "SELECT COALESCE(SUM(amount_paise), 0) FROM transactions WHERE account_id = ? AND amount_paise > 0 "
-            "AND date >= ?", (r["account_id"], r["statement_date"] or "9999")).fetchone()[0]),
-        "paidSinceDate": conn.execute(
-            "SELECT COALESCE(MAX(date), '') FROM transactions WHERE account_id = ? AND amount_paise > 0 AND date >= ?",
-            (r["account_id"], r["statement_date"] or "9999")).fetchone()[0],
+        # Only payments count: a refund or a fee credit is money in, but it is not the bill being paid.
+        **_paid_since(conn, r["account_id"], r["statement_date"] or "9999"),
     } for r in conn.execute(
         "SELECT c.*, a.last4, a.bank, a.network, d.statement_day, d.statement_date, d.next_statement_date, "
         "d.due_date "

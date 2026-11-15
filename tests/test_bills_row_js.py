@@ -68,6 +68,26 @@ class BillRowViewTests(unittest.TestCase):
         self.assertEqual((v["pillTone"], v["bill"]["tone"], v["soFar"]["tone"]), ("pending", "credit", "pending"))   # word yellow, bill green, spend so far yellow
         self.assertIn("paid", v["line2"])
 
+    def test_a_page_that_says_paid_clears_the_bill_even_with_the_statement_figure_left(self):
+        # The SBI reader sets "PAID" from the page's own wording. The statement still prints 589.
+        v = view({"last4": "5896", "payment_status": "PAID", "total_outstanding": "₹12,223.04",
+                  "last_statement_amount": "₹589.00", "unbilled_purchases": "₹11,634.04", "upcoming_payment_due": "₹589.00",
+                  "paidSinceBill": 588.82, "paidSinceDate": iso(-7), "billingDay": 1})
+        self.assertEqual((v["pill"], v["bill"]["text"], v["pillTone"]), ("BILL PAID", "₹0", "credit"))
+
+    def test_the_reader_s_paid_data_also_shows_paid(self):
+        # After a payment SBI's outstanding already has it taken off: all of it is the next bill.
+        v = view({"last4": "5896", "payment_status": "PAID", "total_outstanding": "₹3,493.00",
+                  "last_statement_amount": "₹589.00", "unbilled_purchases": "₹3,493.00", "upcoming_payment_due": "₹ 0.00"})
+        self.assertEqual((v["pill"], v["bill"]["text"], v["soFar"]["text"]), ("BILL PAID", "₹0", "₹3,493"))
+
+    def test_an_unpaid_page_with_a_covering_payment_is_still_bill_sent(self):
+        # The user's 2026-11-12 rule: without the page saying so, the widget only notes the payment.
+        v = view({"last4": "5896", "payment_status": "AMOUNT DUE", "total_outstanding": "₹12,223.04",
+                  "last_statement_amount": "₹589.00", "unbilled_purchases": "₹11,634.04", "paidSinceBill": 588.82,
+                  "paidSinceDate": iso(-7), "billingDay": 1})
+        self.assertEqual(v["pill"], "BILL SENT")
+
     def test_spend_that_rounds_to_zero_is_zero(self):
         v = view({"last4": "0220", "total_outstanding": "₹10,930.27", "last_statement_amount": "₹10,930.00",
                   "unbilled_purchases": "₹0", "unsettled_amount": "₹0.27", "dueDate": iso(19)})

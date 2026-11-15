@@ -229,3 +229,18 @@ class FromTheCommandLine(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PaidSinceTheBill(Base):
+    """queries counts only card PAYMENTS as paid: a refund is money in, not the bill being paid."""
+
+    def test_a_refund_is_not_a_payment_but_a_payment_received_is(self):
+        ingest.set_card_cycle(self.conn, self.card, {"name": "Amazon", "total_outstanding": "₹5,000.00",
+                                                     "upcoming_payment_due": "₹4,000.00", "payment_status": "AMOUNT DUE",
+                                                     "billing_cycle": "1st of every month", "due_text": "Due on 21 Nov 2026"})
+        ingest.upsert_rows(self.conn, self.card, [
+            {"id": "p1", "date": "2026-11-15", "merchant": "PAYMENT RECEIVED 000AX99", "amount": 4000.0,
+             "currency": "INR", "rawStatementRowId": "9"}])
+        card = queries.snapshot(self.conn)["cardOverviews"][0]
+        self.assertEqual(card["paidSinceBill"], 4000.0)          # not 4000 + the 3,816 refund + the 100 credit
+        self.assertEqual(card["paidSinceDate"], "2026-11-15")
