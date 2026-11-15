@@ -344,7 +344,7 @@ class CliTests(Base):
     def test_links_stdin_and_file(self):
         payload = json.dumps({"drafts": [draft(i) for i in range(5)], "maxChars": 700}, ensure_ascii=False)
         res = json.loads(self.cli("cashew-links", "-", stdin=payload).stdout)
-        self.assertEqual(set(res), {"links", "transfers", "refunds", "warnings"})
+        self.assertEqual(set(res), {"links", "transfers", "warnings"})
         self.assertGreater(len(res["links"]), 1)
         self.assertEqual(sum(l["count"] for l in res["links"]), 5)
         f = Path(self.dir.name) / "d.json"
@@ -375,7 +375,7 @@ class CliTests(Base):
         lines = p.stdout.splitlines()
         self.assertGreater(len(lines), 1)
         self.assertTrue(all(l.startswith(BASE) for l in lines))
-        self.assertIn(f"60 transactions in {len(lines)} links, 0 transfer pages and 0 refund pages; 60 need a category", p.stderr)
+        self.assertIn(f"60 transactions in {len(lines)} links and 0 transfer pages; 60 need a category", p.stderr)
 
     def test_read_only(self):
         self.add(self.hdfc, row(1, "2026-10-02", -10.0))

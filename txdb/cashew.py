@@ -37,6 +37,10 @@ UNCATEGORIZED = ("Uncategorized", "Unknown")
 BALANCE = "Balance Correction"
 FRIEND = "Friend Settlement"
 FRIEND_SUB = "Split Paid"                            # both directions
+# A linked refund is filed here. The deployed Cashew (6.7.2) takes income or expense from the CATEGORY's
+# type, not from the sign of the amount in the link: a +3816.00 under "Shopping" (an expense category)
+# came out as spend, like the purchase (seen on screen, 2026-11-15). Only an income-type category shows as income.
+REFUND_CATEGORY = ("Cashback & Rewards", "Refund")
 
 
 def default_state_path() -> Path:
@@ -556,23 +560,25 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
         notes_lead, refund_mode, refund_to = "", "", None
         link = refund_of.get(r["id"])
         if link and r["amount_paise"] > 0 and not leg:
-            # A credit that gives back a purchase (txdb/refunds.py). "income": it keeps the purchase's own
-            # category and is exported as INCOME on its own Cashew form page (addTransactionRoute: the sign
-            # of the amount decides there, while the bulk link takes it from the category type and would
-            # show it as spend). "skip": the purchase and the refund cancel out and neither is exported
-            # (only when the refunds fully cancel it). "lent": the refund is not exported; the purchase is,
-            # and the person turns it into a Lent in Cashew by hand.
+            # A credit that gives back a purchase (txdb/refunds.py). "income": it is exported as income under
+            # REFUND_CATEGORY (an income-type category: Cashew would show it as spend under the purchase's
+            # expense category), and the note says which purchase it refunds and under what category.
+            # "skip": the purchase and the refund cancel out and neither is exported (only when the refunds
+            # fully cancel it). "lent": the refund is not exported; the purchase is, and the person turns it
+            # into a Lent in Cashew by hand.
             refund_mode, refund_to = link["mode"], link["original"]
             orig = by_id.get(link["original"]) if link["original"] else None
             if refund_mode == "skip" and not (orig and skipped.get(orig["id"], 0) >= -orig["amount_paise"]):
                 refund_mode = "income"             # a partial refund cannot cancel the whole purchase
             own_pick = _txn_pick(state, r["id"])
+            if not (own_pick and own_pick[0]):           # a category the person chose on the refund itself wins
+                cat, sub, warn = REFUND_CATEGORY[0], REFUND_CATEGORY[1], ""
             if orig is not None:
                 o_kind, o_cat, o_sub, o_warn, _o_bill, o_title, _o_leg = classify(orig)
-                if o_cat != UNCATEGORIZED[0] and not (own_pick and own_pick[0]):   # a pick on the refund itself wins
-                    cat, sub, warn = o_cat, o_sub, ""
                 title = f"Refund: {o_title}"
                 notes_lead = f"Refund of {o_title} {_day(orig['date'])} {_money(-orig['amount_paise'])}"
+                if o_cat != UNCATEGORIZED[0]:
+                    notes_lead += f" · {o_cat}" + (f" › {o_sub}" if o_sub else "")
             elif link["note"]:
                 notes_lead = f"Refund of {link['note']}"
             kind = "refund"
@@ -671,45 +677,20 @@ def _transfer(out_leg: dict, in_leg: dict, base: str) -> dict:
             "ids": [out_leg.get("id"), in_leg.get("id")]}
 
 
-def _refund_page(d: dict, warnings: list[str], base: str) -> dict:
-    """A linked refund as one Cashew form page (addTransactionRoute), saved with a tap on Save. The form
-    takes income or expense from the SIGN of the amount, so the refund (+) stays in the purchase's own
-    category and is income; the bulk addTransaction link takes it from the category's type instead."""
-    label = f"{d.get('title') or d.get('id')} ({d.get('date', '')})"
-    title, notes = str(d.get("title") or ""), str(d.get("notes") or "")
-    if len(title) > TITLE_MAX:
-        warnings.append(f"title cut to {TITLE_MAX} characters: {label}")
-        title = title[:TITLE_MAX]
-    if len(notes) > NOTES_MAX:
-        warnings.append(f"notes cut to {NOTES_MAX} characters: {label}")
-        notes = notes[:NOTES_MAX]
-    cat, sub, acct = str(d.get("category") or ""), str(d.get("subcategory") or ""), str(d.get("account") or "")
-    amount, date = str(d.get("amount") or ""), str(d.get("date") or "")
-    if cat == UNCATEGORIZED[0] and sub != "Miscellaneous":
-        warnings.append(f"no category: {label}")
-    parts = [("amount", amount), ("title", title), ("notes", notes), ("category", cat), ("subcategory", sub),
-             ("account", acct), ("date", date)]
-    query = "&".join(f"{k}={urllib.parse.quote(escape_percent(v), safe='')}" for k, v in parts if v)
-    return {"url": base + "addTransactionRoute?" + query, "id": d.get("id"), "title": title, "date": date,
-            "amount": amount, "account": acct, "category": cat, "subcategory": sub}
-
-
 def build_links(draft_list: list[dict], max_chars: int = DEFAULT_MAX_CHARS, base: str = "app") -> dict:
     """{"links": [{url, count, chars, ids, json}], "transfers": [{url, pairId, title, date, amount,
-    accountFrom, accountTo, ids}], "refunds": [{url, id, title, date, amount, account, category,
-    subcategory}], "warnings": [..]}. `base` is "app" or "web"."""
+    accountFrom, accountTo, ids}], "warnings": [..]}. `base` is "app" or "web"."""
     types, warnings = _types(), []
     root = normalize_base(base)
     inc = [d for d in draft_list if d.get("include", True)]
     inc.sort(key=lambda d: (str(d.get("date") or ""), str(d.get("id") or "")))
     paired = _pair_legs(inc)
     leg_ids = {id(x) for pair in paired.values() for x in pair}
-    bulk = [d for d in inc if id(d) not in leg_ids and d.get("kind") != "refund"]
+    bulk = [d for d in inc if id(d) not in leg_ids]
     entries = {id(d): _entry(d, warnings, types) for d in bulk}
     for d in inc:
         if d.get("kind") == "transfer" and id(d) not in leg_ids:
             warnings.append(f"transfer leg without partner: {d.get('title')} ({d.get('date')})")
-    refund_list = [_refund_page(d, warnings, root) for d in inc if d.get("kind") == "refund"]
     transfer_list = [_transfer(o, i, root) for o, i in sorted(
         paired.values(), key=lambda p: (str(p[0].get("date") or ""), str(p[0].get("id") or "")))]
     units: list[list[dict]] = []
@@ -741,7 +722,7 @@ def build_links(draft_list: list[dict], max_chars: int = DEFAULT_MAX_CHARS, base
         if len(url) > max_chars:
             warnings.append(f"one link is {len(url)} characters, over the {max_chars} limit: {b[0].get('title')}")
         links.append({"url": url, "count": len(b), "chars": len(url), "ids": [d.get("id") for d in b], "json": text})
-    return {"links": links, "transfers": transfer_list, "refunds": refund_list, "warnings": warnings}
+    return {"links": links, "transfers": transfer_list, "warnings": warnings}
 
 
 def category_mismatches(conn, state: dict | None = None) -> list[dict]:

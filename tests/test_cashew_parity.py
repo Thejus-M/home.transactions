@@ -49,7 +49,6 @@ class Parity(unittest.TestCase):
                 self.assertEqual(a[k], b[k], k)
         self.assertEqual(js["warnings"], py["warnings"])
         self.assertEqual(js["transfers"], py["transfers"])
-        self.assertEqual(js["refunds"], py["refunds"])
         return py
 
     def test_special_characters_and_exclusion(self):

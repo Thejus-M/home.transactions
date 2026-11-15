@@ -58,8 +58,7 @@
                                          untracked settled transaction, and the saved state (read only)
   txdb cashew-links [FILE|-]             read {"drafts":[...],"maxChars":n,"base":"app"|"web"} from FILE or
                                          stdin, print {"links":[...],"transfers":[{url,pairId,title,date,amount,
-                                         accountFrom,accountTo,ids}],"refunds":[{url,id,title,date,amount,account,category,subcategory}],
-                                         "warnings":[...]}
+                                         accountFrom,accountTo,ids}],"warnings":[...]}
   txdb cashew-links --untracked [--state PATH]   bulk links, then "# transfer pages" and one transfer link per
                                          line, on stdout; a summary on stderr (read only)
   txdb cashew-guess [FILE|-] [--model gemma4:e2b] [--workers 3] [--batch 8] [--url http://127.0.0.1:11434]
@@ -156,13 +155,8 @@ def _cashew(cmd: str, args: list[str]) -> int:
         print("# transfer pages (tap Save in Cashew for each):")
         for t in result["transfers"]:
             print(t["url"])
-    if result["refunds"]:
-        print("# refund pages (income in the purchase's category; tap Save in Cashew for each):")
-        for t in result["refunds"]:
-            print(t["url"])
     need = sum(1 for d in items if d["category"] == cashew.UNCATEGORIZED[0])
-    print(f"{len(items)} transactions in {len(result['links'])} links, {len(result['transfers'])} transfer pages and "
-          f"{len(result['refunds'])} refund pages; "
+    print(f"{len(items)} transactions in {len(result['links'])} links and {len(result['transfers'])} transfer pages; "
           f"{need} need a category", file=sys.stderr)
     return 0
 
