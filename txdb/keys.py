@@ -69,6 +69,37 @@ def parsed_counterparty(bank: str, merchant: str) -> dict | None:
     return None
 
 
+# What HDFC prints for a UPI payment, read from the right so a VPA with a hyphen or a masked one
+# ("BINUMK42-1@OKAXIS", "******42-1@OKAXIS") does not break the split: UPI-<name>-<vpa>-<ifsc>-<ref>[-<remark>].
+_HDFC_UPI_LOOSE = re.compile(
+    r"^UPI-(?P<name>.+?)-(?P<vpa>\S+@[A-Za-z0-9.]+)-(?P<ifsc>[A-Za-z]{4}0[A-Za-z0-9]{6})-(?P<ref>\d+)(?:-(?P<remark>.*))?$",
+    re.I)
+# A card or debit row: "Upi-tobox Ventures Private Li" - the merchant after a "Upi-" prefix, no id at all.
+_HDFC_UPI_PLAIN = re.compile(r"^UPI-(?P<name>[^@]+)$", re.I)
+
+
+def display_counterparty(bank: str, merchant: str) -> dict | None:
+    """{name, remark} to SHOW for a row, else None. The strict parse first (parsed_counterparty), then
+    for HDFC the looser shapes above, so the screen shows "BINU M K" and never the whole UPI id.
+
+    Display only: the group key (what a rename or a taught category is saved under) still comes from
+    parsed_counterparty, so changing what is shown can never orphan something the person saved.
+    The same rules are in Model.js (displayCounterparty)."""
+    parsed = parsed_counterparty(bank, merchant)
+    if parsed:
+        return {"name": parsed["name"], "remark": parsed["remark"]}
+    if bank != "HDFC":
+        return None
+    m = _HDFC_UPI_LOOSE.match(merchant or "")
+    if m and _clean(m.group("name")):
+        return {"name": _clean(m.group("name")), "remark": _clean(m.group("remark"))}
+    m = _HDFC_UPI_PLAIN.match(_clean(merchant))
+    if m and _clean(m.group("name")):
+        name = _clean(m.group("name"))
+        return {"name": name[0].upper() + name[1:], "remark": ""}
+    return None
+
+
 def legacy_group_key(merchant: str) -> str:
     """The widget's old key: the description up to the first long digit run."""
     m = _LONG_DIGIT_RUN.search(merchant)

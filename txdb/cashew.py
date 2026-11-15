@@ -307,7 +307,7 @@ def display_title(bank: str, merchant: str, group_key: str, counterparty: str | 
     """Port of Model.js transactionDisplayName, cut at 250."""
     name = overrides.get(group_key) or counterparty
     if not name:
-        parsed = keys.parsed_counterparty(bank, merchant)
+        parsed = keys.display_counterparty(bank, merchant)
         name = parsed["name"] if parsed and parsed["name"] else merchant
     return _squash(name)[:TITLE_MAX]
 
@@ -358,7 +358,7 @@ def upi_remark(merchant: str, bank: str) -> str:
             return ""
         name, f2, f3 = _squash(m.group(1)), _squash(m.group(2)), _squash(m.group(3))
         return _clean_remark(f2 if _BANK_WORDS.search(f3) else f3, name)
-    parsed = keys.parsed_counterparty(bank, merchant)
+    parsed = keys.display_counterparty(bank, merchant)
     if not parsed or bank not in ("SBI", "HDFC"):
         return ""
     return _clean_remark(parsed["remark"], parsed["name"])

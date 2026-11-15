@@ -508,6 +508,27 @@ function parsedCounterparty(t) {
   return null
 }
 
+// HDFC UPI shapes the strict regex above cannot split: a VPA with a hyphen or a mask ("BINUMK42-1@OKAXIS"),
+// and a card row ("Upi-tobox Ventures Private Li"). Same as txdb/keys.py display_counterparty.
+var _HDFC_UPI_LOOSE_RE = /^UPI-(.+?)-(\S+@[A-Za-z0-9.]+)-([A-Za-z]{4}0[A-Za-z0-9]{6})-(\d+)(?:-(.*))?$/i
+var _HDFC_UPI_PLAIN_RE = /^UPI-([^@]+)$/i
+
+// {name, remark} to SHOW for a row, else null. Display only: group keys still come from parsedCounterparty,
+// so a rename or taught category saved under a key is never orphaned by a change to what is shown.
+function displayCounterparty(t) {
+  var parsed = parsedCounterparty(t)
+  if (parsed) return { name: parsed.name, remark: parsed.remark }
+  if (t.bank !== "HDFC") return null
+  var m = _HDFC_UPI_LOOSE_RE.exec(t.merchant || "")
+  if (m && _clean(m[1])) return { name: _clean(m[1]), remark: _clean(m[5]) }
+  m = _HDFC_UPI_PLAIN_RE.exec(_clean(t.merchant))
+  if (m && _clean(m[1])) {
+    var name = _clean(m[1])
+    return { name: name.charAt(0).toUpperCase() + name.slice(1), remark: "" }
+  }
+  return null
+}
+
 function _counterparty(bank, rawName, rawRemark) {
   var name = _clean(rawName)
   return { key: "UPI|" + bank + "|" + name.toUpperCase(), name: name, remark: _clean(rawRemark) }
@@ -569,7 +590,7 @@ function transactionDisplayName(t, transactionNameOverrides) {
   // SBI/Axis: the counterparty's name reads better than the raw reference
   // string (which stays visible as "Raw:" in the expanded row).
   if (t.counterparty) return t.counterparty
-  var parsed = parsedCounterparty(t)
+  var parsed = displayCounterparty(t)
   return parsed && parsed.name ? parsed.name : t.merchant
 }
 
