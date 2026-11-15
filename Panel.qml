@@ -699,7 +699,10 @@ Panel {
       var out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, root.cashewBase)
       root.cashewLinksError = ""
       root.cashewLinks = out.links
-      root.cashewTransfers = out.transfers
+      // Refund pages sit with the transfer pages: each opens a Cashew form and needs a tap on Save.
+      root.cashewTransfers = out.transfers.concat((out.refunds || []).map(function (r) {
+        return Object.assign({ kind: "refund", pairId: "", accountFrom: r.account, accountTo: "" }, r)
+      }))
       root.cashewWarnings = out.warnings
     } catch (e) {
       root.cashewLinksError = "Could not build the links: " + e
@@ -723,6 +726,7 @@ Panel {
     try { out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, "web") }
     catch (e) { root.cashewSendNote = "Could not build the links: " + e; return }
     var urls = out.links.map(function (l) { return l.url }).concat(out.transfers.map(function (t) { return t.url }))
+      .concat((out.refunds || []).map(function (t) { return t.url }))
     if (urls.length === 0) { root.cashewSendNote = "Nothing selected to send."; return }
     root.cashewSendTotal = urls.length
     root.cashewSendNote = ""
@@ -8258,7 +8262,7 @@ Panel {
               Text {
                 width: parent.width
                 textFormat: Text.PlainText
-                text: "Transfers · " + root.cashewTransfers.length
+                text: "Pages to save · " + root.cashewTransfers.length
                 color: cashewWin.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
@@ -8268,7 +8272,7 @@ Panel {
                 width: parent.width
                 wrapMode: Text.Wrap
                 textFormat: Text.PlainText
-                text: "Cashew opens each transfer page; tap Save once per transfer."
+                text: "Cashew opens each transfer or refund page; tap Save once per page."
                 color: cashewWin.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
@@ -11469,7 +11473,7 @@ Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
-          TxnBtn { label: "Income (Refund category)"; primary: card.txn.refundMode === "income"; onClicked: store.setRefundMode(card.txn.id, "income") }
+          TxnBtn { label: "Income, same category"; primary: card.txn.refundMode === "income"; onClicked: store.setRefundMode(card.txn.id, "income") }
           TxnBtn { label: "Skip both"; primary: card.txn.refundMode === "skip"; onClicked: store.setRefundMode(card.txn.id, "skip") }
           TxnBtn { label: "Lent (manual)"; primary: card.txn.refundMode === "lent"; onClicked: store.setRefundMode(card.txn.id, "lent") }
         }

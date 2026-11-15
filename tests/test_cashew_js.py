@@ -155,8 +155,8 @@ class CashewJs(unittest.TestCase):
         one = self.js("cashewBuildLinks(input.d, [0, 2], 6000, input.c)", d=ds, c=CATS)
         self.assertEqual((one["transfers"], one["links"][0]["ids"]), ([], ["x", "o"]))
         self.assertTrue(one["warnings"][0].startswith("transfer leg without partner"))
-        self.assertEqual(self.js("cashewMarkQuestion(81, 8)"), "Mark 81 as tracked (8 transfers need a tap on Save in Cashew)?")
-        self.assertEqual(self.js("cashewMarkQuestion(3, 1)"), "Mark 3 as tracked (1 transfer needs a tap on Save in Cashew)?")
+        self.assertEqual(self.js("cashewMarkQuestion(81, 8)"), "Mark 81 as tracked (8 pages need a tap on Save in Cashew)?")
+        self.assertEqual(self.js("cashewMarkQuestion(3, 1)"), "Mark 3 as tracked (1 page needs a tap on Save in Cashew)?")
         self.assertEqual(self.js("cashewMarkQuestion(3, 0)"), "Mark 3 as tracked?")
 
     def test_friend_settlement_split_paid_passes_the_sign_rule_both_ways(self):

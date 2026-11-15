@@ -48,43 +48,39 @@ class Base(unittest.TestCase):
 
 
 class Export(Base):
-    def test_a_linked_refund_is_income_under_an_income_category_and_the_note_names_the_purchase(self):
-        # The deployed Cashew shows a credit under an EXPENSE category ("Shopping") as spend, whatever the
-        # sign in the link (seen on screen), so a refund goes under an income-type category.
+    def test_a_linked_refund_keeps_the_purchases_category_and_is_money_in(self):
         refunds.set_link(self.conn, self.back, self.out)
         got = self.drafts()
         credit, buy = got[self.back], got[self.out]
         self.assertEqual((credit["kind"], credit["refundMode"], credit["refundOf"]), ("refund", "income", self.out))
-        self.assertEqual((credit["category"], credit["subcategory"]), cashew.REFUND_CATEGORY)
-        self.assertEqual(dict((c["name"], c["type"]) for c in cashew.load_categories())[credit["category"]], "income")
-        self.assertEqual((buy["category"], buy["subcategory"]), ("Shopping", "Footwear"))     # the purchase is untouched
-        self.assertEqual(credit["amount"], "3816.00")                                          # money in: positive
-        self.assertEqual(buy["amount"], "-3816.00")                                            # money out: negative
+        self.assertEqual((credit["category"], credit["subcategory"]), ("Shopping", "Footwear"))     # the SAME category
+        self.assertEqual((buy["category"], buy["subcategory"]), ("Shopping", "Footwear"))
+        self.assertEqual(credit["amount"], "3816.00")                                                # money in: positive
+        self.assertEqual(buy["amount"], "-3816.00")                                                  # money out: negative
         self.assertTrue(credit["title"].startswith("Refund: "))
-        self.assertTrue(credit["notes"].startswith("Refund of "))
-        self.assertIn("02-Nov-26 ₹3816 · Shopping › Footwear", credit["notes"])
+        self.assertIn("02-Nov-26 ₹3816", credit["notes"])
         self.assertEqual(credit["warn"], "")
         self.assertTrue(credit["include"] and buy["include"])
 
-    def test_the_link_builder_sends_the_refund_as_a_positive_amount_with_no_warning(self):
+    def test_the_refund_is_its_own_cashew_form_page_with_a_positive_amount_not_in_the_bulk_link(self):
+        # The bulk addTransaction link takes income/expense from the category type in the deployed Cashew, so a
+        # refund under "Shopping" showed as spend. The form link (addTransactionRoute) takes it from the sign.
         refunds.set_link(self.conn, self.back, self.out)
-        out = cashew.build_links([x for x in self.drafts().values() if x["id"] in (self.out, self.back)])
+        out = cashew.build_links([x for x in self.drafts().values() if x["id"] in (self.out, self.back)], base="web")
         self.assertEqual(out["warnings"], [])
-        text = urllib.parse.unquote(out["links"][0]["url"].split("JSON=")[1])
-        entries = {e["amount"]: e for e in json.loads(text)["transactions"]}
-        self.assertEqual(set(entries), {"-3816.00", "3816.00"})
-        refund = entries["3816.00"]
-        self.assertEqual((refund["category"], refund["subcategory"]), cashew.REFUND_CATEGORY)
-        self.assertEqual(entries["-3816.00"]["category"], "Shopping")
+        bulk = json.loads(urllib.parse.unquote(out["links"][0]["url"].split("JSON=")[1]))["transactions"]
+        self.assertEqual([e["amount"] for e in bulk], ["-3816.00"])                                  # only the purchase
+        (page,) = out["refunds"]
+        self.assertTrue(page["url"].startswith(cashew.WEB_BASE + "addTransactionRoute?"))
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(page["url"]).query)
+        self.assertEqual(q["amount"], ["3816.00"])
+        self.assertEqual((q["category"], q["subcategory"]), (["Shopping"], ["Footwear"]))
+        self.assertEqual(q["account"], ["ICICI 🌳"])
+        self.assertEqual(q["date"], ["2026-11-12"])
+        self.assertTrue(q["title"][0].startswith("Refund: "))
+        self.assertIn("Refund of", q["notes"][0])
 
-    def test_an_expense_category_chosen_on_the_refund_itself_wins_but_warns(self):
-        # The person's own pick is kept; the builder warns, because Cashew would show it as spend.
-        refunds.set_link(self.conn, self.back, self.out)
-        self.state["txn"] = {self.back: {"category": "Shopping", "subcategory": "Footwear"}}
-        credit = self.drafts()[self.back]
-        self.assertTrue(credit["warn"] or credit["category"] == "Uncategorized")
-
-    def test_an_ordinary_credit_in_an_expense_category_still_warns(self):
+    def test_an_expense_category_picked_on_the_credit_by_hand_still_warns_in_the_bulk_link(self):
         plain = [d(1, amount="10.00", category="Shopping", subcategory="Footwear", kind="income")]
         self.assertTrue([w for w in cashew.build_links(plain)["warnings"] if "does not fit" in w])
 
@@ -118,7 +114,7 @@ class Export(Base):
         got = self.drafts()[self.other]
         self.assertEqual((got["kind"], got["refundOf"]), ("refund", ""))
         self.assertIn("Refund of Razorpay order", got["notes"])
-        self.assertEqual((got["category"], got["subcategory"]), cashew.REFUND_CATEGORY)
+        self.assertEqual(got["category"], "Uncategorized")                      # nothing to copy a category from
 
     def test_nothing_changes_for_rows_with_no_link(self):
         got = self.drafts()
@@ -129,15 +125,23 @@ class Export(Base):
 class RefundParity(P.Parity):
     """The JS builder must give the same warnings and links for refund drafts as the Python one."""
 
-    def test_refund_drafts(self):
+    def test_refund_pages(self):
         drafts = [
-            d(1, kind="refund", amount="3816.00", category="Cashback & Rewards", subcategory="Refund", title="Refund: Flipkart",
-              refundOf="x", refundMode="income", notes="Refund of Flipkart 02-Nov-26 ₹3816 · Shopping › Footwear"),
-            d(2, kind="refund", amount="10.00", category="Shopping", subcategory="Footwear", refundOf="x"),   # expense category: warns
-            d(3, kind="refund", amount="5.00", category="Uncategorized", subcategory="Unknown", refundOf=""),
+            d(1, kind="refund", amount="3816.00", category="Shopping", subcategory="Footwear", title="Refund: Flipkart",
+              refundOf="x", refundMode="income", notes="Refund of Flipkart 02-Nov-26 ₹3816", account="ICICI \U0001F333"),
+            d(2, kind="refund", amount="5.00", category="Uncategorized", subcategory="Unknown", refundOf=""),   # no category: warns
+            d(3, kind="refund", amount="9.00", title="50% off & more", notes="line1\nline2", date="2026-09-30"),
+            d(4, kind="refund", amount="7.00", title="x" * 300, notes="y" * 600),                                  # cut with warnings
+            d(5, kind="spend", amount="-3816.00", category="Shopping", subcategory="Footwear"),                  # the purchase: bulk
         ]
-        py = self.both(drafts)
-        self.assertEqual(len([w for w in py["warnings"] if "does not fit" in w]), 1)
+        for base in ("app", "web"):
+            py = self.both(drafts, base=base)
+            self.assertEqual(len(py["refunds"]), 4)
+            self.assertEqual(len(py["links"]), 1)
+            self.assertEqual(py["links"][0]["count"], 1)                     # only the purchase is in the bulk link
+            self.assertTrue([w for w in py["warnings"] if w.startswith("no category")])
+            self.assertTrue([w for w in py["warnings"] if "cut to" in w])
+            self.assertEqual([w for w in py["warnings"] if "does not fit" in w], [])
 
 
 # the inherited parity cases already run in test_cashew_parity itself; do not run them twice

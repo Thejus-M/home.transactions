@@ -2616,7 +2616,7 @@ function cashewRefundNotes(drafts, shown) {
     } else if (d.refundMode === "lent") lent.push(d.title || d.id)
   })
   var out = []
-  if (income > 0) out.push(income + (income === 1 ? " refund goes" : " refunds go") + " in as income under Cashback & Rewards > Refund (Cashew shows a credit under an expense category as spend). The note names the purchase and its category.")
+  if (income > 0) out.push(income + (income === 1 ? " refund opens" : " refunds open") + " as an income form in the purchase's own category: tap Save in Cashew once per refund (a bulk link would show it as spend).")
   if (skipped > 0) out.push(skipped + (skipped === 1 ? " refund and its purchase cancel" : " refunds and their purchases cancel") + " out, so neither is sent.")
   lent.slice(0, 5).forEach(function (t) {
     out.push("Lent: after sending, open \"" + t + "\" in Cashew, set its type to Lent and tap collect when the money is back (a link cannot create a Lent).")
@@ -2758,13 +2758,16 @@ function cashewLinkLabel(i, n, count, chars) {
 
 // Transfer card line: "HDFC → SBI  ₹1.00  ·  07-Nov".
 function cashewTransferLine(t) {
+  if (t.kind === "refund")
+    return "▴ " + cashewMoney(t.amount) + " · " + (t.category || "no category") + (t.subcategory ? " › " + t.subcategory : "")
+      + " · " + (t.account || "?") + " · " + formatDate(t.date)
   return (t.accountFrom || "?") + " → " + (t.accountTo || "?") + " " + cashewMoney(t.amount) + " · " + formatDate(t.date)
 }
 
 // "Mark 81 as tracked (8 transfers need a tap on Save in Cashew)?"
 function cashewMarkQuestion(n, transfers) {
   var tail = transfers > 0
-    ? " (" + transfers + (transfers === 1 ? " transfer needs" : " transfers need") + " a tap on Save in Cashew)" : ""
+    ? " (" + transfers + (transfers === 1 ? " page needs" : " pages need") + " a tap on Save in Cashew)" : ""
   return "Mark " + n + " as tracked" + tail + "?"
 }
 
@@ -2825,6 +2828,25 @@ function _cashewTransferLegs(inc) {
   return out
 }
 
+// A linked refund as one Cashew form page (addTransactionRoute): income by the sign of the amount, in the
+// purchase's own category. Same as txdb/cashew.py _refund_page.
+function _cashewRefundPage(d, root, warnings) {
+  var label = (d.title || d.id) + " (" + (d.date === undefined || d.date === null ? "" : d.date) + ")"
+  var title = _cashewStr(d.title), notes = _cashewStr(d.notes)
+  if (_cashewLen(title) > 250) { warnings.push("title cut to 250 characters: " + label); title = _cashewCut(title, 250) }
+  if (_cashewLen(notes) > 500) { warnings.push("notes cut to 500 characters: " + label); notes = _cashewCut(notes, 500) }
+  var cat = _cashewStr(d.category), sub = _cashewStr(d.subcategory), acct = _cashewStr(d.account)
+  var amount = _cashewStr(d.amount), date = _cashewStr(d.date)
+  if (cat === "Uncategorized" && sub !== "Miscellaneous") warnings.push("no category: " + label)
+  var parts = [["amount", amount], ["title", title], ["notes", notes], ["category", cat], ["subcategory", sub],
+               ["account", acct], ["date", date]]
+  var query = parts.filter(function (p) { return p[1] }).map(function (p) {
+    return p[0] + "=" + _cashewQuote(_cashewPct(p[1]))
+  }).join("&")
+  return { url: root + "addTransactionRoute?" + query, id: d.id, title: title, date: date, amount: amount,
+           account: acct, category: cat, subcategory: sub }
+}
+
 function _cashewTransfer(o, i, root) {
   var title = _cashewStr(o.title), date = _cashewStr(o.date)
   var from = _cashewStr(o.account), to = _cashewStr(i.account)
@@ -2863,7 +2885,7 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
   var legSet = []
   var pairList = []
   Object.keys(paired).forEach(function (pid) { pairList.push(paired[pid]); legSet.push(paired[pid][0], paired[pid][1]) })
-  var bulk = inc.filter(function (d) { return legSet.indexOf(d) < 0 })
+  var bulk = inc.filter(function (d) { return legSet.indexOf(d) < 0 && d.kind !== "refund" })
 
   var entryOf = function (d) {
     var label = (d.title || d.id) + " (" + (d.date === undefined || d.date === null ? "" : d.date) + ")"
@@ -2894,6 +2916,9 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
   inc.forEach(function (d) {
     if (d.kind === "transfer" && legSet.indexOf(d) < 0)
       warnings.push("transfer leg without partner: " + d.title + " (" + d.date + ")")
+  })
+  var refundPages = inc.filter(function (d) { return d.kind === "refund" }).map(function (d) {
+    return _cashewRefundPage(d, root, warnings)
   })
   var transfers = pairList.sort(function (p, q) { return cmp(p[0], q[0]) }).map(function (p) {
     return _cashewTransfer(p[0], p[1], root)
@@ -2928,7 +2953,7 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
       warnings.push("one link is " + url.length + " characters, over the " + max + " limit: " + bulk[b[0]].title)
     links.push({ url: url, count: b.length, chars: url.length, ids: b.map(function (k) { return bulk[k].id }), json: text })
   })
-  return { links: links, transfers: transfers, warnings: warnings }
+  return { links: links, transfers: transfers, refunds: refundPages, warnings: warnings }
 }
 
 // Short stand-in for a ~6,000 character link: the start, an ellipsis, the end.
