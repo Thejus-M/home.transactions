@@ -37,6 +37,10 @@ UNCATEGORIZED = ("Uncategorized", "Unknown")
 BALANCE = "Balance Correction"
 FRIEND = "Friend Settlement"
 FRIEND_SUB = "Split Paid"                            # both directions
+# A linked refund is filed here. The deployed Cashew (6.7.2) takes income or expense from the CATEGORY's
+# type, not from the sign of the amount in the link: a +3816.00 under "Shopping" (an expense category)
+# came out as spend, like the purchase (seen on screen, 2026-11-15). Only an income-type category shows as income.
+REFUND_CATEGORY = ("Cashback & Rewards", "Refund")
 
 
 def default_state_path() -> Path:
@@ -556,20 +560,25 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
         notes_lead, refund_mode, refund_to = "", "", None
         link = refund_of.get(r["id"])
         if link and r["amount_paise"] > 0 and not leg:
-            # A credit that gives back a purchase (txdb/refunds.py). "income": it is filed under the
-            # purchase's own category, as income. "skip": the purchase and the refund cancel out and
-            # neither is exported (only when the refunds fully cancel it). "lent": the refund is not
-            # exported; the purchase is, and the person turns it into a Lent in Cashew by hand.
+            # A credit that gives back a purchase (txdb/refunds.py). "income": it is exported as income under
+            # REFUND_CATEGORY (an income-type category: Cashew would show it as spend under the purchase's
+            # expense category), and the note says which purchase it refunds and under what category.
+            # "skip": the purchase and the refund cancel out and neither is exported (only when the refunds
+            # fully cancel it). "lent": the refund is not exported; the purchase is, and the person turns it
+            # into a Lent in Cashew by hand.
             refund_mode, refund_to = link["mode"], link["original"]
             orig = by_id.get(link["original"]) if link["original"] else None
             if refund_mode == "skip" and not (orig and skipped.get(orig["id"], 0) >= -orig["amount_paise"]):
                 refund_mode = "income"             # a partial refund cannot cancel the whole purchase
+            own_pick = _txn_pick(state, r["id"])
+            if not (own_pick and own_pick[0]):           # a category the person chose on the refund itself wins
+                cat, sub, warn = REFUND_CATEGORY[0], REFUND_CATEGORY[1], ""
             if orig is not None:
                 o_kind, o_cat, o_sub, o_warn, _o_bill, o_title, _o_leg = classify(orig)
-                if o_cat != UNCATEGORIZED[0]:
-                    cat, sub, warn = o_cat, o_sub, ""
                 title = f"Refund: {o_title}"
                 notes_lead = f"Refund of {o_title} {_day(orig['date'])} {_money(-orig['amount_paise'])}"
+                if o_cat != UNCATEGORIZED[0]:
+                    notes_lead += f" · {o_cat}" + (f" › {o_sub}" if o_sub else "")
             elif link["note"]:
                 notes_lead = f"Refund of {link['note']}"
             kind = "refund"
@@ -616,7 +625,7 @@ def _entry(d: dict, warnings: list[str], types: dict[str, str]) -> dict:
     if cat == UNCATEGORIZED[0] and sub != "Miscellaneous":      # Miscellaneous is a deliberate choice
         warnings.append(f"no category: {label}")
     elif cat in types and not _fits(types[cat], amount.startswith("-")) \
-            and not _friend_fits(cat, sub, amount.startswith("-")) and d.get("kind") != "refund":
+            and not _friend_fits(cat, sub, amount.startswith("-")):
         warnings.append(f"category {cat!r} does not fit the amount sign: {label}")
     e = {"amount": amount, "title": escape_percent(title), "date": str(d.get("date") or ""),
          "notes": escape_percent(notes), "category": escape_percent(cat)}

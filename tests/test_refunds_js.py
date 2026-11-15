@@ -125,7 +125,7 @@ class RefundJs(unittest.TestCase):
         notes = self.js("cashewRefundNotes(input.d, null)", d=drafts)
         self.assertEqual(len(notes), 3)
         self.assertIn("1 refund goes in as income", notes[0])
-        self.assertIn("tick Income", notes[0])
+        self.assertIn("Cashback & Rewards > Refund", notes[0])
         self.assertIn("1 refund and its purchase cancel out", notes[1])
         self.assertIn('open "Shoes" in Cashew', notes[2])
         self.assertEqual(self.js("cashewRefundNotes(input.d, [4])", d=drafts), [])      # only shown rows count

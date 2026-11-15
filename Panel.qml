@@ -11469,7 +11469,7 @@ Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
-          TxnBtn { label: "Income in its category"; primary: card.txn.refundMode === "income"; onClicked: store.setRefundMode(card.txn.id, "income") }
+          TxnBtn { label: "Income (Refund category)"; primary: card.txn.refundMode === "income"; onClicked: store.setRefundMode(card.txn.id, "income") }
           TxnBtn { label: "Skip both"; primary: card.txn.refundMode === "skip"; onClicked: store.setRefundMode(card.txn.id, "skip") }
           TxnBtn { label: "Lent (manual)"; primary: card.txn.refundMode === "lent"; onClicked: store.setRefundMode(card.txn.id, "lent") }
         }

@@ -2616,7 +2616,7 @@ function cashewRefundNotes(drafts, shown) {
     } else if (d.refundMode === "lent") lent.push(d.title || d.id)
   })
   var out = []
-  if (income > 0) out.push(income + (income === 1 ? " refund goes" : " refunds go") + " in as income under the purchase's category. In Cashew, tick Income in the budget's \"Transactions to Include\" so it offsets the spend.")
+  if (income > 0) out.push(income + (income === 1 ? " refund goes" : " refunds go") + " in as income under Cashback & Rewards > Refund (Cashew shows a credit under an expense category as spend). The note names the purchase and its category.")
   if (skipped > 0) out.push(skipped + (skipped === 1 ? " refund and its purchase cancel" : " refunds and their purchases cancel") + " out, so neither is sent.")
   lent.slice(0, 5).forEach(function (t) {
     out.push("Lent: after sending, open \"" + t + "\" in Cashew, set its type to Lent and tap collect when the money is back (a link cannot create a Lent).")
@@ -2876,8 +2876,7 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
     else if (types.hasOwnProperty(cat)) {
       var t = types[cat], neg = amount.charAt(0) === "-"
       var friendOk = cat === "Friend Settlement" && sub === "Split Paid"
-      // a linked refund is a credit filed under its purchase's expense category on purpose
-      if (!(t === "balance" || (neg ? t === "expense" : t === "income")) && !friendOk && d.kind !== "refund")
+      if (!(t === "balance" || (neg ? t === "expense" : t === "income")) && !friendOk)
         warnings.push("category " + _cashewRepr(cat) + " does not fit the amount sign: " + label)
     }
     var e = { amount: amount, title: _cashewPct(title), date: _cashewStr(d.date), notes: _cashewPct(notes), category: _cashewPct(cat) }

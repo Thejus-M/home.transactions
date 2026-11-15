@@ -48,28 +48,41 @@ class Base(unittest.TestCase):
 
 
 class Export(Base):
-    def test_a_linked_refund_is_income_in_the_purchases_category_with_a_note(self):
+    def test_a_linked_refund_is_income_under_an_income_category_and_the_note_names_the_purchase(self):
+        # The deployed Cashew shows a credit under an EXPENSE category ("Shopping") as spend, whatever the
+        # sign in the link (seen on screen), so a refund goes under an income-type category.
         refunds.set_link(self.conn, self.back, self.out)
         got = self.drafts()
         credit, buy = got[self.back], got[self.out]
         self.assertEqual((credit["kind"], credit["refundMode"], credit["refundOf"]), ("refund", "income", self.out))
-        self.assertEqual((credit["category"], credit["subcategory"]), ("Shopping", "Footwear"))
-        self.assertEqual((buy["category"], buy["subcategory"]), ("Shopping", "Footwear"))
-        self.assertEqual(credit["amount"], "3816.00")
+        self.assertEqual((credit["category"], credit["subcategory"]), cashew.REFUND_CATEGORY)
+        self.assertEqual(dict((c["name"], c["type"]) for c in cashew.load_categories())[credit["category"]], "income")
+        self.assertEqual((buy["category"], buy["subcategory"]), ("Shopping", "Footwear"))     # the purchase is untouched
+        self.assertEqual(credit["amount"], "3816.00")                                          # money in: positive
+        self.assertEqual(buy["amount"], "-3816.00")                                            # money out: negative
         self.assertTrue(credit["title"].startswith("Refund: "))
         self.assertTrue(credit["notes"].startswith("Refund of "))
-        self.assertIn("02-Nov-26 ₹3816", credit["notes"])
+        self.assertIn("02-Nov-26 ₹3816 · Shopping › Footwear", credit["notes"])
         self.assertEqual(credit["warn"], "")
         self.assertTrue(credit["include"] and buy["include"])
 
-    def test_the_link_builder_accepts_it_without_a_does_not_fit_warning(self):
+    def test_the_link_builder_sends_the_refund_as_a_positive_amount_with_no_warning(self):
         refunds.set_link(self.conn, self.back, self.out)
         out = cashew.build_links([x for x in self.drafts().values() if x["id"] in (self.out, self.back)])
-        self.assertEqual([w for w in out["warnings"] if "does not fit" in w], [])
+        self.assertEqual(out["warnings"], [])
         text = urllib.parse.unquote(out["links"][0]["url"].split("JSON=")[1])
-        entries = json.loads(text)["transactions"]
-        refund = [e for e in entries if e["amount"] == "3816.00"][0]
-        self.assertEqual((refund["category"], refund["subcategory"]), ("Shopping", "Footwear"))
+        entries = {e["amount"]: e for e in json.loads(text)["transactions"]}
+        self.assertEqual(set(entries), {"-3816.00", "3816.00"})
+        refund = entries["3816.00"]
+        self.assertEqual((refund["category"], refund["subcategory"]), cashew.REFUND_CATEGORY)
+        self.assertEqual(entries["-3816.00"]["category"], "Shopping")
+
+    def test_an_expense_category_chosen_on_the_refund_itself_wins_but_warns(self):
+        # The person's own pick is kept; the builder warns, because Cashew would show it as spend.
+        refunds.set_link(self.conn, self.back, self.out)
+        self.state["txn"] = {self.back: {"category": "Shopping", "subcategory": "Footwear"}}
+        credit = self.drafts()[self.back]
+        self.assertTrue(credit["warn"] or credit["category"] == "Uncategorized")
 
     def test_an_ordinary_credit_in_an_expense_category_still_warns(self):
         plain = [d(1, amount="10.00", category="Shopping", subcategory="Footwear", kind="income")]
@@ -100,12 +113,12 @@ class Export(Base):
         self.assertTrue(got[self.out]["include"])
         self.assertEqual(got[self.out]["refundMode"], "lent")
 
-    def test_a_refund_whose_purchase_is_not_in_the_data_uses_its_own_category_and_the_note(self):
+    def test_a_refund_whose_purchase_is_not_in_the_data_is_also_income_and_keeps_the_note(self):
         refunds.set_link(self.conn, self.other, None, note="Razorpay order")
         got = self.drafts()[self.other]
         self.assertEqual((got["kind"], got["refundOf"]), ("refund", ""))
         self.assertIn("Refund of Razorpay order", got["notes"])
-        self.assertEqual(got["category"], "Uncategorized")
+        self.assertEqual((got["category"], got["subcategory"]), cashew.REFUND_CATEGORY)
 
     def test_nothing_changes_for_rows_with_no_link(self):
         got = self.drafts()
@@ -118,9 +131,9 @@ class RefundParity(P.Parity):
 
     def test_refund_drafts(self):
         drafts = [
-            d(1, kind="refund", amount="3816.00", category="Shopping", subcategory="Footwear", title="Refund: Flipkart",
-              refundOf="x", refundMode="income", notes="Refund of Flipkart 02-Nov-26 ₹3816"),
-            d(2, kind="income", amount="10.00", category="Shopping", subcategory="Footwear"),   # not a refund: warns
+            d(1, kind="refund", amount="3816.00", category="Cashback & Rewards", subcategory="Refund", title="Refund: Flipkart",
+              refundOf="x", refundMode="income", notes="Refund of Flipkart 02-Nov-26 ₹3816 · Shopping › Footwear"),
+            d(2, kind="refund", amount="10.00", category="Shopping", subcategory="Footwear", refundOf="x"),   # expense category: warns
             d(3, kind="refund", amount="5.00", category="Uncategorized", subcategory="Unknown", refundOf=""),
         ]
         py = self.both(drafts)
