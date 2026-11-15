@@ -2575,6 +2575,30 @@ function cashewShownIndexes(drafts, onlyFilter, idSet, closedSet) {
   return out
 }
 
+// Plain notes for the Cashew window about linked refunds in the shown rows (not warnings):
+// income refunds need the Income box ticked in Cashew's budget filter, skipped pairs are not sent,
+// and a "lent" purchase needs a hand edit in Cashew (a link cannot create a Lent).
+function cashewRefundNotes(drafts, shown) {
+  var keep = null
+  if (shown) { keep = {}; shown.forEach(function (i) { keep[i] = true }) }
+  var income = 0, skipped = 0, lent = []
+  drafts.forEach(function (d, i) {
+    if (keep && !keep[i]) return
+    if (d.kind === "refund") {
+      if (d.refundMode === "skip") skipped++
+      else if (d.include !== false) income++
+    } else if (d.refundMode === "lent") lent.push(d.title || d.id)
+  })
+  var out = []
+  if (income > 0) out.push(income + (income === 1 ? " refund goes" : " refunds go") + " in as income under the purchase's category. In Cashew, tick Income in the budget's \"Transactions to Include\" so it offsets the spend.")
+  if (skipped > 0) out.push(skipped + (skipped === 1 ? " refund and its purchase cancel" : " refunds and their purchases cancel") + " out, so neither is sent.")
+  lent.slice(0, 5).forEach(function (t) {
+    out.push("Lent: after sending, open \"" + t + "\" in Cashew, set its type to Lent and tap collect when the money is back (a link cannot create a Lent).")
+  })
+  if (lent.length > 5) out.push("+" + (lent.length - 5) + " more purchases to turn into a Lent by hand.")
+  return out
+}
+
 // What `txdb cashew-links` reads: shown drafts only, `include` kept.
 function cashewPayload(drafts, shown, maxChars) {
   var keep = {}

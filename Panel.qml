@@ -390,6 +390,7 @@ Panel {
   property var cashewLinks: []
   property var cashewTransfers: []    // paired transfers: one addTransferRoute page each
   property var cashewWarnings: []
+  readonly property var cashewRefundNotes: Model.cashewRefundNotes(root.cashewDrafts, root.cashewShown)
   property string cashewLinksError: ""
   // Same set the Python side drafts: untracked and settled.
   readonly property int cashewCount: transactions.filter(function (t) { return !t.tracked && !t.accountClosed }).length
@@ -8104,6 +8105,26 @@ Panel {
                 color: cashewWin.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
+              }
+            }
+
+            // What the linked refunds mean in Cashew (not warnings).
+            Column {
+              visible: root.cashewRefundNotes.length > 0
+              width: parent.width
+              spacing: Style.space(3)
+              Repeater {
+                model: root.cashewRefundNotes
+                delegate: Text {
+                  required property string modelData
+                  width: parent.width
+                  wrapMode: Text.Wrap
+                  textFormat: Text.PlainText
+                  text: "↩  " + modelData
+                  color: cashewWin.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
               }
             }
 

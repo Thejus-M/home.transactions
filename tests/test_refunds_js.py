@@ -114,6 +114,23 @@ class RefundJs(unittest.TestCase):
         self.assertEqual(self.js("restoreFilter(input.s, []).refund", s=saved), "needs")
         self.assertEqual(self.js("restoreFilter('{\"refund\":\"zzz\"}', []).refund"), "any")
 
+    def test_the_cashew_window_notes_about_refunds(self):
+        drafts = [
+            {"id": "a", "kind": "refund", "refundMode": "income", "include": True, "title": "Refund: X"},
+            {"id": "b", "kind": "refund", "refundMode": "skip", "include": False, "title": "Refund: Y"},
+            {"id": "c", "kind": "spend", "refundMode": "skip", "include": False, "title": "Y"},
+            {"id": "d", "kind": "spend", "refundMode": "lent", "include": True, "title": "Shoes"},
+            {"id": "e", "kind": "spend", "include": True, "title": "Coffee"},
+        ]
+        notes = self.js("cashewRefundNotes(input.d, null)", d=drafts)
+        self.assertEqual(len(notes), 3)
+        self.assertIn("1 refund goes in as income", notes[0])
+        self.assertIn("tick Income", notes[0])
+        self.assertIn("1 refund and its purchase cancel out", notes[1])
+        self.assertIn('open "Shoes" in Cashew', notes[2])
+        self.assertEqual(self.js("cashewRefundNotes(input.d, [4])", d=drafts), [])      # only shown rows count
+        self.assertEqual(self.js("cashewRefundNotes([], null)"), [])
+
     def test_the_texts(self):
         byid = {"o1": OUT}
         self.assertEqual(self.js("refundOfText(input.c, input.b)", c=dict(BACK, refundOf="o1"), b=byid),
