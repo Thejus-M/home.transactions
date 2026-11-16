@@ -133,21 +133,25 @@ def backup(conn, keep: int = 14) -> Path:
     return target
 
 
-def _mark_file_rows(items: list[dict]) -> None:
-    """Best effort: when the browser keeps a copy of the Cashew web database, let cashew_fix.flag complete the
-    `viaFile` marks (the purchase of a file-added refund). Nothing sets the mark by itself any more: links carry
-    categoryPolarity=false, so the sign of the amount decides income or expense."""
+def _mark_file_rows(items: list[dict]) -> dict:
+    """With the copy of the Cashew web database the browser keeps: mark the drafts Cashew already has
+    (txdb/cashew_dedupe.py: inCashew, not included, so "Add all" never sends a row twice), and let
+    cashew_fix.flag complete the `viaFile` marks. Returns the dedupe result; {"ok": False, "reason": ...} when
+    Cashew could not be read (the widget then warns: the rows cannot be checked for duplicates)."""
     try:
-        from . import cashew_fix, cashew_twins
+        from . import cashew_dedupe, cashew_fix, cashew_twins
         copy = cashew_twins.find_browser_copy()
-        if copy is not None:
-            conn = sqlite3.connect(f"{copy.as_uri()}?mode=ro", uri=True)
-            try:
-                cashew_fix.flag(items, cashew_fix.Index(conn))
-            finally:
-                conn.close()
-    except Exception:                    # noqa: BLE001 - a missing copy must never stop the drafts
-        pass
+        if copy is None:
+            return {"ok": False, "reason": "the browser keeps no copy of the Cashew web app"}
+        conn = sqlite3.connect(f"{copy.as_uri()}?mode=ro", uri=True)
+        try:
+            result = cashew_dedupe.mark(items, conn)
+            cashew_fix.flag(items, cashew_fix.Index(conn))
+        finally:
+            conn.close()
+        return result
+    except Exception as e:               # noqa: BLE001 - a missing copy must never stop the drafts
+        return {"ok": False, "reason": str(e)}
 
 
 def _cashew(cmd: str, args: list[str]) -> int:
@@ -171,10 +175,10 @@ def _cashew(cmd: str, args: list[str]) -> int:
     conn = cashew.open_readonly(DB_PATH)
     state = cashew.load_state(state_path)
     items = cashew.drafts(conn, state)
-    _mark_file_rows(items)
+    dedupe = _mark_file_rows(items)
     if cmd == "cashew-draft":
         out({"categories": cashew.load_categories(), "accountNames": cashew.account_names(state),
-             "drafts": items, "state": state})
+             "drafts": items, "state": state, "dedupe": dedupe})
         return 0
     # always real transfers: one transfer page per pair (a link cannot make two rows one linked transfer)
     result = cashew.build_links(items, base=state.get("base") or "app", transfers="page")

@@ -301,6 +301,16 @@ def note_category(note: str, negative: bool, rules: list[dict] | None = None,
     return None
 
 
+def transfer_title(own: str, peer: str, negative: bool) -> str:
+    """"SBI → HDFC": money leaves the first and reaches the second. `negative`: this side is the debit."""
+    src, dst = (own, peer) if negative else (peer, own)
+    if src and dst:
+        return f"{src} → {dst}"
+    if negative:
+        return f"Transfer to {dst}" if dst else "Transfer out"
+    return f"Transfer from {src}" if src else "Transfer in"
+
+
 def _valid_sub(cat: str, sub: str) -> bool:
     for c in load_categories():
         if c["name"] == cat:
@@ -530,11 +540,16 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
             # a transfer inside one bank (bank account <-> its card) names the account, else the bank
             label = (ACCOUNT_MAP.get(peer["account_id"]) if peer["bank"] == own["bank"] else None) \
                 or BANK_NAMES.get(peer["bank"], peer["bank"])
-            legs[tid] = {"pairId": p["id"], "peer": label, "partnerTracked": bool(peer["tracked"])}
+            # and the same for this side, so the title can name both ends: "SBI → HDFC", "HDFC → HDFC ₹"
+            own_label = (ACCOUNT_MAP.get(own["account_id"]) if peer["bank"] == own["bank"] else None) \
+                or BANK_NAMES.get(own["bank"], own["bank"])
+            legs[tid] = {"pairId": p["id"], "peer": label, "own": own_label, "partnerTracked": bool(peer["tracked"])}
     for h in hits:
         if h["id"] not in split and h["id"] not in legs:
             other = h["other"]
-            legs[h["id"]] = {"pairId": "", "peer": BANK_NAMES.get(other, other) if other else ""}
+            me = by_id.get(h["id"])
+            legs[h["id"]] = {"pairId": "", "peer": BANK_NAMES.get(other, other) if other else "",
+                             "own": BANK_NAMES.get(me["bank"], me["bank"]) if me else ""}
     overrides = {r[0]: r[1] for r in conn.execute("SELECT group_key, name FROM merchant_names")}
     acct_over = state.get("accounts") or {}
     bill_cats, linked = _bill_categories(conn), _linked_ids(conn)
@@ -567,11 +582,9 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
         leg = legs.get(r["id"])
         if leg:
             kind, (cat, sub) = "transfer", (BALANCE, "")
-            # A name the user gave this payee group (merchant_names) always wins; the
-            # generated "Transfer to <bank>" is only the fallback.
-            title = overrides.get(r["group_key"]) or (
-                (f"Transfer to {leg['peer']}" if leg["peer"] else "Transfer out") if negative else
-                (f"Transfer from {leg['peer']}" if leg["peer"] else "Transfer in"))
+            # Always "<from> → <to>" (the arrow Cashew itself writes in its transfer note), for both sides. A
+            # name the user gave the payee group ("HDFC <-> SBI") does not say the direction, so it is not used.
+            title = transfer_title(leg.get("own", ""), leg["peer"], negative)
         else:
             kind = "spend" if negative else "income"
             bc = bill_cats.get(r["id"])

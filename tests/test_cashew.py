@@ -241,7 +241,7 @@ class DraftTests(Base):
         ds = {d["id"]: d for d in self.drafts()}
         out, inn = ds["t-1"], ds["t-2"]
         self.assertEqual((out["kind"], out["category"], out["subcategory"]), ("transfer", "Balance Correction", ""))
-        self.assertEqual((out["title"], inn["title"]), ("Transfer to HDFC", "Transfer from SBI"))
+        self.assertEqual((out["title"], inn["title"]), ("SBI → HDFC", "SBI → HDFC"))         # one direction, both sides
         self.assertTrue(out["pairId"] and out["pairId"] == inn["pairId"])
         res = cashew.build_links(list(ds.values()), max_chars=800)
         self.assertEqual(res["links"], [])
@@ -261,16 +261,18 @@ class DraftTests(Base):
         self.assertEqual((lone_res["transfers"], lone_res["links"]), ([], []))                 # unticked: nothing exports
         self.assertEqual((ticked["transfers"], ticked["links"][0]["ids"]), ([], ["t-1"]))     # ticked: a plain row
 
-    def test_transfer_titles_use_the_names_the_user_assigned(self):
+    def test_transfer_titles_say_the_direction_not_the_payee_name(self):
         self.add(self.sbi, row(1, "2026-10-02", -500.0, SBI_OUT))
         self.add(self.hdfc, row(2, "2026-10-02", 500.0, HDFC_IN))
         first = {d["id"]: d for d in self.drafts()}
-        # a name saved for the OUT leg's payee group wins over "Transfer to HDFC"
+        # a payee name like "HDFC <-> SBI" says no direction: the title is always "<from> → <to>"
         self.conn.execute("INSERT INTO merchant_names VALUES (?, ?, 'now')", (first["t-1"]["groupKey"], "HDFC <-> SBI"))
         ds = {d["id"]: d for d in self.drafts()}
-        self.assertEqual((ds["t-1"]["title"], ds["t-2"]["title"]), ("HDFC <-> SBI", "Transfer from SBI"))
+        self.assertEqual((ds["t-1"]["title"], ds["t-2"]["title"]), ("SBI → HDFC", "SBI → HDFC"))
         res = cashew.build_links(list(ds.values()))
-        self.assertEqual(res["transfers"][0]["title"], "HDFC <-> SBI")   # the transfer page carries the user's name
+        self.assertEqual(res["transfers"][0]["title"], "SBI → HDFC")
+        self.assertEqual(cashew.transfer_title("HDFC", "", True), "Transfer out")
+        self.assertEqual(cashew.transfer_title("", "SBI", False), "Transfer from SBI")
 
     def test_category_from_the_name_the_user_gave(self):
         f = cashew.category_from_name
@@ -311,7 +313,7 @@ class DraftTests(Base):
                  row(3, "2026-10-09", 70.0, "UPI-THEJUS M-THEJUSM@OKSBI-SBIN0070528-125099999999-UPI"))
         d = {x["id"]: x for x in self.drafts()}["t-3"]
         self.assertEqual((d["kind"], d["pairId"], d["category"]), ("transfer", "", "Balance Correction"))
-        self.assertEqual(d["title"], "Transfer from SBI")
+        self.assertEqual(d["title"], "SBI → HDFC")
         self.conn.execute("INSERT INTO transfer_splits VALUES ('t-3', 'now')")
         self.assertEqual({x["id"]: x for x in self.drafts()}["t-3"]["kind"], "income")   # split = not a transfer
 
@@ -321,7 +323,7 @@ class CliTests(Base):
         self.add(self.hdfc, row(1, "2026-10-02", -250.0, "SWIGGY ORDER"))
         self.state_path.write_text("{ not json")                       # corrupt state = empty state
         out = json.loads(self.cli("cashew-draft").stdout)
-        self.assertEqual(set(out), {"categories", "accountNames", "drafts", "state"})
+        self.assertEqual(set(out), {"categories", "accountNames", "drafts", "state", "dedupe"})
         self.assertEqual(len(out["categories"]), 24)
         self.assertEqual(out["state"], {"version": 1, "categories": {}, "accounts": {}})
         self.assertIn("HDFC ₹", out["accountNames"])
@@ -665,3 +667,37 @@ class TxnCategoryBillTests(Base):
                          [("t-1", ("Shopping", "Others"), ("Groceries", "Provisions"))])
         self.assertEqual(cashew.category_mismatches(ro, {"version": 1, "categories": {gk: {"category": "Shopping", "subcategory": "Others"}},
                                                          "accounts": {}, "txn": {"t-1": {"category": "Shopping", "subcategory": "Others"}}}), [])
+
+
+class DedupeTests(unittest.TestCase):
+    """txdb/cashew_dedupe.py: a draft Cashew already has is not sent again."""
+
+    def cashew_db(self, rows):
+        import sqlite3
+        from datetime import datetime
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE wallets (wallet_pk TEXT, name TEXT)")
+        db.executemany("INSERT INTO wallets VALUES (?, ?)", [("w-h", "HDFC"), ("w-s", "SBI ₹")])
+        db.execute("CREATE TABLE transactions (date_created INTEGER, amount REAL, wallet_fk TEXT, name TEXT)")
+        db.executemany("INSERT INTO transactions VALUES (?, ?, ?, ?)",
+                       [(int(datetime.strptime(d, "%Y-%m-%d %H:%M").timestamp()), a, w, n) for d, a, w, n in rows])
+        return db
+
+    def test_same_day_amount_and_account_one_to_one(self):
+        from txdb import cashew_dedupe
+        db = self.cashew_db([("2026-11-15 00:00", -60.0, "w-h", "renamed in Cashew"),
+                             ("2026-11-07 00:00", -1.0, "w-h", "x"), ("2026-11-07 13:05", -1.0, "w-h", "y"),
+                             ("2026-10-27 00:00", 814.9999999999999, "w-h", "float")])
+        drafts = [{"id": "a", "date": "2026-11-15", "amount": "-60.00", "account": "HDFC"},
+                  {"id": "b1", "date": "2026-11-07", "amount": "-1.00", "account": "HDFC"},
+                  {"id": "b2", "date": "2026-11-07", "amount": "-1.00", "account": "HDFC"},
+                  {"id": "b3", "date": "2026-11-07", "amount": "-1.00", "account": "HDFC"},      # only 2 in Cashew
+                  {"id": "c", "date": "2026-10-27", "amount": "815.00", "account": "HDFC"},      # float in Cashew
+                  {"id": "d", "date": "2026-11-15", "amount": "-60.00", "account": "SBI ₹"},     # other account
+                  {"id": "e", "date": "2026-11-15", "amount": "-9.00", "account": "Nowhere"}]
+        got = cashew_dedupe.mark(drafts, db)
+        self.assertEqual((got["ok"], got["found"], got["unknownAccounts"]), (True, 4, ["Nowhere"]))
+        self.assertEqual([d["id"] for d in drafts if d.get("inCashew")], ["a", "b1", "b2", "c"])
+        self.assertTrue(all(d["include"] is False for d in drafts if d.get("inCashew")))
+        self.assertNotIn("inCashew", drafts[3])
+
