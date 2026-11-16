@@ -1158,6 +1158,11 @@ function receiptSubtitle(r) {
   return parts.join(" · ")
 }
 
+// The caption of the note card: "NOTE" for a note written in the widget, "REMARK" when the UPI remark stands in.
+function peekNoteLabel(userNote, remark) {
+  return String(userNote || "").trim() !== "" ? "NOTE" : (String(remark || "").trim() !== "" ? "REMARK" : "NOTE")
+}
+
 // The small paper bill the note mark shows (a sticky note stuck to it): the merchant, the day, the first
 // `max` items and the total. { title, sub, lines: [{text, amount}], more, total }.
 function billPeek(r, max) {

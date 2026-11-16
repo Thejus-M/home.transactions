@@ -275,6 +275,11 @@ class SelectLook(unittest.TestCase):
         self.assertEqual(empty["Category"], "Friend Settlement › Split Paid  (from the note)")
         self.assertEqual(self.js("txnCategoryText({})"), "none yet")
 
+    def test_peek_note_label(self):
+        self.assertEqual(self.js("peekNoteLabel('court fee', 'BATMINTON')"), "NOTE")
+        self.assertEqual(self.js("peekNoteLabel('', 'BATMINTON')"), "REMARK")
+        self.assertEqual(self.js("peekNoteLabel('', '')"), "NOTE")
+
     def test_bill_peek(self):
         r = {"merchant": "GRILL BAY", "date": "2026-11-12", "time": "20:15", "currency": "INR", "total": 270, "printedTotal": 270,
              "items": [{"description": "Masala  Shawaya Rice", "amount": 230}, {"description": "PEPSI", "amount": 40},

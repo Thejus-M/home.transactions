@@ -11781,9 +11781,8 @@ Panel {
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
                 preventStealing: true
-                // A note (with or without its bill) opens the peek: a sticky note, stuck to the bill when
-                // there is one. A bill alone opens the bill.
-                onClicked: noteIconSlot.hasNote ? card.peekOpen = !card.peekOpen : root.openReceiptDetail(card.linkedReceipt)
+                // The peek shows the note, the bill, or both (see peekLoader).
+                onClicked: card.peekOpen = !card.peekOpen     // note, bill, or both: the peek; "Open bill" opens the window
               }
               ToolTip.visible: noteMouse.containsMouse
               ToolTip.text: (noteIconSlot.hasBill ? "Bill: " + Model.receiptTitle(card.linkedReceipt || {}) + " — open" : "")
@@ -12012,7 +12011,9 @@ Panel {
 
     // Edit panel: shows while editing. Name is the field in the row above.
     // It is either a Note or a Bill (typed here, item by item), never both.
-    // ---- the peek: a sticky note, alone or taped to a small paper bill
+    // ---- the peek: the note and / or the bill, dark and quiet. A note card (an amber hairline on the left),
+    // then the bill as a slip (perforated top, monospace lines, a dashed rule over the total). They stack and
+    // never overlap; the panel is too narrow to put them side by side.
     Loader {
       id: peekLoader
       active: card.peekOpen
@@ -12024,69 +12025,121 @@ Panel {
       anchors.rightMargin: Style.spacing.rowPaddingX
       height: card.peekOpen && item ? item.implicitHeight : 0
       sourceComponent: Component {
-        Item {
+        Column {
           id: peek
           readonly property bool withBill: !!card.linkedReceipt
+          readonly property bool withNote: card.effectiveNote !== ""
           readonly property var bill: peek.withBill ? Model.billPeek(card.linkedReceipt, 4) : null
-          readonly property color paper: "#F2EEE4"
-          readonly property color ink: "#2B2824"
-          readonly property color sticky: "#F5D76E"
-          implicitHeight: (peek.withBill ? Math.max(billPaper.height, sticker.y + sticker.height) : sticker.height + Style.space(6))
-            + peekActions.height + Style.space(10)
+          readonly property color hair: Util.alpha(root.foreground, 0.10)
+          readonly property color quiet: Qt.darker(root.foreground, 1.45)
+          readonly property color amber: root.pendingColor
+          spacing: Style.space(6)
+          // a short fade and rise when it opens
+          opacity: 0
+          transform: Translate { id: peekRise; y: Style.space(6) }
+          Component.onCompleted: { peekIn.start() }
+          ParallelAnimation {
+            id: peekIn
+            NumberAnimation { target: peek; property: "opacity"; to: 1; duration: 220; easing.type: Easing.OutCubic }
+            NumberAnimation { target: peekRise; property: "y"; to: 0; duration: 260; easing.type: Easing.OutCubic }
+          }
 
-          // the bill: a slip of paper, monospace, a dashed line over the total
+          // the note
           Rectangle {
-            id: billPaper
+            visible: peek.withNote
+            width: peek.width
+            height: noteCol.implicitHeight + Style.space(20)
+            radius: Style.space(8)
+            color: Util.alpha(peek.amber, 0.07)
+            border.width: 1
+            border.color: Util.alpha(peek.amber, 0.18)
+            Rectangle {
+              anchors { left: parent.left; top: parent.top; bottom: parent.bottom; margins: Style.space(8) }
+              width: Style.space(2)
+              radius: 1
+              color: peek.amber
+            }
+            Column {
+              id: noteCol
+              anchors { left: parent.left; right: parent.right; top: parent.top; leftMargin: Style.space(20); rightMargin: Style.space(12); topMargin: Style.space(10) }
+              spacing: Style.space(4)
+              Text {
+                textFormat: Text.PlainText
+                text: Model.peekNoteLabel(card.userNote, card.note)
+                color: Util.alpha(peek.amber, 0.85)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption - 1
+                font.bold: true
+                font.letterSpacing: 1.2
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                maximumLineCount: 6
+                elide: Text.ElideRight
+                lineHeight: 1.25
+                textFormat: Text.PlainText
+                text: card.effectiveNote
+                color: root.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body
+              }
+            }
+          }
+
+          // the bill
+          Rectangle {
             visible: peek.withBill
-            width: Math.min(parent.width - Style.space(70), Style.space(250))
-            height: visible ? billCol.implicitHeight + Style.space(20) : 0
-            radius: Style.space(3)
-            color: peek.paper
-            Rectangle {   // a soft shadow under the slip
-              z: -1
-              anchors.fill: parent
-              anchors.topMargin: Style.space(3)
-              anchors.leftMargin: Style.space(2)
-              anchors.rightMargin: -Style.space(2)
-              anchors.bottomMargin: -Style.space(3)
-              radius: parent.radius
-              color: Qt.rgba(0, 0, 0, 0.35)
+            width: peek.width
+            height: billCol.implicitHeight + Style.space(24)
+            radius: Style.space(8)
+            color: Util.alpha(root.foreground, 0.04)
+            border.width: 1
+            border.color: peek.hair
+            Row {   // perforation
+              anchors { top: parent.top; topMargin: Style.space(6); horizontalCenter: parent.horizontalCenter }
+              spacing: Style.space(6)
+              Repeater {
+                model: Math.max(0, Math.floor((peek.width - Style.space(24)) / Style.space(10)))
+                delegate: Rectangle { width: Style.space(4); height: width; radius: width / 2; color: Util.alpha(root.foreground, 0.12) }
+              }
             }
             Column {
               id: billCol
-              anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(10) }
+              anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(14); topMargin: Style.space(18) }
               spacing: Style.space(3)
               Text {
                 width: parent.width
                 elide: Text.ElideRight
                 textFormat: Text.PlainText
                 text: peek.bill ? peek.bill.title : ""
-                color: peek.ink
+                color: root.foreground
                 font.family: "monospace"
                 font.pixelSize: Style.font.caption
                 font.bold: true
+                font.letterSpacing: 0.4
               }
               Text {
                 visible: !!(peek.bill && peek.bill.sub)
                 textFormat: Text.PlainText
                 text: peek.bill ? peek.bill.sub : ""
-                color: Qt.lighter(peek.ink, 2.2)
+                color: peek.quiet
                 font.family: "monospace"
                 font.pixelSize: Style.font.caption - 1
               }
-              Item { width: 1; height: Style.space(2) }
+              Item { width: 1; height: Style.space(4) }
               Repeater {
                 model: peek.bill ? peek.bill.lines : []
                 delegate: Item {
                   required property var modelData
                   width: billCol.width
-                  height: Style.space(16)
+                  height: Style.space(17)
                   Text {
-                    anchors { left: parent.left; right: billAmt.left; rightMargin: Style.space(6); verticalCenter: parent.verticalCenter }
+                    anchors { left: parent.left; right: billAmt.left; rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
                     elide: Text.ElideRight
                     textFormat: Text.PlainText
                     text: modelData.text
-                    color: peek.ink
+                    color: Qt.darker(root.foreground, 1.15)
                     font.family: "monospace"
                     font.pixelSize: Style.font.caption - 1
                   }
@@ -12095,7 +12148,7 @@ Panel {
                     anchors { right: parent.right; verticalCenter: parent.verticalCenter }
                     textFormat: Text.PlainText
                     text: modelData.amount
-                    color: peek.ink
+                    color: Qt.darker(root.foreground, 1.15)
                     font.family: "monospace"
                     font.pixelSize: Style.font.caption - 1
                   }
@@ -12105,109 +12158,60 @@ Panel {
                 visible: !!(peek.bill && peek.bill.more > 0)
                 textFormat: Text.PlainText
                 text: peek.bill ? "+ " + peek.bill.more + " more" : ""
-                color: Qt.lighter(peek.ink, 2.2)
+                color: peek.quiet
                 font.family: "monospace"
                 font.pixelSize: Style.font.caption - 1
               }
-              Row {   // the dashed line
-                spacing: Style.space(3)
+              Item { width: 1; height: Style.space(2) }
+              Row {   // dashed rule
+                spacing: Style.space(4)
                 Repeater {
-                  model: Math.max(0, Math.floor(billCol.width / Style.space(7)))
-                  delegate: Rectangle { width: Style.space(4); height: 1; color: Qt.lighter(peek.ink, 2.6) }
+                  model: Math.max(0, Math.floor(billCol.width / Style.space(8)))
+                  delegate: Rectangle { width: Style.space(4); height: 1; color: Util.alpha(root.foreground, 0.22) }
                 }
               }
               Item {
                 width: parent.width
-                height: Style.space(18)
+                height: Style.space(20)
                 Text {
                   anchors { left: parent.left; verticalCenter: parent.verticalCenter }
                   textFormat: Text.PlainText
                   text: "TOTAL"
-                  color: peek.ink
+                  color: peek.quiet
                   font.family: "monospace"
-                  font.pixelSize: Style.font.caption
+                  font.pixelSize: Style.font.caption - 1
                   font.bold: true
+                  font.letterSpacing: 1.2
                 }
                 Text {
                   anchors { right: parent.right; verticalCenter: parent.verticalCenter }
                   textFormat: Text.PlainText
                   text: peek.bill ? peek.bill.total : ""
-                  color: peek.ink
+                  color: root.foreground
                   font.family: "monospace"
-                  font.pixelSize: Style.font.caption
+                  font.pixelSize: Style.font.caption + 1
                   font.bold: true
                 }
               }
             }
           }
 
-          // the sticky note: tilted, with a strip of tape; on the bill's top-right corner when there is a bill
-          Item {
-            id: sticker
-            width: Math.min(peek.withBill ? Style.space(150) : parent.width - Style.space(20), Style.space(220))
-            height: Math.max(Style.space(64), stickerText.implicitHeight + Style.space(26))
-            x: peek.withBill ? billPaper.width - width * 0.35 : Style.space(4)
-            y: peek.withBill ? -Style.space(4) : Style.space(6)
-            rotation: peek.withBill ? 4 : -1.5
-            z: 2
-            Rectangle {   // shadow
-              anchors.fill: parent
-              anchors.topMargin: Style.space(3)
-              anchors.leftMargin: Style.space(3)
-              anchors.rightMargin: -Style.space(3)
-              anchors.bottomMargin: -Style.space(4)
-              color: Qt.rgba(0, 0, 0, 0.3)
-              radius: Style.space(2)
-            }
-            Rectangle {
-              anchors.fill: parent
-              color: peek.sticky
-              radius: Style.space(2)
-              // the folded corner
-              Rectangle {
-                anchors { right: parent.right; bottom: parent.bottom }
-                width: Style.space(12)
-                height: width
-                color: Qt.darker(peek.sticky, 1.18)
-              }
-            }
-            Rectangle {   // tape
-              anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: -Style.space(6) }
-              width: Style.space(46)
-              height: Style.space(13)
-              rotation: -6
-              color: Qt.rgba(1, 1, 1, 0.45)
-            }
-            Text {
-              id: stickerText
-              anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(12); topMargin: Style.space(14) }
-              wrapMode: Text.Wrap
-              maximumLineCount: 6
-              elide: Text.ElideRight
-              textFormat: Text.PlainText
-              text: card.effectiveNote
-              color: "#3A3018"
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
-            }
-          }
-
-          // two quiet actions under it
+          // quiet actions
           Row {
-            id: peekActions
-            anchors { left: parent.left; bottom: parent.bottom }
-            spacing: Style.space(14)
+            spacing: Style.space(16)
             height: Style.space(20)
             Repeater {
-              model: (peek.withBill ? [{ id: "bill", label: "Open bill" }] : []).concat([{ id: "edit", label: "✎ Edit note" }])
+              model: (peek.withBill ? [{ id: "bill", label: "Open bill" }] : [])
+                .concat([{ id: "edit", label: peek.withNote ? "Edit note" : "Add note" }])
               delegate: Text {
                 required property var modelData
                 anchors.verticalCenter: parent.verticalCenter
                 textFormat: Text.PlainText
                 text: modelData.label
-                color: peekActMouse.containsMouse ? Color.accent : Qt.darker(root.foreground, 1.3)
+                color: peekActMouse.containsMouse ? Color.accent : peek.quiet
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
+                font.underline: peekActMouse.containsMouse
                 MouseArea {
                   id: peekActMouse
                   anchors.fill: parent
