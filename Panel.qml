@@ -491,6 +491,7 @@ Panel {
     root.cashewDrafts = Model.cashewRestorePending(data.drafts, root.cashewState)
     root.cashewLoading = false
     root.cashewReshow()   // also builds the links, once
+    Qt.callLater(root.cashewAutoGuessStart)
   }
   // Recomputes which drafts the table shows; skipped when nothing changed so
   // the list keeps its scroll position.
@@ -587,9 +588,17 @@ Panel {
     delete prefs.workers              // old state files: guesses always run one at a time now
     root.cashewSetState(Object.assign({}, root.cashewState, { guess: prefs }))
   }
-  function cashewGuessStart() {
+  // The AI run for the rows whose category is only the HDFC default but which have a UPI remark: it starts by
+  // itself when the window loads (Options can turn it off). Its answers wait for "Confirm" like any guess.
+  readonly property bool cashewAutoGuess: root.cashewState.autoGuess !== false
+  function cashewAutoGuessStart() {
+    if (!root.cashewOpen || !root.cashewAutoGuess || root.cashewGuessing || cashewGuessProc.running) return
+    if (root.cashewGuessedCount > 0) return               // guesses already wait for the person
+    root.cashewGuessStart(true)
+  }
+  function cashewGuessStart(defaultedOnly) {
     if (root.cashewGuessing || cashewGuessProc.running) return
-    var rows = Model.cashewGuessRows(root.cashewDrafts, root.cashewShown, Model.cashewTriedAll(root.cashewState, root.cashewGuessLog))
+    var rows = Model.cashewGuessRows(root.cashewDrafts, root.cashewShown, Model.cashewTriedAll(root.cashewState, root.cashewGuessLog), defaultedOnly === true)
     if (rows.length === 0) return
     // Same-UPI-counterparty rows (Model.cashewGuessGroups) are asked about
     // once: one representative per group goes to the model, and its answer
@@ -8511,6 +8520,11 @@ Panel {
             label: root.cashewAutoTrack ? "After adding: mark as tracked" : "After adding: keep untracked"
             active: root.cashewAutoTrack
             onClicked: root.cashewSetState(Object.assign({}, root.cashewState, { autoTrack: !root.cashewAutoTrack }))
+          }
+          CashewBtn {
+            label: root.cashewAutoGuess ? "AI for remarks: on" : "AI for remarks: off"
+            active: root.cashewAutoGuess
+            onClicked: root.cashewSetState(Object.assign({}, root.cashewState, { autoGuess: !root.cashewAutoGuess }))
           }
           CashewBtn {
             label: "Guessed only"

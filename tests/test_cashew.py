@@ -430,6 +430,31 @@ class NoteTests(Base):
         self.assertEqual(cashew.build_notes("HDFC", "UPI-A-a@x-SBIN0001000-1-FOR CC BILLS", "", "", "", "for cc bills"),
                          "for cc bills")                                                       # the remark again: once
 
+    def test_the_hdfc_default_is_marked_so_the_ai_can_read_the_remark(self):
+        self.add(self.hdfc, row(1, "2026-11-16", -75.0, "UPI-ASHWIN K MURUKESH-*****SH-1@OKSBI-SBIN0070031-142148279983-BATMINTON"),
+                 row(2, "2026-11-16", -40.0, "UPI-SWIGGY-swiggy@icici-ICIC0000001-1-NA"))
+        got = {x["merchant"][:12]: x for x in self.drafts()}
+        bat = got["UPI-ASHWIN K"]
+        self.assertEqual((bat["category"], bat["subcategory"]), ("Friend Settlement", "Split Paid"))
+        self.assertEqual((bat.get("defaulted"), bat.get("askAi"), bat.get("remark"), bat["notes"]),
+                         (True, True, "BATMINTON", "BATMINTON"))
+        sw = got["UPI-SWIGGY-s"]
+        self.assertNotIn("defaulted", sw)                       # a rule matched: not a default
+        self.assertNotIn("askAi", sw)                           # "NA" is no note
+
+    def test_a_note_decides_before_the_payee(self):
+        merchant = "UPI-ASHWIN K MURUKESH-*****SH-1@OKSBI-SBIN0070031-142148279983-biryani"       # a Food Out rule word
+        self.add(self.hdfc, row(1, "2026-11-16", -75.0, merchant))
+        tid = self.conn.execute("SELECT id FROM transactions").fetchone()[0]
+        gk = self.conn.execute("SELECT group_key FROM transactions").fetchone()[0]
+        taught = {"version": 1, "categories": {gk: {"category": "Shopping", "subcategory": "Others"}}, "accounts": {}}
+        d = {x["id"]: x for x in self.drafts(taught)}[tid]
+        self.assertEqual(d["category"], "Food Out")             # the note's rule wins over the payee's answer
+        self.assertNotIn("askAi", d)
+        pinned = dict(taught, txn={tid: {"category": "Shopping", "subcategory": "Others"}})
+        self.assertEqual({x["id"]: x for x in self.drafts(pinned)}[tid]["category"], "Shopping")   # this row's own pick wins
+        self.assertEqual(cashew.note_category("", True), None)
+
     def test_notes_are_empty_by_default_and_hold_the_remark(self):
         self.add(self.hdfc, row(1, "2026-10-02", -250.0, "UPI-SHOP A-a@oksbi-SBIN0001000-125045259403-MF and RD"),
                  row(2, "2026-10-03", -50.0, "UPI-SHOP B-b@oksbi-SBIN0001000-125045259404-NO REMARKS"))

@@ -284,6 +284,23 @@ def choose_category(title: str, merchant: str, group_key: str, negative: bool, s
     return pick[0], pick[1], ""
 
 
+def note_category(note: str, negative: bool, rules: list[dict] | None = None,
+                  types: dict[str, str] | None = None) -> tuple[str, str] | None:
+    """The category a keyword rule gives the NOTE alone (the user's note, else the UPI remark), or None.
+    A note says what the money was for, so it outranks the payee: "ASHWIN K" + "BATMINTON" is the sport."""
+    text = " ".join(str(note or "").split())
+    if not text:
+        return None
+    types = types or _types()
+    rules = load_rules() if rules is None else rules
+    for rule in rules:
+        if rule.get("sign") and (rule["sign"] == "debit") != negative:
+            continue
+        if _rule_hit(rule, text) and rule.get("category") in types and _fits(types[rule["category"]], negative):
+            return rule["category"], rule.get("subcategory") or ""
+    return None
+
+
 def _valid_sub(cat: str, sub: str) -> bool:
     for c in load_categories():
         if c["name"] == cat:
@@ -523,10 +540,6 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
     bill_cats, linked = _bill_categories(conn), _linked_ids(conn)
 
     refund_of = _refund_links(conn)
-    try:
-        user_notes = {r[0]: r[1] for r in conn.execute("SELECT transaction_id, note FROM txn_notes")}
-    except sqlite3.Error:                          # a database from before the notes table
-        user_notes = {}
     refunded: dict[str, int] = {}                  # purchase id -> paise refunded to it
     skipped: dict[str, int] = {}                   # ... of which netted into the purchase (mode "skip")
     netted_on: dict[str, list[str]] = {}           # purchase id -> dates of those refunds
@@ -536,6 +549,13 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
             if link["mode"] == "skip":
                 skipped[link["original"]] = skipped.get(link["original"], 0) + by_id[cid]["amount_paise"]
                 netted_on.setdefault(link["original"], []).append(by_id[cid]["date"])
+
+    defaulted: set[str] = set()                    # ids whose category is only the HDFC savings default
+    ask_ai: dict[str, str] = {}                    # id -> its note, when the note matched no rule (the AI decides)
+    try:
+        user_notes = {r[0]: r[1] for r in conn.execute("SELECT transaction_id, note FROM txn_notes")}
+    except sqlite3.Error:                          # a database from before the notes table
+        user_notes = {}
 
     def classify(r):
         """(kind, category, subcategory, warn, from_bill, title, leg) for one row."""
@@ -559,10 +579,25 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
                 title, r["merchant"], r["group_key"], negative, state, rules, types,
                 bill_user=(bc["category"], bc["subcategory"]) if bc and bc["source"] == "user" else None,
                 bill_llm=(bc["category"], bc["subcategory"]) if bc and bc["source"] == "llm" else None,
-                # HDFC savings (not a card, not another bank), no bill, nothing else to go on
-                friend_default=(r["bank"] == "HDFC" and r["account_type"] == "checking" and r["id"] not in linked),
                 assigned_name=overrides.get(r["group_key"]),
                 txn_pick=_txn_pick(state, r["id"]))
+            # A note (the user's own, else the UPI remark) says what the money was for, so it decides before
+            # the payee: a rule on the note wins over the payee's saved category, the name and the merchant
+            # rules. Only a category set on this very transaction, or on its bill, comes first.
+            note = " ".join(str(user_notes.get(r["id"]) or "").split()) or upi_remark(r["merchant"], r["bank"])
+            pinned = bool(_txn_pick(state, r["id"])) or bool(bc and bc["source"] == "user")
+            if note and not pinned:
+                by_note = note_category(note, negative, rules, types)
+                if by_note:
+                    cat, sub, warn = by_note[0], by_note[1], ""
+                else:
+                    ask_ai[r["id"]] = note             # no rule knows the note: the AI reads it
+            # HDFC savings (not a card, not another bank), no bill, nothing else to go on: Friend Settlement.
+            # That is a guess, not a match: the row is marked `defaulted`.
+            if (cat, sub, warn) == (*UNCATEGORIZED, "") and r["bank"] == "HDFC" \
+                    and r["account_type"] == "checking" and r["id"] not in linked:
+                cat, sub = FRIEND, FRIEND_SUB
+                defaulted.add(r["id"])
         return kind, cat, sub, warn, from_bill, title, leg
 
     out = []
@@ -635,6 +670,12 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
             d["refundCategory"], d["refundSubcategory"] = refund_from      # the purchase's category
         if refund_mode:
             d["refundMode"] = refund_mode
+        if r["id"] in defaulted and kind != "refund":
+            d["defaulted"] = True                      # no rule, bill or answer gave the category
+        if r["id"] in ask_ai and kind not in ("refund", "transfer"):
+            # The row has a note no rule knows ("BATMINTON"): the AI decides from it (Model.cashewGuessRows).
+            d["askAi"] = True
+            d["remark"] = ask_ai[r["id"]]
         out.append(d)
     return out
 

@@ -72,7 +72,9 @@ SYSTEM = (
     'your "category" value must always be one of the exact category names written in '
     'those lists (for example "Food Out" or "Friend Settlement"), never the words '
     '"Money out", "Money in", "DEBIT" or "CREDIT" themselves. '
-    "A UPI payment to or from a person (a personal name, no shop) is Friend Settlement. "
+    "A UPI payment to or from a person (a personal name, no shop) is Friend Settlement, unless the UPI remark "
+    "or my note says what the money was for (for example \"BATMINTON\" is a sport, \"rent\" is rent, "
+    "\"petrol\" is fuel): then the remark or the note decides the category, not the person. "
     "Use the merchant text, the UPI remark and the notes as clues. "
     "A row may also carry: \"UPI remark\" (the free text the payer typed), \"my note\" (written by the "
     "account owner, so trust it), and \"bill\" (the itemised receipt photographed for this very payment: its "

@@ -234,6 +234,17 @@ class SelectLook(unittest.TestCase):
         self.assertNotIn(6, [r["idx"] for r in hidden])
         self.assertIn(1, [r["idx"] for r in hidden])
 
+    def test_a_defaulted_row_with_a_remark_goes_to_the_ai(self):
+        ds = [draft("f", category="Friend Settlement", subcategory="Split Paid", askAi=True, remark="BATMINTON"),
+              draft("n", category="Friend Settlement", subcategory="Split Paid", defaulted=True, remark=""),   # no note
+              draft("u", category="Uncategorized", subcategory="Unknown"),                                    # needs one
+              draft("k", category="Food Out", subcategory="Lunch")]                                           # a real match
+        ids = lambda only: [r["id"] for r in self.js("cashewGuessRows(input.d, [0, 1, 2, 3], {}, input.o)", d=ds, o=only)]
+        self.assertEqual(ids(False), ["f", "u"])
+        self.assertEqual(ids(True), ["f"])
+        self.assertEqual(self.js("cashewGuessRows(input.d, [0], {f: true}, true)", d=ds), [])            # already asked
+        self.assertEqual(self.js("cashewGuessRows(input.d, [0], {}, true)", d=[dict(ds[0], guessed=True)]), [])
+
 
 if __name__ == "__main__":
     unittest.main()

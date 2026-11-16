@@ -2279,11 +2279,19 @@ function cashewGuessTried(log) {
 
 // `tried`: ids the model was already asked about in this window and could not answer
 // (see cashewGuessTried). Asking again gives the same empty answer, so they are not offered.
-function cashewGuessRows(drafts, shown, tried) {
+// A row with a note (the user's own, else the UPI remark) that no keyword rule knows is sent too, even with a
+// category: the note says what the money was for ("BATMINTON"), so it outranks the payee (`askAi`,
+// txdb/cashew.py). `defaultedOnly`: only those rows (the run that starts by itself when the window loads).
+function cashewGuessDefaulted(d) {
+  return !!(d && d.askAi && String(d.remark || "").trim() !== "")
+}
+function cashewGuessRows(drafts, shown, tried, defaultedOnly) {
   var out = []
   for (var k = 0; k < shown.length; k++) {
     var d = drafts[shown[k]]
-    if (!d || d.touched || d.guessed || !cashewNeedsCategory(d)) continue
+    if (!d || d.touched || d.guessed) continue
+    var byDefault = cashewGuessDefaulted(d)
+    if (defaultedOnly ? !byDefault : !(cashewNeedsCategory(d) || byDefault)) continue
     if (tried && tried[d.id]) continue
     var title = String(d.title || "").trim()
     var merchant = String(d.merchant || "").trim()
