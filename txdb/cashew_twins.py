@@ -90,10 +90,43 @@ def find_browser_copy(home: Path | None = None) -> Path | None:
     return None
 
 
+def _pointed_blobs(home: Path) -> list[Path]:
+    """The blob(s) the IndexedDB index of the Cashew web app points to now (object_data.file_ids of the
+    moor_databases store). Old blobs stay on disk for a while, and the newest file is not always the one in
+    use: when two Cashew tabs closed 39 ms apart, the older database was written last and won."""
+    import shutil
+    import tempfile
+    out = []
+    for pattern in (".config/*/*/storage/default/https+++budget-track.web.app/idb/*.sqlite",
+                    ".mozilla/firefox/*/storage/default/https+++budget-track.web.app/idb/*.sqlite"):
+        for index in home.glob(pattern):
+            with tempfile.TemporaryDirectory(prefix="cashew-idb-") as tmp:
+                try:
+                    shutil.copyfile(index, Path(tmp) / "i.sqlite")
+                    wal = index.with_name(index.name + "-wal")
+                    if wal.exists():
+                        shutil.copyfile(wal, Path(tmp) / "i.sqlite-wal")
+                    conn = sqlite3.connect(Path(tmp) / "i.sqlite")
+                    ids = [r[0] for r in conn.execute(
+                        "SELECT d.file_ids FROM object_data d JOIN object_store s ON s.id = d.object_store_id "
+                        "WHERE s.name = 'moor_databases' AND d.file_ids IS NOT NULL")]
+                    conn.close()
+                except (sqlite3.Error, OSError):
+                    continue
+            folder = index.with_suffix(".files")
+            for text in ids:
+                for token in str(text).replace(".", " ").split():
+                    num = token.lstrip("-")
+                    if num.isdigit() and (folder / num).is_file():
+                        out.append(folder / num)
+    return out
+
+
 def _browser_blobs(home: Path | None = None) -> list[Path]:
-    """The files the browser keeps for the Cashew web app's IndexedDB, newest first. TXDB_BROWSER_HOME
-    names another home folder (tests)."""
+    """The files the browser keeps for the Cashew web app's IndexedDB: the one the index points to first,
+    then the others, newest first. TXDB_BROWSER_HOME names another home folder (tests)."""
     home = Path(home or os.environ.get("TXDB_BROWSER_HOME") or Path.home())
+    pointed = _pointed_blobs(home)
     found = []
     for pattern in (".config/*/*/storage/default/https+++budget-track.web.app/idb/*.files/*",
                     ".mozilla/firefox/*/storage/default/https+++budget-track.web.app/idb/*.files/*"):
@@ -103,7 +136,8 @@ def _browser_blobs(home: Path | None = None) -> list[Path]:
                     found.append((p.stat().st_mtime, p))
             except OSError:                # the browser replaced the file while we looked
                 continue
-    return [p for _, p in sorted(found, key=lambda x: x[0], reverse=True)]
+    rest = [p for _, p in sorted(found, key=lambda x: x[0], reverse=True) if p not in pointed]
+    return pointed + rest
 
 
 def _is_cashew_db(copy: Path) -> bool:

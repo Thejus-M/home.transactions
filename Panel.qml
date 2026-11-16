@@ -378,6 +378,8 @@ Panel {
   property bool cashewLoading: false
   property string cashewError: ""
   property var cashewDrafts: []
+  property var cashewDedupe: ({ ok: true, found: 0, unknownAccounts: [] })
+  readonly property var cashewInCashewRows: root.cashewDrafts.filter(function (d) { return d.inCashew === true })
   property var cashewShown: []        // indexes into cashewDrafts that the table shows
   property var cashewCategories: []
   property var cashewAccountNames: []
@@ -495,6 +497,8 @@ Panel {
     var mp = root.cashewState.mini
     if (mp && typeof mp.x === "number" && typeof mp.y === "number") { root.miniX = mp.x; root.miniY = mp.y }
     // Unconfirmed AI guesses saved in the state file come back as they were.
+    // Which rows Cashew already has (txdb/cashew_dedupe.py): marked inCashew and not included.
+    root.cashewDedupe = data.dedupe || ({ ok: false, reason: "the draft reader did not check Cashew" })
     root.cashewDrafts = Model.cashewRestorePending(data.drafts, root.cashewState)
     root.cashewLoading = false
     root.cashewReshow()   // also builds the links, once
@@ -921,6 +925,12 @@ Panel {
     if (!root.cashewSending) return                       // stopped by hand
     if (exitCode === 0) {
       root.cashewSendCloseWin()
+      // Cashew has these rows now: mark them so a second "Add all" in this window does not send them again.
+      var done = ({})
+      ;(root.cashewSendItem ? root.cashewSendItem.ids || [] : []).forEach(function (id) { done[id] = true })
+      root.cashewDrafts = root.cashewDrafts.map(function (d) {
+        return done[d.id] ? Object.assign({}, d, { inCashew: true, include: false }) : d
+      })
       root.cashewSendDone += 1
       root.cashewSendStart()
     } else if (exitCode === 3) {
@@ -9478,6 +9488,18 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
+            Text {
+              visible: !root.cashewDedupe.ok || (root.cashewDedupe.unknownAccounts || []).length > 0
+              width: parent.width
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: !root.cashewDedupe.ok
+                ? "Cashew could not be read (" + (root.cashewDedupe.reason || "?") + "): rows already in Cashew cannot be found, so a send can add them twice."
+                : "Not checked for duplicates (Cashew has no account named " + root.cashewDedupe.unknownAccounts.join(", ") + ")."
+              color: root.pendingColor
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
             // The select-all checkbox sits over the row checkboxes (same left inset) and acts on the rows the
             // list shows. Beside it: how many are selected and their income / expense totals.
             Row {
@@ -9519,6 +9541,14 @@ Panel {
                 tint: root.cashewNeedCount > 0 ? "transparent" : root.creditColor
                 enabled: root.cashewNeedCount > 0 || cashewWin.needOnly
                 onClicked: cashewWin.needOnly = !cashewWin.needOnly
+              }
+              CashewBtn {
+                visible: root.cashewInCashewRows.length > 0
+                label: "Mark " + root.cashewInCashewRows.length + " already in Cashew as tracked"
+                onClicked: {
+                  store.setTrackedMany(root.cashewInCashewRows.map(function (d) { return { id: d.id } }), true)
+                  cashewSendReloadTimer.restart()
+                }
               }
               CashewBtn {
                 visible: root.cashewNeedCount > 0
@@ -9735,7 +9765,7 @@ Panel {
             readonly property var cat: cashewWin.catMap[crow.d.category] || ({ icon: "❓", color: "#5A2A2E" })
             readonly property color kindColor: crow.isCredit ? root.creditColor : root.debitColor
             readonly property string sendState: cashewWin.rowStates[crow.d.id] || ""
-            opacity: crow.sendState === "added" ? 0.45 : 1
+            opacity: crow.sendState === "added" || crow.d.inCashew === true ? 0.45 : 1
             width: cwList.width
             // The popup is wide: columns stay put (no sliding). With the links pane
             // open the list is narrow and the row falls back to two lines.

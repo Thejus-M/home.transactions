@@ -71,6 +71,17 @@ class SelectLook(unittest.TestCase):
         self.assertEqual(sorted(got), SHOWN)
         self.assertEqual(self.js("cashewRowIdxs([])"), [])
 
+    def test_rows_already_in_cashew_are_never_sent(self):
+        ds = [draft("a", inCashew=True, include=False), draft("b")]
+        self.assertTrue(self.js("cashewAutoOff(input.d)", d=ds[0]))
+        on = self.js("cashewSetInclude(input.d, [0, 1], true)", d=ds)
+        self.assertEqual([d["include"] for d in on], [False, True])                   # select all leaves it off
+        built = self.js("cashewBuildLinks(input.d, null, 6000, input.c)", d=on, c=CATS)
+        self.assertEqual([i for l in built["links"] for i in l["ids"]], ["b"])
+        fates = self.js("cashewRowFates(input.d, null, input.b)", d=on, b=built)
+        self.assertEqual(fates["a"]["how"], "incashew")
+        self.assertEqual(self.js("cashewLookLine(input.d, {how: 'incashew'}, 1)", d=ds[0]), "Already in Cashew: not sent again.")
+
     def test_auto_off_rows(self):
         got = self.js("input.d.map(cashewAutoOff)", d=rows())
         self.assertEqual(got, [False, False, False, False, True, True, False, False])
@@ -197,8 +208,8 @@ class SelectLook(unittest.TestCase):
         got = self.js("cashewSendPlan(input.b)", b=built)
         self.assertEqual([(g["kind"], g["url"], g["count"], g["ids"]) for g in got],
                          [("link", "u1", 3, ["a", "b", "c"]), ("link", "u2", 1, ["d"]),
-                          ("transfers", "t1", 4, ["o", "i", "o2", "i2"])])        # all transfers: ONE step, one window
-        self.assertEqual((got[2]["urls"], got[2]["n"], got[2]["title"]), (["t1", "t2"], 2, "2 transfers"))
+                          ("transfer", "t1", 2, ["o", "i"]), ("transfer", "t2", 2, ["o2", "i2"])])   # one page at a time
+        self.assertEqual(got[2]["title"], "HDFC → SBI ₹160.00")
         self.assertEqual(self.js("cashewSendPlan(null)"), [])
 
     def test_send_left_idle_running_and_done(self):

@@ -204,6 +204,24 @@ def main(argv: list[str]) -> int:
         return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
+    if cmd == "cashew-dupes":
+        # cashew-dupes [--json]: rows Cashew holds more often than the bank has them (txdb/cashew_dupes.py)
+        from . import cashew, cashew_dupes, cashew_twins
+        copy = cashew_twins.find_browser_copy()
+        if copy is None:
+            print("cashew-dupes: the browser keeps no copy of the Cashew web app", file=sys.stderr)
+            return 3
+        cdb = sqlite3.connect(f"{copy.as_uri()}?mode=ro", uri=True)
+        conn = cashew.open_readonly(DB_PATH)
+        rows = cashew_dupes.report(cdb, conn, cashew.load_state())
+        if "--json" in args:
+            print(json.dumps(rows, ensure_ascii=False))
+        else:
+            for r in rows:
+                print(f"{r['day']}  {r['amount']:>12}  {r['account']:<10}  in Cashew {r['inCashew']}, bank {r['inBank']}"
+                      f"  -> delete {r['extra']}   {' | '.join(r['names'])[:70]}")
+            print(f"{len(rows)} days/amounts, {sum(r['extra'] for r in rows)} rows to delete", file=sys.stderr)
+        return 0
     if cmd == "cashew-count":
         # How many transactions the Cashew web app has (the copy the browser keeps). Exit 3 when there is none.
         from . import cashew_twins

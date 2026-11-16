@@ -2897,6 +2897,7 @@ function cashewDayIdxs(rows, day) {
 // Selecting everything must leave these off: sending a netted refund counts it twice.
 function cashewAutoOff(d) {
   if (!d) return false
+  if (d.inCashew === true) return true          // Cashew already has it (txdb/cashew_dedupe.py): never sent twice
   return d.refundMode === "skip" || (d.kind === "refund" && d.refundMode === "lent") || d.partnerTracked === true
 }
 
@@ -2993,7 +2994,8 @@ function cashewRowFates(drafts, shown, built) {
   ;(drafts || []).forEach(function (d, i) {
     if (!d || (keep && !keep[i]) || out[d.id]) return
     var how = "off"
-    if (d.include !== false && d.viaFile) how = "file"
+    if (d.inCashew === true) how = "incashew"
+    else if (d.include !== false && d.viaFile) how = "file"
     else if (d.refundMode === "skip" || (d.kind === "refund" && d.refundMode === "lent")) how = "netted"
     else if (d.partnerTracked === true) how = "partner"
     out[d.id] = { how: how, link: 0 }
@@ -3006,6 +3008,7 @@ function cashewLookLine(d, fate, linkCount) {
   if (!d) return ""
   var f = fate || { how: "off", link: 0 }
   if (f.how === "transfer") return "Cashew opens a transfer page for this pair: tap Save there."
+  if (f.how === "incashew") return "Already in Cashew: not sent again."
   if (f.how === "file") return "Added by file (txdb cashew-fix), not by link."
   if (f.how === "netted") return d.kind === "refund" ? "Not sent: netted against its purchase." : "Not sent: refunded in full."
   if (f.how === "partner") return "Not sent: the other side of this transfer is already tracked."
@@ -3021,9 +3024,8 @@ function cashewLookLine(d, fate, linkCount) {
 
 // ---- "Add all to Cashew": the queue, what is left, the state of every row, the status line
 
-// The queue of a send, from a cashewBuildLinks result: the bulk links first (each runs hidden), then ONE
-// step with every real transfer: one visible window, one Cashew transfer page per tab, all at once. The
-// person taps Save in each tab; Cashew adds 2 rows per transfer.
+// The queue of a send, from a cashewBuildLinks result: the bulk links first (each runs hidden), then one
+// step per real transfer (a visible Cashew transfer page: the person taps Save, Cashew adds 2 rows).
 // [{kind: "link", url, count, ids, title} | {kind: "transfers", url, urls, count, n, ids, title}]
 function cashewSendPlan(built) {
   var b = built || {}
@@ -3031,13 +3033,12 @@ function cashewSendPlan(built) {
   ;(b.links || []).forEach(function (l) {
     out.push({ kind: "link", url: l.url, count: l.count, ids: (l.ids || []).slice(), title: "" })
   })
-  var ts = b.transfers || []
-  if (ts.length > 0) {
-    var ids = []
-    ts.forEach(function (t) { (t.ids || []).forEach(function (id) { ids.push(id) }) })
-    out.push({ kind: "transfers", url: ts[0].url, urls: ts.map(function (t) { return t.url }), count: 2 * ts.length,
-               n: ts.length, ids: ids, title: _cashewPlural(ts.length, "transfer", "transfers") })
-  }
+  // One transfer page at a time, never several together: Cashew web keeps the whole database in each open
+  // tab and the last tab to save wins, so pages saved side by side overwrite each other.
+  ;(b.transfers || []).forEach(function (t) {
+    out.push({ kind: "transfer", url: t.url, count: 2, ids: (t.ids || []).slice(),
+               title: (t.accountFrom || "?") + " → " + (t.accountTo || "?") + " " + cashewMoney(t.amount) })
+  })
   return out
 }
 

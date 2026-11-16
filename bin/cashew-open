@@ -1,6 +1,6 @@
 #!/bin/bash
 # cashew-open --hidden URL
-# cashew-open --show URL [URL...]
+# cashew-open --show URL
 #
 # Opens URL in a NEW window of the default browser (Zen) and prints the window's address, so the widget can
 # close it once Cashew has the rows.
@@ -9,8 +9,8 @@
 #             (hl.window_rule, kept in the Lua global cashew_hide) is on only while the window opens, and
 #             misc:focus_on_activate is off for 1.5 s so the browser cannot take the focus. Both are put
 #             back by a trap, also on an error. Tested: a page in that window keeps its frames and timers.
-#   --show    a normal, visible window; every further URL opens as a tab in that same window (all the
-#             transfer pages at once: the person taps Save in each tab).
+#   --show    a normal, visible window (one transfer page: the person taps Save). One Cashew page at a
+#             time: Cashew web keeps the whole database in each open tab and the last one to save wins.
 #
 # Hyprland 0.56 takes Lua for dispatch: hyprctl dispatch 'hl.dsp.window.close({ window = "address:0x..." })'.
 # The old form ("dispatch closewindow address:...") fails there without a sign.
@@ -57,15 +57,6 @@ for _ in $(seq 1 100); do
   [ -n "$new" ] && break
   sleep 0.05
 done
-
-if [ "$mode" = "--show" ] && [ -n "$new" ]; then
-  # The new window is the active one now, so --new-tab puts the other pages next to the first.
-  for more in "$@"; do
-    hyprctl dispatch "hl.dsp.focus({ window = \"address:$new\" })" >/dev/null 2>&1
-    setsid zen-browser --new-tab "$more" >/dev/null 2>&1 </dev/null &
-    sleep 0.4
-  done
-fi
 
 if [ "$mode" = "--hidden" ]; then
   # The rule only for this window; the browser's own focus request can come a moment after it appears.
