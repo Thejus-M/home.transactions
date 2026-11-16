@@ -2964,9 +2964,9 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             iconText: root.receiptsCollapsed ? "▸" : "▾"
             tooltipText: root.receiptsCollapsed ? "Show the receipts" : "Fold the receipts away"
-            foreground: root.foreground
+            foreground: Qt.darker(root.foreground, 1.4)
+            hoverColor: Color.accent
             focusable: true
-            bordered: true
             Keys.onDownPressed: root.focusNext(receiptsFold, true)
             Keys.onUpPressed: root.focusNext(receiptsFold, false)
             onClicked: root.receiptsCollapsed = !root.receiptsCollapsed
@@ -2975,7 +2975,7 @@ Panel {
           PanelSectionHeader {
             id: receiptsHeader
             anchors.left: receiptsFold.right
-            anchors.leftMargin: Style.space(8)
+            anchors.leftMargin: Style.space(2)
             anchors.verticalCenter: parent.verticalCenter
             text: root.receiptsToLink > 0
               ? ("RECEIPTS  ·  " + root.receiptsToLink + " TO LINK" + (root.showFiled ? "  ·  " + root.receiptsFiledCount + " LINKED" : ""))
@@ -2994,17 +2994,17 @@ Panel {
             anchors.right: parent.right
             anchors.rightMargin: Style.spacing.rowPaddingX
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(6)
+            spacing: Style.space(4)
 
             PanelActionButton {
               id: filedToggleBtn
-              size: Style.space(22)
+              size: Style.space(24)
               visible: root.receiptsFiledCount > 0
               iconText: "󰎞"
               tooltipText: root.showFiled ? "Hide the linked bills" : "Show the linked bills (" + root.receiptsFiledCount + ")"
               foreground: root.showFiled ? Color.accent : root.foreground
+              hoverColor: Color.accent
               focusable: true
-              bordered: true
               Keys.onDownPressed: root.focusNext(filedToggleBtn, true)
               Keys.onUpPressed: root.focusNext(filedToggleBtn, false)
               onClicked: root.showFiled = !root.showFiled
@@ -3012,12 +3012,12 @@ Panel {
 
             PanelActionButton {
               id: importReceiptsBtn
-              size: Style.space(22)
+              size: Style.space(24)
               iconText: receiptImportProc.running ? "…" : "+"
               tooltipText: "Import new photos from " + root.receiptsDir
               foreground: root.foreground
+              hoverColor: Color.accent
               focusable: true
-              bordered: true
               enabled: !receiptImportProc.running
               Keys.onDownPressed: root.focusNext(importReceiptsBtn, true)
               Keys.onUpPressed: root.focusNext(importReceiptsBtn, false)
@@ -3072,7 +3072,7 @@ Panel {
         Item {
           visible: root.tab === "bank"
           width: parent.width
-          height: Math.max(recentHeader.implicitHeight, filterRow.implicitHeight)
+          height: Math.max(recentHeader.implicitHeight, filterRow.implicitHeight, Style.space(24))
 
           PanelSectionHeader {
             id: recentHeader
@@ -3085,22 +3085,65 @@ Panel {
           Row {
             id: filterRow
             anchors.right: parent.right
+            anchors.rightMargin: Style.spacing.rowPaddingX
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(8)
+            spacing: Style.space(4)
 
-            // The linked bills live out of sight; this brings them up (the
-            // RECEIPTS section appears with just those, or alongside the
-            // ones still to link).
+            // Opens the Cashew verify window. Stays visible (just dimmed, with an
+            // explanatory tooltip) even once nothing is untracked, instead of
+            // vanishing outright — a count of 0 used to mean the whole AI
+            // categorisation / link-copy feature disappeared from the bar with
+            // no way back in (audit: "invisible-entry-point problem").
+            BorderSurface {
+              id: cashewBtn
+              anchors.verticalCenter: parent.verticalCenter
+              height: Style.space(24)
+              width: cashewBtnText.implicitWidth + Style.space(18)
+              radius: Style.space(8)
+              readonly property bool _hot: cashewBtnMouse.containsMouse || cashewBtn.activeFocus
+              opacity: cashewBtnMouse.pressed ? 0.7 : (root.cashewCount > 0 ? 1 : 0.55)
+              color: Util.alpha(Color.accent, cashewBtn._hot ? 0.26 : (root.cashewCount > 0 ? 0.16 : 0.08))
+              borderSpec: cashewBtn.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+
+              activeFocusOnTab: cashewBtn.visible
+              Keys.onReturnPressed: root.cashewOpen = true
+              Keys.onEnterPressed: root.cashewOpen = true
+              Keys.onSpacePressed: root.cashewOpen = true
+              Keys.onDownPressed: root.focusNext(cashewBtn, true)
+              Keys.onUpPressed: root.focusNext(cashewBtn, false)
+
+              Text {
+                id: cashewBtnText
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: "Cashew"
+                color: Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75))
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+              MouseArea {
+                id: cashewBtnMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.cashewOpen = true
+              }
+              ToolTip.visible: cashewBtnMouse.containsMouse
+              ToolTip.text: root.cashewCount > 0 ? "Send " + root.cashewCount + " transactions to Cashew" : "All caught up. Open to review categories, AI guesses, or past links."
+              ToolTip.delay: 400
+            }
+
+            // The linked bills live out of sight; this brings them up. It shows here only
+            // while there is no RECEIPTS section: that section has the same button.
             PanelActionButton {
               id: filedToggleRecentBtn
-              size: Style.space(28)
-              fontSize: Style.font.bodySmall
-              visible: root.receiptsFiledCount > 0
+              size: Style.space(24)
+              visible: root.receiptsFiledCount > 0 && !root.receiptsSectionShown
               iconText: "󰎞"
               tooltipText: root.showFiled ? "Hide the linked bills" : "Linked bills (" + root.receiptsFiledCount + ")"
               foreground: root.showFiled ? Color.accent : root.foreground
               hoverColor: Color.accent
-              bordered: true
               focusable: true
               Keys.onDownPressed: root.focusNext(filedToggleRecentBtn, true)
               Keys.onUpPressed: root.focusNext(filedToggleRecentBtn, false)
@@ -3109,13 +3152,11 @@ Panel {
 
             PanelActionButton {
               id: selectToggleBtn
-              size: Style.space(28)
-              fontSize: Style.font.bodySmall
+              size: Style.space(24)
               iconText: "󰄹"
               tooltipText: root.selectionMode ? "Done selecting" : "Select transactions"
-              foreground: root.foreground
+              foreground: root.selectionMode ? Color.accent : root.foreground
               hoverColor: Color.accent
-              bordered: true
               focusable: true
               Keys.onDownPressed: root.focusNext(selectToggleBtn, true)
               Keys.onUpPressed: root.focusNext(selectToggleBtn, false)
@@ -3129,51 +3170,6 @@ Panel {
               }
             }
           }
-        }
-
-        // Opens the Cashew verify window. Stays visible (just dimmed, with an
-        // explanatory tooltip) even once nothing is untracked, instead of
-        // vanishing outright — a count of 0 used to mean the whole AI
-        // categorisation / link-copy feature disappeared from the bar with
-        // no way back in (audit: "invisible-entry-point problem").
-        BorderSurface {
-          id: cashewBtn
-          visible: root.tab === "bank"
-          height: Style.space(28)
-          width: cashewBtnText.implicitWidth + Style.space(22)
-          radius: Style.space(8)
-          readonly property bool _hot: cashewBtnMouse.containsMouse || cashewBtn.activeFocus
-          opacity: cashewBtnMouse.pressed ? 0.7 : (root.cashewCount > 0 ? 1 : 0.55)
-          color: Util.alpha(Color.accent, cashewBtn._hot ? 0.26 : (root.cashewCount > 0 ? 0.16 : 0.08))
-          borderSpec: cashewBtn.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
-
-          activeFocusOnTab: cashewBtn.visible
-          Keys.onReturnPressed: root.cashewOpen = true
-          Keys.onEnterPressed: root.cashewOpen = true
-          Keys.onSpacePressed: root.cashewOpen = true
-          Keys.onDownPressed: root.focusNext(cashewBtn, true)
-          Keys.onUpPressed: root.focusNext(cashewBtn, false)
-
-          Text {
-            id: cashewBtnText
-            anchors.centerIn: parent
-            textFormat: Text.PlainText
-            text: root.cashewCount > 0 ? "Cashew  ·  " + root.cashewCount : "Cashew"
-            color: Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75))
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            font.bold: true
-          }
-          MouseArea {
-            id: cashewBtnMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.cashewOpen = true
-          }
-          ToolTip.visible: root.cashewCount === 0 && cashewBtnMouse.containsMouse
-          ToolTip.text: "All caught up. Open to review categories, AI guesses, or past links."
-          ToolTip.delay: 400
         }
 
         // Selection controls get their own line under RECENT's header, so a
@@ -3470,7 +3466,13 @@ Panel {
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.namespace: "omarchy-transactions-receipt"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+    // Minimised: a small card in the corner with the bill's name, total and state; the keyboard and the rest
+    // of the screen go back to the other windows.
+    WlrLayershell.keyboardFocus: receiptFullScreen.compact ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.Exclusive
+    property bool compact: false
+    property Region miniMask: Region { item: fsMini }
+    mask: receiptFullScreen.compact ? receiptFullScreen.miniMask : null
+    onCompactChanged: if (receiptFullScreen.visible) (receiptFullScreen.compact ? fsMini : fsCard).forceActiveFocus()
 
     property bool pickingLink: false
     // One switch for every editable field at once, not a pencil per
@@ -3541,6 +3543,7 @@ Panel {
       return ({})
     }
     onVisibleChanged: if (!receiptFullScreen.visible) {
+      receiptFullScreen.compact = false
       receiptFullScreen.pickingLink = false
       receiptFullScreen.editingFields = false
       receiptFullScreen.showInfo = false
@@ -3595,17 +3598,122 @@ Panel {
     // Scrim: click it to close, same convention as every other
     // full-screen overlay in this shell (SpeedTestOverlay's own).
     Rectangle {
+      visible: !receiptFullScreen.compact
       anchors.fill: parent
       color: Qt.rgba(0, 0, 0, 0.78)
       MouseArea { anchors.fill: parent; onClicked: root.closeReceiptDetail() }
     }
 
+    // ---- minimised: which bill, its total and state, and the way to the next one
+    Item {
+      id: fsMini
+      readonly property var mark: Model.receiptStateMark(receiptFullScreen.r)
+      visible: receiptFullScreen.compact
+      anchors { right: parent.right; bottom: parent.bottom; margins: Style.space(24) }
+      width: Style.space(340)
+      height: fsMiniCol.implicitHeight + Style.space(28)
+      focus: receiptFullScreen.compact
+      Keys.onEscapePressed: function (event) { receiptFullScreen.compact = false; event.accepted = true }
+      Keys.onLeftPressed: receiptFullScreen.stepReceipt(-1)
+      Keys.onRightPressed: receiptFullScreen.stepReceipt(1)
+
+      MouseArea { anchors.fill: parent; onClicked: {} }
+      BorderSurface {
+        anchors.fill: parent
+        color: Color.popups.background
+        borderSpec: Border.none()
+        radius: Style.cornerRadius
+      }
+
+      Column {
+        id: fsMiniCol
+        anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(14) }
+        spacing: Style.space(6)
+
+        Item {
+          width: parent.width
+          height: Style.space(24)
+          Text {
+            anchors { left: parent.left; right: fsMiniTotal.left; rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
+            elide: Text.ElideRight
+            textFormat: Text.PlainText
+            text: Model.receiptTitle(receiptFullScreen.r)
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            id: fsMiniTotal
+            anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+            textFormat: Text.PlainText
+            text: receiptFullScreen.r.total != null ? Model.cashewMoney(receiptFullScreen.r.total) : ""
+            color: root.debitColor
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+        }
+        Text {
+          width: parent.width
+          elide: Text.ElideRight
+          textFormat: Text.PlainText
+          text: fsMini.mark.pill + "  ·  " + Model.receiptSubtitle(receiptFullScreen.r)
+            + (receiptFullScreen.linkedTxn ? "  ·  " + Model.transactionDisplayName(receiptFullScreen.linkedTxn, store.transactionNameOverrides) : "")
+          color: Qt.darker(root.foreground, 1.4)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Item {
+          width: parent.width
+          height: Style.space(28)
+          Row {
+            anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+            spacing: Style.space(4)
+            PanelActionButton {
+              size: Style.space(24)
+              iconText: "<"
+              tooltipText: "Previous bill (Left arrow)"
+              foreground: root.foreground
+              onClicked: receiptFullScreen.stepReceipt(-1)
+            }
+            PanelActionButton {
+              size: Style.space(24)
+              iconText: ">"
+              tooltipText: "Next bill (Right arrow)"
+              foreground: root.foreground
+              onClicked: receiptFullScreen.stepReceipt(1)
+            }
+          }
+          Row {
+            anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+            spacing: Style.space(4)
+            PanelActionButton {
+              size: Style.space(24)
+              iconText: "▢"
+              tooltipText: "Expand (Esc)"
+              foreground: root.foreground
+              onClicked: receiptFullScreen.compact = false
+            }
+            PanelActionButton {
+              size: Style.space(24)
+              iconText: "x"
+              tooltipText: "Close"
+              foreground: root.foreground
+              onClicked: root.closeReceiptDetail()
+            }
+          }
+        }
+      }
+    }
+
     Item {
       id: fsCard
+      visible: !receiptFullScreen.compact
       anchors.centerIn: parent
       width: Math.min(parent.width - Style.space(80), Style.space(960))
       height: Math.min(parent.height - Style.space(80), Style.space(680))
-      focus: true
+      focus: !receiptFullScreen.compact
       Keys.onEscapePressed: function (event) { root.closeReceiptDetail(); event.accepted = true }
       Keys.onLeftPressed: receiptFullScreen.stepReceipt(-1)
       Keys.onRightPressed: receiptFullScreen.stepReceipt(1)
@@ -3673,6 +3781,19 @@ Panel {
         foreground: root.foreground
         focusable: true
         onClicked: root.closeReceiptDetail()
+      }
+      PanelActionButton {
+        id: fsMiniBtn
+        anchors.top: parent.top
+        anchors.right: fsCloseBtn.left
+        anchors.margins: Style.space(10)
+        anchors.rightMargin: Style.space(6)
+        size: Style.space(28)
+        iconText: "–"
+        tooltipText: "Minimise: keep this bill in the corner"
+        foreground: root.foreground
+        focusable: true
+        onClicked: { receiptFullScreen.pickingLink = false; receiptFullScreen.compact = true }
       }
 
       Row {
