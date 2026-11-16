@@ -155,6 +155,18 @@ class SelectLook(unittest.TestCase):
         self.assertEqual(self.js("cashewLookLine(input.d, null, 1)", d=d[0]), "Not sent: not selected.")
         self.assertEqual(self.js("cashewLookLine(null, null, 1)"), "")
 
+    def test_llm_status_lines_for_the_minimised_windows(self):
+        self.assertEqual(self.js("llmStatusLines({})"), [])
+        self.assertEqual(self.js("llmStatusLines(null)"), [])
+        got = self.js("llmStatusLines(input.s)", s={"guessing": True, "guessText": "12 of 40", "importing": True,
+                                                    "importText": "photo 1\n  model   says hi \n\n", "reparsing": True,
+                                                    "reparseTitle": "GRILL BAY", "reparseText": ""})
+        self.assertEqual(got, [{"label": "AI categories", "detail": "12 of 40"},
+                               {"label": "Reading new bills", "detail": "model says hi"},
+                               {"label": "Reparsing GRILL BAY", "detail": "running"}])
+        long = self.js("llmStatusLines({reparsing: true, reparseText: input.t})", t="x" * 200)
+        self.assertEqual((long[0]["label"], len(long[0]["detail"])), ("Reparsing a bill", 90))
+
 
 if __name__ == "__main__":
     unittest.main()

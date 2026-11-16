@@ -2897,6 +2897,26 @@ function cashewLookLine(d, fate, linkCount) {
   return parts.join(" · ")
 }
 
+// The model runs in progress, for the minimised windows: [{label, detail}].
+// state: { guessing, guessText, importing, importText, reparsing, reparseTitle, reparseText }.
+// `detail` of a streamed run is its last line with text, cut at 90 characters.
+function llmStatusLines(state) {
+  var st = state || {}
+  var last = function (text) {
+    var lines = String(text || "").split("\n")
+    for (var i = lines.length - 1; i >= 0; i--) {
+      var t = lines[i].replace(/\s+/g, " ").trim()
+      if (t) return t.length > 90 ? t.slice(0, 89) + "…" : t
+    }
+    return ""
+  }
+  var out = []
+  if (st.guessing) out.push({ label: "AI categories", detail: String(st.guessText || "") || "running" })
+  if (st.importing) out.push({ label: "Reading new bills", detail: last(st.importText) || "running" })
+  if (st.reparsing) out.push({ label: "Reparsing " + (String(st.reparseTitle || "").trim() || "a bill"), detail: last(st.reparseText) || "running" })
+  return out
+}
+
 // Net total per day of the shown drafts: { "2026-11-08": "-₹9.78" }.
 function cashewDayTotals(drafts, shown) {
   var paise = {}, dayOf = {}

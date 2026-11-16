@@ -420,6 +420,18 @@ Panel {
   // Same set the Python side drafts: untracked and settled.
   readonly property int cashewCount: transactions.filter(function (t) { return !t.tracked && !t.accountClosed }).length
   readonly property string cashewBase: root.cashewState.base === "web" ? "web" : "app"
+  // Every model run in progress (AI categories, the bill scan, a bill reparse): the minimised windows show them.
+  readonly property var llmLines: Model.llmStatusLines({
+    guessing: root.cashewGuessing,
+    guessText: root.cashewGuessing ? Model.cashewGuessProgressText(root.cashewGuessProgress, root.cashewGuessDone, root.cashewGuessTotal) : "",
+    importing: receiptImportProc.running, importText: receiptImportOutput.text,
+    reparsing: receiptReparseProc.running, reparseText: receiptReparseOutput.text,
+    reparseTitle: (function () {
+      var id = receiptReparseProc.receiptId, list = root.receiptList
+      for (var i = 0; i < list.length; i++) if (list[i].id === id) return Model.receiptTitle(list[i])
+      return ""
+    })()
+  })
   // "silent" (default): a transfer goes in the bulk link as two Balance Correction rows, no page to save.
   // "page": one Cashew transfer page per pair (a real linked transfer, one tap each).
   readonly property string cashewTransferMode: root.cashewState.transfers === "page" ? "page" : "silent"
@@ -3664,6 +3676,7 @@ Panel {
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }
+        LlmStatus { width: parent.width }
         Item {
           width: parent.width
           height: Style.space(28)
@@ -3690,7 +3703,7 @@ Panel {
             spacing: Style.space(4)
             PanelActionButton {
               size: Style.space(24)
-              iconText: "▢"
+              iconText: "󰖯"
               tooltipText: "Expand (Esc)"
               foreground: root.foreground
               onClicked: receiptFullScreen.compact = false
@@ -3789,7 +3802,7 @@ Panel {
         anchors.margins: Style.space(10)
         anchors.rightMargin: Style.space(6)
         size: Style.space(28)
-        iconText: "–"
+        iconText: "󰖰"
         tooltipText: "Minimise: keep this bill in the corner"
         foreground: root.foreground
         focusable: true
@@ -8005,8 +8018,20 @@ Panel {
           Row {
             anchors { right: parent.right; verticalCenter: parent.verticalCenter }
             spacing: Style.space(6)
-            CashewBtn { label: "Expand"; onClicked: cashewWin.compact = false }
-            CashewBtn { label: "Close"; onClicked: root.closeCashew() }
+            PanelActionButton {
+              size: Style.space(24)
+              iconText: "󰖯"
+              tooltipText: "Expand (Esc)"
+              foreground: root.foreground
+              onClicked: cashewWin.compact = false
+            }
+            PanelActionButton {
+              size: Style.space(24)
+              iconText: "x"
+              tooltipText: "Close"
+              foreground: root.foreground
+              onClicked: root.closeCashew()
+            }
           }
         }
 
@@ -8020,6 +8045,25 @@ Panel {
           color: cashewWin.muted
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
+        }
+
+        LlmStatus { width: parent.width }
+        Flow {
+          visible: root.cashewGuessing || root.cashewGuessedCount > 0
+          width: parent.width
+          spacing: Style.space(6)
+          CashewBtn {
+            visible: root.cashewGuessing
+            active: true
+            label: root.cashewStopArmed ? "■ Click again to stop" : "■ Stop"
+            onClicked: root.cashewStopClick()
+          }
+          CashewBtn {
+            visible: !root.cashewGuessing && root.cashewGuessedCount > 0
+            primary: true
+            label: "✓ Confirm " + root.cashewGuessedCount + " AI categories"
+            onClicked: root.cashewAcceptGuesses()
+          }
         }
 
         CashewBtn {
@@ -9880,6 +9924,32 @@ Panel {
       enabled: cb.enabled
       cursorShape: Qt.PointingHandCursor
       onClicked: cb.clicked()
+    }
+  }
+
+  // The model runs in progress, one line each: "✦ AI categories · 12 of 40". Nothing when none runs.
+  component LlmStatus: Column {
+    id: ls
+    visible: root.llmLines.length > 0
+    spacing: Style.space(3)
+    Repeater {
+      model: root.llmLines
+      delegate: Text {
+        required property var modelData
+        width: ls.width
+        elide: Text.ElideRight
+        textFormat: Text.PlainText
+        text: "✦ " + modelData.label + "  ·  " + modelData.detail
+        color: Color.accent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        SequentialAnimation on opacity {
+          running: ls.visible
+          loops: Animation.Infinite
+          NumberAnimation { from: 1; to: 0.55; duration: 700 }
+          NumberAnimation { from: 0.55; to: 1; duration: 700 }
+        }
+      }
     }
   }
 
