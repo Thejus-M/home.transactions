@@ -278,9 +278,7 @@ Panel {
   property bool filterOpen: false
   function setFilterPart(part, value) {
     if (JSON.stringify(root.filter[part]) === JSON.stringify(value)) return
-    var next = JSON.parse(JSON.stringify(root.filter))
-    next[part] = value
-    root.filter = next
+    root.filter = Model.filterWithPart(root.filter, part, value)   // a month clears the period
   }
   function toggleAccountFilter(key) {
     var list = root.filter.accounts.slice()
@@ -321,6 +319,8 @@ Panel {
     // Keep what the user typed or picked while the file was loading.
     restored.q = root.filter.q
     restored.month = root.filter.month
+    restored.from = root.filter.from || ""
+    restored.to = root.filter.to || ""
     root.filter = restored
   }
   // The chips are rebuilt only when the account list really changed, not on
@@ -432,9 +432,9 @@ Panel {
       return ""
     })()
   })
-  // "silent" (default): a transfer goes in the bulk link as two Balance Correction rows, no page to save.
-  // "page": one Cashew transfer page per pair (a real linked transfer, one tap each).
-  readonly property string cashewTransferMode: root.cashewState.transfers === "page" ? "page" : "silent"
+  // "page" (default): one Cashew transfer page per pair (a real linked transfer: tap Save in Cashew; "Add all"
+  // waits for the tap). "silent": a transfer goes in the bulk link as two Balance Correction rows, no tap.
+  readonly property string cashewTransferMode: root.cashewState.transfers === "silent" ? "silent" : "page"
   readonly property int cashewIncludedCount: Model.cashewIncluded(root.cashewDrafts, root.cashewShown).length
   // Rows of a closed account never reach the window's counts or links.
   readonly property var cashewClosedIds: {
@@ -485,6 +485,8 @@ Panel {
     root.cashewState = data.state || ({ version: 1, categories: {}, accounts: {} })
     root.cashewStateSavedJson = JSON.stringify(root.cashewState)
     root.cashewStateLoaded = true
+    var mp = root.cashewState.mini
+    if (mp && typeof mp.x === "number" && typeof mp.y === "number") { root.miniX = mp.x; root.miniY = mp.y }
     // Unconfirmed AI guesses saved in the state file come back as they were.
     root.cashewDrafts = Model.cashewRestorePending(data.drafts, root.cashewState)
     root.cashewLoading = false
@@ -513,6 +515,15 @@ Panel {
   // leaves the ones the drafter turned off on purpose (a netted refund, a leg whose partner is tracked).
   function cashewSetAll(value) {
     root.cashewEdit(Model.cashewSetInclude(root.cashewDrafts, cashewWin.rowIdxs, value))
+  }
+  // Where the minimised cards sit (top-left corner, in the screen's coordinates); -1 = the bottom-right corner.
+  property real miniX: -1
+  property real miniY: -1
+  function saveMiniPos(x, y) {
+    root.miniX = Math.round(x)
+    root.miniY = Math.round(y)
+    if (root.cashewStateLoaded)
+      root.cashewSetState(Object.assign({}, root.cashewState, { mini: { x: root.miniX, y: root.miniY } }))
   }
   function cashewSetState(next) {
     if (!root.cashewStateLoaded) { root.cashewState = next; return }
@@ -745,62 +756,85 @@ Panel {
   }
   function cashewQueueLinks() { if (root.cashewOpen) cashewLinksTimer.restart() }
 
-  // One click adds every selected row to the Cashew web app (https://budget-track.web.app/), one link
-  // after the other: a link is opened, and the next one only when Cashew has added that link's rows.
-  // "Added" is read from the copy of Cashew's database the browser keeps (txdb cashew-wait): the count
-  // of its transactions must rise by the rows of the link. Always the web links, and transfers always
-  // as two rows inside the links (no transfer page that waits for a tap). Rows without the tick, and
-  // rows hidden by the filter, are not sent. The run goes on when the window is closed or minimised;
-  // a desktop notification tells how it ended, and Cashew opens in the browser for a look.
-  property var cashewSendQueue: []            // [{url, count}]: the links still to add, the current one first
-  property int cashewSendTotal: 0
-  property int cashewSendIndex: 0             // 1-based: the link being added
-  property int cashewSendAdded: 0             // rows of that link Cashew has so far
-  property int cashewSendOf: 0                // rows of that link
-  property int cashewSendRows: 0              // rows of the finished links
-  property bool cashewSendOpened: false       // the current link was handed to the browser
+  // One click adds every selected row to the Cashew web app (https://budget-track.web.app/), one step after
+  // the other: the bulk links first, then one Cashew transfer page per transfer pair (a real transfer: the
+  // person taps Save there). A step starts only when Cashew has added the rows of the one before. "Added" is
+  // read from the copy of Cashew's database the browser keeps (txdb cashew-wait): its count of transactions
+  // must rise by the rows of the step (2 for a transfer). Rows without the tick, and rows hidden by the
+  // filter, are not sent. The run goes on when the window is closed or minimised; a notification tells how
+  // it ended, the sent rows are marked as tracked (option), and Cashew opens in the browser for a look.
+  property var cashewSendItems: []            // the plan: [{kind, url, count, ids, title}] (Model.cashewSendPlan)
+  property int cashewSendDone: 0              // steps complete
+  property int cashewSendAdded: 0             // rows of the current step Cashew has so far
+  property bool cashewSendOpened: false       // the current step was handed to the browser
+  property bool cashewSendConfirmed: true     // every step so far was confirmed by the count
+  property bool cashewSendFresh: false        // "done" and the drafts did not change since
   property string cashewSendPhase: ""         // "" | open | wait | blind | timeout | done | stopped
-  readonly property int cashewSendWaitSecs: 60
-  readonly property int cashewSendBlindSecs: 8
+  property string cashewSendTracked: ""       // at "done": yes | off | unconfirmed
+  readonly property var cashewSendItem: root.cashewSendDone < root.cashewSendItems.length ? root.cashewSendItems[root.cashewSendDone] : null
   readonly property bool cashewSending: root.cashewSendPhase === "open" || root.cashewSendPhase === "wait" || root.cashewSendPhase === "blind"
   readonly property bool cashewSendPaused: root.cashewSendPhase === "timeout"
+  readonly property bool cashewAutoTrack: root.cashewState.autoTrack !== false
   property string cashewSendNote: ""
+  function cashewSendSecs(kind, blind) { return blind ? (kind === "transfer" ? 30 : 8) : (kind === "transfer" ? 180 : 60) }
+  // What is left to add, for the minimised card and the progress card.
+  readonly property var cashewSendLeftNow: {
+    var idleRows = 0
+    root.cashewLinks.forEach(function (l) { idleRows += l.count })
+    idleRows += 2 * root.cashewTransfers.length
+    var counting = root.cashewSending || root.cashewSendPaused || (root.cashewSendPhase === "done" && root.cashewSendFresh)
+    return Model.cashewSendLeft({
+      phase: counting ? root.cashewSendPhase : "", items: root.cashewSendItems, done: root.cashewSendDone,
+      added: root.cashewSendAdded, idleRows: idleRows, idleLinks: root.cashewLinks.length, idleTransfers: root.cashewTransfers.length })
+  }
+  onCashewDraftsChanged: root.cashewSendFresh = false
   function cashewSendSay() {
+    var items = root.cashewSendItems, it = root.cashewSendItem
+    var kind = it ? it.kind : (items.length ? items[Math.min(root.cashewSendDone, items.length) - 1 >= 0 ? Math.min(root.cashewSendDone, items.length) - 1 : 0].kind : "link")
+    var index = 0, total = 0, links = 0, transfers = 0, rows = 0
+    items.forEach(function (x, i) {
+      if (x.kind === "transfer") transfers++; else links++
+      rows += x.count
+      if (x.kind !== kind) return
+      total++
+      if (i <= root.cashewSendDone) index++
+    })
     root.cashewSendNote = Model.cashewSendText({
-      phase: root.cashewSendPhase, index: root.cashewSendIndex, total: root.cashewSendTotal,
-      added: root.cashewSendAdded, of: root.cashewSendOf, rows: root.cashewSendRows,
-      wait: root.cashewSendPhase === "blind" ? root.cashewSendBlindSecs : root.cashewSendWaitSecs })
+      phase: root.cashewSendPhase, kind: kind, index: index, total: total, title: it ? it.title : "",
+      added: root.cashewSendAdded, of: it ? it.count : 0, rows: rows, links: links, transfers: transfers,
+      tracked: root.cashewSendTracked, wait: root.cashewSendSecs(kind, root.cashewSendPhase === "blind") })
   }
   function cashewSendAll() {
     if (root.cashewSending || root.cashewSendPaused || !root.cashewVerifyGate()) return
     var out
-    try { out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, "web", "silent") }
+    try { out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, "web", root.cashewTransferMode) }
     catch (e) { root.cashewSendNote = "Could not build the links: " + e; return }
-    var items = out.links.map(function (l) { return { url: l.url, count: l.count } })
+    var items = Model.cashewSendPlan(out)
     if (items.length === 0) { root.cashewSendPhase = ""; root.cashewSendNote = "Nothing selected to send."; return }
-    root.cashewSendTotal = items.length
-    root.cashewSendRows = 0
-    root.cashewSendQueue = items
-    root.cashewSendNext()
+    root.cashewSendItems = items
+    root.cashewSendDone = 0
+    root.cashewSendConfirmed = true
+    root.cashewSendTracked = ""
+    root.cashewSendFresh = false
+    root.cashewSendStart()
   }
-  // Starts the wait for the first link of the queue; the link itself is opened when the wait says it has
-  // read the count to start from ({"ready": true}), so no row can be added before the count is known.
-  function cashewSendNext() {
-    var q = root.cashewSendQueue
-    if (q.length === 0) { root.cashewSendFinish(); return }
-    root.cashewSendIndex = root.cashewSendTotal - q.length + 1
-    root.cashewSendOf = q[0].count
+  // Starts the wait for the current step; the step is opened when the wait has read the count to start from
+  // ({"ready": true}), so no row can be added before the count is known.
+  function cashewSendStart() {
+    var it = root.cashewSendItem
+    if (!it) { root.cashewSendFinish(); return }
     root.cashewSendAdded = 0
     root.cashewSendOpened = false
     root.cashewSendPhase = "open"
     root.cashewSendSay()
-    cashewWaitProc.command = ["python3", root.txdbBin, "cashew-wait", String(q[0].count), "--timeout", String(root.cashewSendWaitSecs)]
+    cashewWaitProc.command = ["python3", root.txdbBin, "cashew-wait", String(it.count), "--timeout", String(root.cashewSendSecs(it.kind, false))]
     cashewWaitProc.running = true
   }
   function cashewSendOpen() {
-    if (root.cashewSendOpened || root.cashewSendQueue.length === 0) return
+    var it = root.cashewSendItem
+    if (root.cashewSendOpened || !it) return
     root.cashewSendOpened = true
-    Quickshell.execDetached(["xdg-open", root.cashewSendQueue[0].url])
+    Quickshell.execDetached(["xdg-open", it.url])
   }
   function cashewSendLine(line) {
     if (!root.cashewSending) return
@@ -813,29 +847,30 @@ Panel {
   function cashewSendExited(exitCode) {
     if (!root.cashewSending) return                       // stopped by hand
     if (exitCode === 0) {
-      root.cashewSendRows += root.cashewSendOf
-      root.cashewSendQueue = root.cashewSendQueue.slice(1)
-      root.cashewSendNext()
+      root.cashewSendDone += 1
+      root.cashewSendStart()
     } else if (exitCode === 3) {
-      // The browser keeps no copy of Cashew that can be read (another browser): open the link and wait a fixed time.
+      // The browser keeps no copy of Cashew that can be read (another browser): open the step and wait a fixed time.
       root.cashewSendOpen()
+      root.cashewSendConfirmed = false
       root.cashewSendPhase = "blind"
       root.cashewSendSay()
+      cashewSendBlindTimer.interval = root.cashewSendSecs(root.cashewSendItem ? root.cashewSendItem.kind : "link", true) * 1000
       cashewSendBlindTimer.restart()
     } else {
       // Timeout (2), or the check itself failed: stop here and let the person look.
       root.cashewSendOpen()
-      root.cashewSendRows += Math.min(root.cashewSendAdded, root.cashewSendOf)
       root.cashewSendPhase = "timeout"
       root.cashewSendSay()
-      root.cashewGuessNotify("Cashew: stopped at link " + root.cashewSendIndex + " of " + root.cashewSendTotal, root.cashewSendNote)
+      root.cashewGuessNotify("Cashew: waiting for you", root.cashewSendNote)
     }
   }
-  // After a timeout: the person looked at the browser and wants the remaining links.
+  // After a timeout: the person looked at the browser and wants the remaining steps.
   function cashewSendContinue() {
     if (!root.cashewSendPaused) return
-    root.cashewSendQueue = root.cashewSendQueue.slice(1)
-    root.cashewSendNext()
+    root.cashewSendConfirmed = false
+    root.cashewSendDone += 1
+    root.cashewSendStart()
   }
   function cashewSendStop() {
     if (!root.cashewSending && !root.cashewSendPaused) return
@@ -843,12 +878,19 @@ Panel {
     root.cashewSendSay()
     cashewSendBlindTimer.stop()
     cashewWaitProc.running = false
-    root.cashewSendQueue = []
   }
   function cashewSendFinish() {
+    root.cashewSendTracked = !root.cashewSendConfirmed ? "unconfirmed" : (root.cashewAutoTrack ? "yes" : "off")
     root.cashewSendPhase = "done"
+    root.cashewSendFresh = true
     root.cashewSendSay()
-    root.cashewGuessNotify("Cashew: all links added", root.cashewSendNote)
+    if (root.cashewSendTracked === "yes") {
+      var rows = []
+      root.cashewSendItems.forEach(function (it) { (it.ids || []).forEach(function (id) { rows.push({ id: id }) }) })
+      store.setTrackedMany(rows, true)
+      cashewSendReloadTimer.restart()                     // the sent rows leave the list once the write is done
+    }
+    root.cashewGuessNotify("Cashew: all added", root.cashewSendNote)
     Quickshell.execDetached(["xdg-open", "https://budget-track.web.app/"])     // for a look at the result
   }
   Process {
@@ -861,11 +903,16 @@ Panel {
   }
   Timer {
     id: cashewSendBlindTimer
-    interval: root.cashewSendBlindSecs * 1000
+    interval: 8000
     onTriggered: if (root.cashewSendPhase === "blind") {
-      root.cashewSendQueue = root.cashewSendQueue.slice(1)
-      root.cashewSendNext()
+      root.cashewSendDone += 1
+      root.cashewSendStart()
     }
+  }
+  Timer {
+    id: cashewSendReloadTimer
+    interval: 2000
+    onTriggered: if (root.cashewOpen && !root.cashewGuessing) root.cashewLoad(); else root.cashewStale = true
   }
   Timer {
     id: cashewLinksTimer
@@ -3709,7 +3756,8 @@ Panel {
       id: fsMini
       readonly property var mark: Model.receiptStateMark(receiptFullScreen.r)
       visible: receiptFullScreen.compact
-      anchors { right: parent.right; bottom: parent.bottom; margins: Style.space(24) }
+      x: root.miniX >= 0 ? Math.max(0, Math.min(root.miniX, parent.width - width)) : parent.width - width - Style.space(24)
+      y: root.miniY >= 0 ? Math.max(0, Math.min(root.miniY, parent.height - height)) : parent.height - height - Style.space(24)
       width: Style.space(340)
       height: fsMiniCol.implicitHeight + Style.space(28)
       focus: receiptFullScreen.compact
@@ -3717,13 +3765,21 @@ Panel {
       Keys.onLeftPressed: receiptFullScreen.stepReceipt(-1)
       Keys.onRightPressed: receiptFullScreen.stepReceipt(1)
 
-      MouseArea { anchors.fill: parent; onClicked: {} }
       BorderSurface {
         anchors.fill: parent
         color: Color.popups.background
         borderSpec: Border.none()
         radius: Style.cornerRadius
       }
+      DragHandler {
+        id: fsMiniDrag
+        target: null
+        property real sx: 0
+        property real sy: 0
+        onActiveChanged: if (active) { sx = fsMini.x; sy = fsMini.y }
+        onActiveTranslationChanged: if (active) root.saveMiniPos(sx + activeTranslation.x, sy + activeTranslation.y)
+      }
+      HoverHandler { cursorShape: fsMiniDrag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor }
 
       Column {
         id: fsMiniCol
@@ -6796,6 +6852,8 @@ Panel {
     readonly property int activeCount: bar.summary.length
     readonly property bool anyActive: root.filterChips.length > 0
     readonly property string thisMonth: root.todayIso.slice(0, 7)
+    property bool calOpen: false               // the period calendar under the Date row
+    property string calMonth: ""               // the month the calendar shows ("YYYY-MM")
     function syncSummary() {
       var next = root.filterChips.filter(function (c) { return c.id !== "q" })
       if (JSON.stringify(next) !== JSON.stringify(bar.summary)) bar.summary = next
@@ -7245,6 +7303,130 @@ Panel {
             active: root.filter.month === bar.thisMonth
             onClicked: root.setFilterPart("month", root.filter.month === bar.thisMonth ? "" : bar.thisMonth)
             onCleared: root.setFilterPart("month", "")
+          }
+          FilterChip {
+            readonly property bool hasPeriod: !!(root.filter.from || root.filter.to)
+            label: hasPeriod ? Model.periodLabel(root.filter.from, root.filter.to) : "Period…"
+            tip: "Pick a first and a last day in a calendar"
+            active: hasPeriod || bar.calOpen
+            onClicked: {
+              if (!bar.calOpen) bar.calMonth = (root.filter.from || root.filter.to || root.todayIso).slice(0, 7)
+              bar.calOpen = !bar.calOpen
+            }
+            onCleared: { root.filter = Model.filterWithPeriod(root.filter, "", ""); bar.calOpen = false }
+          }
+        }
+      }
+
+      // Period: a click picks the first day, the next click the last day (a third starts again).
+      Item {
+        visible: bar.calOpen
+        width: panel.width
+        height: visible ? calCol.implicitHeight : 0
+        Column {
+          id: calCol
+          x: panel.captionWidth + Style.space(8)
+          width: Math.min(panel.width - x, Style.space(7 * 34))
+          spacing: Style.space(4)
+          Item {
+            width: parent.width
+            height: Style.space(26)
+            FilterChip {
+              anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+              label: "‹"
+              tip: "Earlier month"
+              onClicked: bar.calMonth = Model.shiftMonth(bar.calMonth, -1)
+            }
+            Text {
+              anchors.centerIn: parent
+              textFormat: Text.PlainText
+              text: Model.monthLabel(bar.calMonth)
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+            FilterChip {
+              anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+              label: "›"
+              tip: "Later month"
+              onClicked: bar.calMonth = Model.shiftMonth(bar.calMonth, 1)
+            }
+          }
+          Grid {
+            columns: 7
+            Repeater {
+              model: ["M", "T", "W", "T", "F", "S", "S"]
+              delegate: Text {
+                required property string modelData
+                width: calCol.width / 7
+                height: Style.space(18)
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                textFormat: Text.PlainText
+                text: modelData
+                color: Qt.darker(root.foreground, 1.6)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+            Repeater {
+              model: bar.calOpen ? Model.calendarCells(bar.calMonth) : []
+              delegate: Rectangle {
+                id: calDay
+                required property var modelData
+                readonly property bool edge: modelData.iso === root.filter.from || modelData.iso === root.filter.to
+                readonly property bool inside: !!(root.filter.from && root.filter.to)
+                  && modelData.iso > root.filter.from && modelData.iso < root.filter.to
+                width: calCol.width / 7
+                height: Style.space(26)
+                radius: Style.space(6)
+                color: calDay.edge ? Util.alpha(Color.accent, 0.55)
+                  : (calDay.inside ? Util.alpha(Color.accent, 0.18) : (calDayHover.hovered ? Util.alpha(root.foreground, 0.08) : "transparent"))
+                HoverHandler { id: calDayHover }
+                Text {
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: calDay.modelData.day
+                  color: calDay.modelData.inMonth ? root.foreground : Qt.darker(root.foreground, 2.2)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.bold: calDay.modelData.iso === root.todayIso || calDay.edge
+                  font.underline: calDay.modelData.iso === root.todayIso
+                }
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    var p = Model.periodPick(root.filter.from, root.filter.to, calDay.modelData.iso)
+                    root.filter = Model.filterWithPeriod(root.filter, p.from, p.to)
+                  }
+                }
+              }
+            }
+          }
+          Item {
+            width: parent.width
+            height: Style.space(24)
+            Text {
+              anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+              textFormat: Text.PlainText
+              text: root.filter.from && !root.filter.to ? "Now pick the last day"
+                : (root.filter.from || root.filter.to ? Model.periodLabel(root.filter.from, root.filter.to) : "Pick the first day")
+              color: Qt.darker(root.foreground, 1.2)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Row {
+              anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+              spacing: Style.space(6)
+              FilterChip {
+                visible: !!(root.filter.from || root.filter.to)
+                label: "Clear"
+                onClicked: root.filter = Model.filterWithPeriod(root.filter, "", "")
+              }
+              FilterChip { label: "Done"; onClicked: bar.calOpen = false }
+            }
           }
         }
       }
@@ -7858,6 +8040,9 @@ Panel {
     // links, Mark as tracked). The rest of the screen stays usable (see `mask`). Reset on every open.
     property bool compact: false
     property bool warnOpen: false             // the warnings list shows every line, not the first five
+    property bool leftOnly: true              // during and after a send the list hides the rows Cashew has
+    property var visRows: []                  // the rows the list shows (syncRows), for the day checkboxes
+    readonly property var rowStates: Model.cashewSendRowStates(root.cashewSendItems, root.cashewSendDone, root.cashewSendPhase)
     property var rowIdxs: []                  // draft indexes of the rows the list shows (set by syncRows)
     readonly property string selectState: Model.cashewSelectState(root.cashewDrafts, cashewWin.rowIdxs)
     readonly property var selection: Model.cashewSelectionSummary(root.cashewDrafts, cashewWin.rowIdxs)
@@ -7925,14 +8110,22 @@ Panel {
     // the order toggle rebuilds it; every other edit keeps the delegates.
     ListModel { id: cwRows }
     function syncRows() {
+      var hide = null
+      if (cashewWin.leftOnly && root.cashewSendPhase !== "") {
+        hide = ({})
+        Object.keys(cashewWin.rowStates).forEach(function (id) { if (cashewWin.rowStates[id] === "added") hide[id] = true })
+      }
       var rows = Model.cashewVisibleRows(root.cashewDrafts, root.cashewShown,
-        { newestFirst: !cashewWin.oldestFirst, needOnly: cashewWin.needOnly, guessedOnly: root.cashewGuessedOnly })
+        { newestFirst: !cashewWin.oldestFirst, needOnly: cashewWin.needOnly, guessedOnly: root.cashewGuessedOnly, hideIds: hide })
+      cashewWin.visRows = rows
       cashewWin.rowIdxs = Model.cashewRowIdxs(rows)
       cwRows.clear()
       for (var i = 0; i < rows.length; i++) cwRows.append(rows[i])
     }
     onCompactChanged: if (cashewWin.visible) (cashewWin.compact ? cashewMini : cashewCard).forceActiveFocus()
     onOldestFirstChanged: cashewWin.syncRows()
+    onLeftOnlyChanged: cashewWin.syncRows()
+    onRowStatesChanged: if (cashewWin.leftOnly) cashewWin.syncRows()
     onNeedOnlyChanged: cashewWin.syncRows()
     Connections {
       target: root
@@ -8068,44 +8261,54 @@ Panel {
       MouseArea { anchors.fill: parent; onClicked: root.closeCashew() }
     }
 
-    // ---- minimised: only what the sending step needs
+    // ---- minimised: what is left, the one action, and the model runs. Drag it anywhere.
     Item {
       id: cashewMini
       visible: cashewWin.compact
-      anchors { right: parent.right; bottom: parent.bottom; margins: Style.space(24) }
-      width: Style.space(380)
-      height: cwMiniCol.implicitHeight + Style.space(28)
+      width: Style.space(300)
+      height: cwMiniCol.implicitHeight + Style.space(24)
+      x: root.miniX >= 0 ? Math.max(0, Math.min(root.miniX, parent.width - width)) : parent.width - width - Style.space(24)
+      y: root.miniY >= 0 ? Math.max(0, Math.min(root.miniY, parent.height - height)) : parent.height - height - Style.space(24)
       focus: cashewWin.compact
       Keys.onEscapePressed: function (event) { cashewWin.compact = false; event.accepted = true }
 
-      MouseArea { anchors.fill: parent; onClicked: {} }
       BorderSurface {
         anchors.fill: parent
         color: Color.popups.background
         borderSpec: Border.none()
         radius: Style.cornerRadius
       }
+      // Drag from anywhere on the card; the place is kept (also for the receipt card).
+      DragHandler {
+        id: cwMiniDrag
+        target: null
+        property real sx: 0
+        property real sy: 0
+        onActiveChanged: if (active) { sx = cashewMini.x; sy = cashewMini.y }
+        onActiveTranslationChanged: if (active) root.saveMiniPos(sx + activeTranslation.x, sy + activeTranslation.y)
+      }
+      HoverHandler { cursorShape: cwMiniDrag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor }
 
       Column {
         id: cwMiniCol
-        anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(14) }
+        anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(12) }
         spacing: Style.space(8)
 
         Item {
           width: parent.width
-          height: Style.space(28)
+          height: Style.space(24)
           Text {
             anchors { left: parent.left; verticalCenter: parent.verticalCenter }
             textFormat: Text.PlainText
-            text: "Cashew links"
-            color: root.foreground
+            text: "⠿  Cashew"
+            color: cashewWin.muted
             font.family: Style.font.family
-            font.pixelSize: Style.font.body
+            font.pixelSize: Style.font.caption
             font.bold: true
           }
           Row {
             anchors { right: parent.right; verticalCenter: parent.verticalCenter }
-            spacing: Style.space(6)
+            spacing: Style.space(4)
             PanelActionButton {
               size: Style.space(24)
               iconText: "󰖯"
@@ -8123,84 +8326,52 @@ Panel {
           }
         }
 
+        // The two numbers: transactions left and links left (and transfers, when there are any).
+        Row {
+          spacing: Style.space(22)
+          Repeater {
+            model: [
+              { n: root.cashewSendLeftNow.rows, what: root.cashewSendLeftNow.rows === 1 ? "transaction left" : "transactions left" },
+              { n: root.cashewSendLeftNow.links, what: root.cashewSendLeftNow.links === 1 ? "link left" : "links left" }
+            ].concat(root.cashewSendLeftNow.transfers > 0
+              ? [{ n: root.cashewSendLeftNow.transfers, what: root.cashewSendLeftNow.transfers === 1 ? "transfer left" : "transfers left" }] : [])
+            delegate: Column {
+              required property var modelData
+              spacing: 0
+              Text {
+                textFormat: Text.PlainText
+                text: String(modelData.n)
+                color: modelData.n === 0 ? root.creditColor : root.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body + 10
+                font.bold: true
+              }
+              Text {
+                textFormat: Text.PlainText
+                text: modelData.what
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+        }
+
+        LlmStatus { width: parent.width }
+
+        // A line only when the person has to do something: tap Save on a transfer, or look after a timeout.
         Text {
+          visible: root.cashewSendPaused || (root.cashewSending && root.cashewSendItem !== null && root.cashewSendItem.kind === "transfer")
           width: parent.width
           wrapMode: Text.Wrap
           textFormat: Text.PlainText
-          text: cashewWin.selection.text
-            + (root.cashewNeedCount > 0 ? "\n" + root.cashewNeedCount + " need a category" : "")
-            + (root.cashewWarnings.length > 0 ? "\n" + root.cashewWarnings.length + (root.cashewWarnings.length === 1 ? " warning" : " warnings") + " (expand to read)" : "")
-          color: cashewWin.muted
+          text: root.cashewSendNote
+          color: root.cashewSendPaused ? root.pendingColor : Color.accent
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }
 
-        LlmStatus { width: parent.width }
-        Flow {
-          visible: root.cashewGuessing || root.cashewGuessedCount > 0
-          width: parent.width
-          spacing: Style.space(6)
-          CashewBtn {
-            visible: root.cashewGuessing
-            active: true
-            label: root.cashewStopArmed ? "■ Click again to stop" : "■ Stop"
-            onClicked: root.cashewStopClick()
-          }
-          CashewBtn {
-            visible: !root.cashewGuessing && root.cashewGuessedCount > 0
-            primary: true
-            label: "✓ Confirm " + root.cashewGuessedCount + " AI categories"
-            onClicked: root.cashewAcceptGuesses()
-          }
-        }
-
-        CashewSendControls { width: parent.width }
-
-        // One button per link (and per transfer page): open it in Cashew.
-        Flow {
-          width: parent.width
-          spacing: Style.space(6)
-          Repeater {
-            model: root.cashewLinks
-            delegate: CashewBtn {
-              id: mlk
-              required property var modelData
-              required property int index
-              property bool opened: false
-              active: mlk.opened
-              label: (mlk.opened ? "✓ " : "") + "Link " + (mlk.index + 1) + " · " + mlk.modelData.count
-              onClicked: {
-                if (!root.cashewVerifyGate()) return
-                Quickshell.execDetached(["xdg-open", mlk.modelData.url])
-                mlk.opened = true
-              }
-            }
-          }
-          Repeater {
-            model: root.cashewTransfers
-            delegate: CashewBtn {
-              id: mtr
-              required property var modelData
-              required property int index
-              property bool opened: false
-              active: mtr.opened
-              label: (mtr.opened ? "✓ " : "") + "Transfer " + (mtr.index + 1)
-              onClicked: {
-                if (!root.cashewVerifyGate()) return
-                Quickshell.execDetached(["xdg-open", mtr.modelData.url])
-                mtr.opened = true
-              }
-            }
-          }
-        }
-
-        CashewBtn {
-          enabled: root.cashewIncludedCount > 0
-          primary: cashewWin.confirmMark
-          label: cashewWin.confirmMark ? "Click again: mark " + root.cashewIncludedCount + " as tracked"
-            : "Mark " + root.cashewIncludedCount + " as tracked"
-          onClicked: if (cashewWin.confirmMark) cashewWin.markTracked(); else cashewWin.confirmMark = true
-        }
+        CashewSendControls { width: parent.width; showNote: false }
       }
     }
 
@@ -8296,7 +8467,7 @@ Panel {
           CashewBtn {
             visible: root.cashewSendPaused
             primary: true
-            label: root.cashewSendQueue.length > 1 ? "Continue with the next link" : "Finish"
+            label: root.cashewSendDone + 1 < root.cashewSendItems.length ? "Continue" : "Finish"
             onClicked: root.cashewSendContinue()
           }
           CashewBtn {
@@ -8335,6 +8506,11 @@ Panel {
               root.cashewSetState(next)
               root.cashewRebuildLinks()
             }
+          }
+          CashewBtn {
+            label: root.cashewAutoTrack ? "After adding: mark as tracked" : "After adding: keep untracked"
+            active: root.cashewAutoTrack
+            onClicked: root.cashewSetState(Object.assign({}, root.cashewState, { autoTrack: !root.cashewAutoTrack }))
           }
           CashewBtn {
             label: "Guessed only"
@@ -8444,7 +8620,6 @@ Panel {
             width: parent.width
             spacing: Style.space(10)
 
-            CashewSendControls { width: parent.width }
 
             Column {
               visible: root.cashewGuessedCount > 0
@@ -8634,8 +8809,9 @@ Panel {
                     width: parent.width
                     elide: Text.ElideRight
                     textFormat: Text.PlainText
+                    readonly property string sendState: cashewWin.rowStates[(lk.modelData.ids || [])[0]] || ""
                     text: Model.cashewLinkLabel(lk.index, root.cashewLinks.length, lk.modelData.count, lk.modelData.chars)
-                      + (lk.opened ? "  ·  opened" : "")
+                      + (sendState === "added" ? "  ·  ✓ added" : (sendState === "adding" ? "  ·  adding…" : (lk.opened ? "  ·  opened" : "")))
                     color: root.foreground
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
@@ -9326,9 +9502,103 @@ Panel {
           font.pixelSize: Style.font.body
         }
 
+        // ---- the send in progress: how much is left, a bar, the step, and "Left only"
+        Item {
+          id: cwProgress
+          visible: root.cashewSendPhase !== ""
+          anchors { top: cwLeftTitle.bottom; left: parent.left; right: parent.right }
+          anchors.topMargin: visible ? Style.space(10) : 0
+          height: visible ? cwProgCol.implicitHeight + Style.space(24) : 0
+          Rectangle {
+            anchors.fill: parent
+            radius: Style.space(10)
+            color: Util.alpha(root.foreground, 0.05)
+          }
+          Column {
+            id: cwProgCol
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(12) }
+            spacing: Style.space(8)
+            Item {
+              width: parent.width
+              height: cwProgBig.implicitHeight
+              Row {
+                anchors { left: parent.left; bottom: parent.bottom }
+                spacing: Style.space(8)
+                Text {
+                  id: cwProgBig
+                  textFormat: Text.PlainText
+                  text: String(root.cashewSendLeftNow.rows)
+                  color: root.cashewSendLeftNow.rows === 0 ? root.creditColor : root.foreground
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body + 12
+                  font.bold: true
+                }
+                Text {
+                  anchors.baseline: cwProgBig.baseline
+                  textFormat: Text.PlainText
+                  text: "of " + root.cashewSendLeftNow.total + " transactions left"
+                  color: cashewWin.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
+              Row {
+                anchors { right: parent.right; bottom: parent.bottom }
+                spacing: Style.space(6)
+                CashewBtn {
+                  label: "Left only"
+                  active: cashewWin.leftOnly
+                  onClicked: cashewWin.leftOnly = !cashewWin.leftOnly
+                }
+                CashewBtn {
+                  visible: root.cashewSendPhase === "done" || root.cashewSendPhase === "stopped"
+                  label: "Hide"
+                  onClicked: root.cashewSendPhase = ""
+                }
+              }
+            }
+            Rectangle {
+              width: parent.width
+              height: Style.space(4)
+              radius: height / 2
+              color: Util.alpha(root.foreground, 0.1)
+              Rectangle {
+                width: root.cashewSendLeftNow.total > 0 ? parent.width * root.cashewSendLeftNow.doneRows / root.cashewSendLeftNow.total : 0
+                height: parent.height
+                radius: parent.radius
+                color: root.cashewSendPhase === "done" ? root.creditColor : (root.cashewSendPaused ? root.pendingColor : Color.accent)
+                Behavior on width { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
+              }
+            }
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: {
+                var lt = 0, tt = 0
+                root.cashewSendItems.forEach(function (x) { if (x.kind === "transfer") tt++; else lt++ })
+                var l = root.cashewSendLeftNow
+                return "Links " + (lt - l.links) + " of " + lt + (tt > 0 ? "  ·  transfers " + (tt - l.transfers) + " of " + tt : "")
+              }
+              color: cashewWin.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              visible: root.cashewSendNote !== ""
+              width: parent.width
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: root.cashewSendNote
+              color: root.cashewSendPaused ? root.pendingColor : (root.cashewSending ? Color.accent : root.foreground)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
         ListView {
           id: cwList
-          anchors { top: cwLeftTitle.bottom; bottom: parent.bottom; left: parent.left; right: parent.right }
+          anchors { top: cwProgress.bottom; bottom: parent.bottom; left: parent.left; right: parent.right }
           anchors.topMargin: Style.space(8)
           clip: true
           spacing: Style.space(2)
@@ -9343,9 +9613,20 @@ Panel {
             required property string section
             width: cwList.width
             height: Style.space(40)
+            readonly property var dayIdxs: Model.cashewDayIdxs(cashewWin.visRows, cdHead.section)
+            // The day checkbox: same left inset as the row checkboxes; selects or clears the rows of this day.
+            CashewCheck {
+              id: cdCheck
+              anchors { left: parent.left; leftMargin: Style.space(8); verticalCenter: cdDayLabel.verticalCenter }
+              readonly property string state3: Model.cashewSelectState(root.cashewDrafts, cdHead.dayIdxs)
+              checked: state3 === "all"
+              partial: state3 === "some"
+              onToggled: root.cashewEdit(Model.cashewSetInclude(root.cashewDrafts, cdHead.dayIdxs, state3 !== "all"))
+            }
             Text {
-              // same left inset as the row checkboxes
-              anchors { left: parent.left; leftMargin: Style.space(8); bottom: parent.bottom; bottomMargin: Style.space(6) }
+              id: cdDayLabel
+              // right of the day checkbox, over the row icons
+              anchors { left: cdCheck.right; leftMargin: Style.space(10); bottom: parent.bottom; bottomMargin: Style.space(6) }
               textFormat: Text.PlainText
               text: Model.cashewDayLabel(cdHead.section)
               color: cashewWin.muted
@@ -9376,6 +9657,8 @@ Panel {
             readonly property bool isCredit: String(crow.d.amount || "").charAt(0) !== "-"
             readonly property var cat: cashewWin.catMap[crow.d.category] || ({ icon: "❓", color: "#5A2A2E" })
             readonly property color kindColor: crow.isCredit ? root.creditColor : root.debitColor
+            readonly property string sendState: cashewWin.rowStates[crow.d.id] || ""
+            opacity: crow.sendState === "added" ? 0.45 : 1
             width: cwList.width
             // The popup is wide: columns stay put (no sliding). With the links pane
             // open the list is narrow and the row falls back to two lines.
@@ -9386,6 +9669,13 @@ Panel {
             radius: Style.space(12)
             color: crow.idx === cashewWin.flashIdx ? Util.alpha(Color.accent, 0.22) : Util.alpha(root.foreground, crowHover.hovered ? 0.06 : 0)
             HoverHandler { id: crowHover }
+            Rectangle {
+              visible: crow.sendState === "adding"
+              anchors { left: parent.left; top: parent.top; bottom: parent.bottom; topMargin: Style.space(10); bottomMargin: Style.space(10) }
+              width: Style.space(3)
+              radius: width / 2
+              color: Color.accent
+            }
 
             Loader {
               anchors.fill: parent
@@ -9999,6 +10289,7 @@ Panel {
   // "Add all to Cashew": the button (Stop while it runs; Continue / Stop after a timeout) and the status line.
   component CashewSendControls: Column {
     id: csc
+    property bool showNote: true
     spacing: Style.space(6)
     Flow {
       width: csc.width
@@ -10013,7 +10304,7 @@ Panel {
       CashewBtn {
         visible: root.cashewSendPaused
         primary: true
-        label: root.cashewSendQueue.length > 1 ? "Continue with the next link" : "Finish"
+        label: root.cashewSendDone + 1 < root.cashewSendItems.length ? "Continue" : "Finish"
         onClicked: root.cashewSendContinue()
       }
       CashewBtn {
@@ -10024,7 +10315,7 @@ Panel {
       }
     }
     Text {
-      visible: root.cashewSendNote !== ""
+      visible: csc.showNote && root.cashewSendNote !== ""
       width: csc.width
       wrapMode: Text.Wrap
       textFormat: Text.PlainText

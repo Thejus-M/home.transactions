@@ -359,7 +359,8 @@ class CliTests(Base):
     def test_untracked_prints_transfer_pages_after_bulk(self):
         self.add(self.sbi, row(1, "2026-10-02", -500.0, SBI_OUT))
         self.add(self.hdfc, row(2, "2026-10-02", 500.0, HDFC_IN), row(3, "2026-10-03", -10.0, "Tea shop"))
-        p = self.cli("cashew-links", "--untracked")                    # the default is silent: no transfer page
+        self.state_path.write_text(json.dumps({"version": 1, "categories": {}, "accounts": {}, "transfers": "silent"}))
+        p = self.cli("cashew-links", "--untracked")                    # silent: no transfer page
         self.assertNotIn("addTransferRoute", p.stdout)
         self.assertIn("3 transactions in 1 links and 0 transfer pages", p.stderr)
         self.state_path.write_text(json.dumps({"version": 1, "categories": {}, "accounts": {}, "transfers": "page"}))

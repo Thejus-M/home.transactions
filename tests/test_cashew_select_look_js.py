@@ -46,6 +46,7 @@ def rows():
 
 
 SHOWN = [0, 1, 2, 3, 4, 5, 6]
+rows_ = rows
 
 
 @unittest.skipUnless(NODE, "node is not installed")
@@ -171,15 +172,67 @@ class SelectLook(unittest.TestCase):
         t = lambda **st: self.js("cashewSendText(input.s)", s=st)
         self.assertEqual(t(phase="open", index=1, total=3), "Link 1 of 3 · opening")
         self.assertEqual(t(phase="wait", index=2, total=5, added=12, of=17), "Link 2 of 5 · 12 of 17 added")
+        self.assertEqual(t(phase="wait", kind="transfer", index=1, total=2, title="HDFC → SBI ₹160.00"),
+                         "Transfer 1 of 2 · HDFC → SBI ₹160.00 · tap Save in Cashew")
         self.assertIn("waiting 8 s", t(phase="blind", index=1, total=2, wait=8))
         self.assertEqual(t(phase="timeout", index=2, total=5, added=12, of=17, wait=60),
-                         "Link 2: 12 of 17 added after 60 s. Check the browser.".replace("Link 2:", "Link 2 of 5:"))
+                         "Link 2 of 5: 12 of 17 added after 60 s. Check the browser.")
+        self.assertIn("not saved after 180 s", t(phase="timeout", kind="transfer", index=1, total=1, wait=180))
         self.assertTrue(t(phase="done", total=5, rows=141).startswith("Added 141 rows in 5 links. Check them in Cashew"))
         self.assertTrue(t(phase="done", total=1, rows=1).startswith("Added 1 row in 1 link."))
         self.assertTrue(t(phase="done", total=2, rows=0).startswith("Sent in 2 links."))
+        self.assertTrue(t(phase="done", links=2, transfers=3, rows=20, tracked="yes")
+                        .startswith("Added 20 rows in 2 links and 3 transfers. Marked as tracked."))
+        self.assertIn("option is off", t(phase="done", links=1, rows=1, tracked="off"))
+        self.assertIn("did not confirm", t(phase="done", links=1, rows=1, tracked="unconfirmed"))
         self.assertEqual(t(phase="stopped", index=2, total=5), "Stopped at link 2 of 5.")
+        self.assertEqual(t(phase="stopped", kind="transfer", index=1, total=3), "Stopped at transfer 1 of 3.")
         self.assertEqual(t(phase=""), "")
         self.assertEqual(self.js("cashewSendText(null)"), "")
+
+    def test_send_plan_puts_links_first_then_one_item_per_transfer(self):
+        built = {"links": [{"url": "u1", "count": 3, "ids": ["a", "b", "c"]}, {"url": "u2", "count": 1, "ids": ["d"]}],
+                 "transfers": [{"url": "t1", "ids": ["o", "i"], "accountFrom": "HDFC", "accountTo": "SBI", "amount": "160.00"}]}
+        got = self.js("cashewSendPlan(input.b)", b=built)
+        self.assertEqual([(g["kind"], g["url"], g["count"], g["ids"]) for g in got],
+                         [("link", "u1", 3, ["a", "b", "c"]), ("link", "u2", 1, ["d"]), ("transfer", "t1", 2, ["o", "i"])])
+        self.assertEqual(got[2]["title"], "HDFC → SBI ₹160.00")
+        self.assertEqual(self.js("cashewSendPlan(null)"), [])
+
+    def test_send_left_idle_running_and_done(self):
+        items = [{"kind": "link", "count": 3, "ids": ["a", "b", "c"]}, {"kind": "link", "count": 1, "ids": ["d"]},
+                 {"kind": "transfer", "count": 2, "ids": ["o", "i"]}]
+        left = lambda **st: self.js("cashewSendLeft(input.s)", s=st)
+        idle = left(phase="", idleRows=6, idleLinks=2, idleTransfers=1)
+        self.assertEqual((idle["rows"], idle["links"], idle["transfers"]), (6, 2, 1))
+        self.assertEqual(idle["text"], "6 transactions left · 2 links left · 1 transfer left")
+        mid = left(phase="wait", items=items, done=0, added=2)
+        self.assertEqual((mid["rows"], mid["links"], mid["transfers"], mid["total"], mid["doneRows"]), (4, 2, 1, 6, 2))
+        later = left(phase="wait", items=items, done=2, added=0)
+        self.assertEqual((later["rows"], later["links"], later["transfers"]), (2, 0, 1))
+        self.assertEqual(later["text"], "2 transactions left · 0 links left · 1 transfer left")
+        done = left(phase="done", items=items, done=1)
+        self.assertEqual((done["rows"], done["links"], done["transfers"], done["doneRows"]), (0, 0, 0, 6))
+        self.assertEqual(left(phase="", idleRows=1, idleLinks=1)["text"], "1 transaction left · 1 link left")
+        self.assertEqual(self.js("cashewSendLeft(null).rows"), 0)
+
+    def test_send_row_states(self):
+        items = [{"ids": ["a", "b"]}, {"ids": ["c"]}, {"ids": ["o", "i"]}]
+        st = lambda done, phase: self.js("cashewSendRowStates(input.i, input.d, input.p)", i=items, d=done, p=phase)
+        self.assertEqual(st(1, "wait"), {"a": "added", "b": "added", "c": "adding", "o": "waiting", "i": "waiting"})
+        self.assertEqual(set(st(0, "done").values()), {"added"})
+        self.assertEqual(st(1, "stopped"), {"a": "added", "b": "added"})
+        self.assertEqual(st(0, ""), {})
+
+    def test_day_idxs_and_hide_ids(self):
+        rows = self.js("cashewVisibleRows(input.d, input.s, {newestFirst: false})", d=rows_(), s=SHOWN)
+        self.assertEqual(sorted(self.js("cashewDayIdxs(input.r, '2026-11-02')", r=rows)), [2, 3])
+        self.assertEqual(sorted(self.js("cashewDayIdxs(input.r, '2026-11-01')", r=rows)), [0, 1, 4, 5])
+        self.assertEqual(self.js("cashewDayIdxs(input.r, '1999-01-01')", r=rows), [])
+        hidden = self.js("cashewVisibleRows(input.d, input.s, {hideIds: {a: true, g: true}})", d=rows_(), s=SHOWN)
+        self.assertNotIn(0, [r["idx"] for r in hidden])
+        self.assertNotIn(6, [r["idx"] for r in hidden])
+        self.assertIn(1, [r["idx"] for r in hidden])
 
 
 if __name__ == "__main__":

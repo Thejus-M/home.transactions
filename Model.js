@@ -1871,7 +1871,7 @@ function txnExplain(t, ctx) {
 // Pure functions only, so tests/test_filter_js.py can run them under node.
 
 function defaultFilter() {
-  return { q: "", accounts: [], dir: "any", tracked: "any", transfers: "any", bill: "any", pending: "any", refund: "any", min: null, max: null, month: "" }
+  return { q: "", accounts: [], dir: "any", tracked: "any", transfers: "any", bill: "any", pending: "any", refund: "any", min: null, max: null, month: "", from: "", to: "" }
 }
 
 function _pad2(n) { return (n < 10 ? "0" : "") + n }
@@ -1905,6 +1905,56 @@ function monthLabel(ym) {
   if (!_YM_RE.test(ym || "")) return ""
   var p = ym.split("-")
   return _MONTH_NAMES[Number(p[1]) - 1] + " " + p[0]
+}
+
+// ---- the period picked in the calendar (filter.from / filter.to, ISO dates, "" = open; never saved)
+
+var _ISO_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/
+
+// The 42 cells (6 weeks, Monday first) of the calendar page of month "YYYY-MM":
+// [{iso, day, inMonth}]. [] for anything that is not a month.
+function calendarCells(ym) {
+  if (!_YM_RE.test(ym || "")) return []
+  var p = ym.split("-")
+  var first = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, 1))
+  var lead = (first.getUTCDay() + 6) % 7                 // Monday = 0
+  var out = []
+  for (var i = 0; i < 42; i++) {
+    var d = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, 1 - lead + i))
+    out.push({ iso: d.getUTCFullYear() + "-" + _pad2(d.getUTCMonth() + 1) + "-" + _pad2(d.getUTCDate()),
+               day: d.getUTCDate(), inMonth: d.getUTCMonth() === Number(p[1]) - 1 })
+  }
+  return out
+}
+
+// A click on a day: the first click is the start, the second the end (in date order), a third starts again.
+function periodPick(from, to, iso) {
+  if (!_ISO_RE.test(iso || "")) return { from: from || "", to: to || "" }
+  if (!from || to) return { from: iso, to: "" }
+  return iso < from ? { from: iso, to: from } : { from: from, to: iso }
+}
+
+// "12-Nov – 16-Nov", "12-Nov" (one day), "From 12-Nov", "Until 16-Nov", "" (no period).
+function periodLabel(from, to) {
+  if (from && to) return from === to ? formatDate(from) : formatDate(from) + " – " + formatDate(to)
+  if (from) return "From " + formatDate(from)
+  if (to) return "Until " + formatDate(to)
+  return ""
+}
+
+// A copy of the filter with the period set; a period replaces the month, and a month the period.
+function filterWithPeriod(f, from, to) {
+  var n = JSON.parse(JSON.stringify(f))
+  n.from = from || ""
+  n.to = to || ""
+  if (n.from || n.to) n.month = ""
+  return n
+}
+function filterWithPart(f, part, value) {
+  var n = JSON.parse(JSON.stringify(f))
+  n[part] = value
+  if (part === "month" && value) { n.from = ""; n.to = "" }
+  return n
 }
 
 // The refund part of the filter. "linked": a credit linked to its purchase, or a purchase that has been
@@ -2018,6 +2068,8 @@ function filterTransactions(rows, f, ctx) {
     var date = t.date || ""
     if (since && date < since) continue
     if (ym && date.slice(0, 7) !== ym) continue
+    if (f.from && date < f.from) continue               // the period picked in the calendar
+    if (f.to && date > f.to) continue
     if (nTok) {
       var hay = _haystack(t, ctx.nameOverrides)
       var ok = true
@@ -2073,6 +2125,7 @@ function activeFilterChips(f, options) {
   if (f.max !== null && f.max !== undefined) chips.push({ id: "max", label: "≤ " + _amountText(f.max) })
   if (f.month === "30d") chips.push({ id: "month", label: "Last 30 days" })
   else if (f.month) chips.push({ id: "month", label: monthLabel(f.month) })
+  if (f.from || f.to) chips.push({ id: "period", label: periodLabel(f.from, f.to) })
   return chips
 }
 
@@ -2093,6 +2146,7 @@ function removeFilterPart(f, id) {
   else if (id === "min") n.min = null
   else if (id === "max") n.max = null
   else if (id === "month") n.month = ""
+  else if (id === "period") { n.from = ""; n.to = "" }
   return n
 }
 
@@ -2751,10 +2805,12 @@ function cashewPatchMany(drafts, idxs, patch) {
 // ---- Selection (the select-all checkbox) and "Look" (what Cashew receives) ----
 
 // The rows the list shows: cashewRowOrder narrowed by the window's own filters.
-// opts: { newestFirst, needOnly, guessedOnly }. A pair stays when either leg is guessed.
+// opts: { newestFirst, needOnly, guessedOnly, hideIds }. A pair stays when either leg is guessed.
+// hideIds ({id: true}): rows to leave out ("Left only" hides the rows a send has added).
 function cashewVisibleRows(drafts, shown, opts) {
   var o = opts || {}
   var rows = cashewRowOrder(drafts, shown, o.newestFirst)
+  if (o.hideIds) rows = rows.filter(function (r) { var d = drafts[r.idx]; return !(d && o.hideIds[d.id]) })
   if (o.needOnly) rows = rows.filter(function (r) { return cashewNeedsCategory(drafts[r.idx]) })
   if (o.guessedOnly) rows = rows.filter(function (r) {
     var a = drafts[r.idx], b = r.partner >= 0 ? drafts[r.partner] : null
@@ -2768,6 +2824,11 @@ function cashewRowIdxs(rows) {
   var out = []
   ;(rows || []).forEach(function (r) { out.push(r.idx); if (r.partner >= 0) out.push(r.partner) })
   return out
+}
+
+// Draft indexes of the visible rows of one day (the day checkbox), the in leg of a pair included.
+function cashewDayIdxs(rows, day) {
+  return cashewRowIdxs((rows || []).filter(function (r) { return r.day === day }))
 }
 
 // True for a row the drafter turned off on purpose: a refund netted into its purchase (or the fully
@@ -2897,20 +2958,91 @@ function cashewLookLine(d, fate, linkCount) {
   return parts.join(" · ")
 }
 
-// The status line of "Add all to Cashew". st: { phase, index (1-based), total, added, of, rows, wait }.
+// ---- "Add all to Cashew": the queue, what is left, the state of every row, the status line
+
+// The queue of a send, from a cashewBuildLinks result: the bulk links first, then one item per real
+// transfer (a Cashew transfer page: the person taps Save, Cashew adds 2 rows).
+// [{kind: "link"|"transfer", url, count, ids, title}]
+function cashewSendPlan(built) {
+  var b = built || {}
+  var out = []
+  ;(b.links || []).forEach(function (l) {
+    out.push({ kind: "link", url: l.url, count: l.count, ids: (l.ids || []).slice(), title: "" })
+  })
+  ;(b.transfers || []).forEach(function (t) {
+    out.push({ kind: "transfer", url: t.url, count: 2, ids: (t.ids || []).slice(),
+               title: (t.accountFrom || "?") + " → " + (t.accountTo || "?") + " " + cashewMoney(t.amount) })
+  })
+  return out
+}
+
+function _cashewPlural(n, one, many) { return n + " " + (n === 1 ? one : many) }
+
+// What is still to add: { rows, links, transfers, total, doneRows, text }.
+// st: { phase, items (the whole plan of the send), done (items complete), added (rows of the current item
+// Cashew has), idleRows, idleLinks, idleTransfers (what a send would do now) }.
+function cashewSendLeft(st) {
+  var s = st || {}
+  var items = s.items || []
+  var running = s.phase === "open" || s.phase === "wait" || s.phase === "blind" || s.phase === "timeout"
+  var rows, links, transfers, total, doneRows
+  if (running || s.phase === "done") {
+    var done = s.phase === "done" ? items.length : Math.max(0, Math.min(s.done || 0, items.length))
+    total = 0; doneRows = 0; links = 0; transfers = 0
+    items.forEach(function (it, i) {
+      total += it.count
+      if (i < done) { doneRows += it.count; return }
+      if (it.kind === "transfer") transfers++; else links++
+    })
+    if (done < items.length) doneRows += Math.max(0, Math.min(s.added || 0, items[done].count))
+    rows = total - doneRows
+  } else {
+    rows = s.idleRows || 0; links = s.idleLinks || 0; transfers = s.idleTransfers || 0
+    total = rows; doneRows = 0
+  }
+  var text = _cashewPlural(rows, "transaction", "transactions") + " left · " + _cashewPlural(links, "link", "links") + " left"
+  if (transfers > 0) text += " · " + _cashewPlural(transfers, "transfer", "transfers") + " left"
+  return { rows: rows, links: links, transfers: transfers, total: total, doneRows: doneRows, text: text }
+}
+
+// { id: "added" | "adding" | "waiting" } for the rows of a send. {} when no send was started.
+function cashewSendRowStates(items, done, phase) {
+  var out = {}
+  if (!phase) return out
+  ;(items || []).forEach(function (it, i) {
+    var state = phase === "done" || i < done ? "added"
+      : (i === done && phase !== "stopped" ? "adding" : (phase === "stopped" ? "" : "waiting"))
+    if (state) (it.ids || []).forEach(function (id) { out[id] = state })
+  })
+  return out
+}
+
+// The status line of "Add all to Cashew". st: { phase, kind, index (1-based, among the items of its kind),
+// total (items of its kind), title (a transfer), added, of, rows, wait, links, transfers, tracked }.
 // phase: "open" (the link is being opened), "wait" (Cashew is adding its rows), "blind" (no copy of
 // Cashew to check: a fixed wait), "timeout", "done", "stopped", "" (nothing to say).
+// tracked (at "done"): "yes" | "off" (the option is off) | "unconfirmed" (an item was not confirmed).
 function cashewSendText(st) {
   var s = st || {}
-  var link = "Link " + (s.index || 0) + " of " + (s.total || 0)
-  var links = (s.total === 1 ? "1 link" : (s.total || 0) + " links")
+  var transfer = s.kind === "transfer"
+  var link = (transfer ? "Transfer " : "Link ") + (s.index || 0) + " of " + (s.total || 0)
   if (s.phase === "open") return link + " · opening"
-  if (s.phase === "wait") return link + " · " + (s.added || 0) + " of " + (s.of || 0) + " added"
+  if (s.phase === "wait") return transfer ? link + " · " + (s.title ? s.title + " · " : "") + "tap Save in Cashew"
+    : link + " · " + (s.added || 0) + " of " + (s.of || 0) + " added"
   if (s.phase === "blind") return link + " · opened (Cashew cannot be checked here: waiting " + (s.wait || 0) + " s)"
-  if (s.phase === "timeout") return link + ": " + (s.added || 0) + " of " + (s.of || 0) + " added after " + (s.wait || 0) + " s. Check the browser."
-  if (s.phase === "done") return (s.rows > 0 ? "Added " + s.rows + (s.rows === 1 ? " row" : " rows") : "Sent") + " in " + links
-    + ". Check them in Cashew, then close the Cashew tabs (a reloaded tab adds its rows again)."
-  if (s.phase === "stopped") return "Stopped at link " + (s.index || 0) + " of " + (s.total || 0) + "."
+  if (s.phase === "timeout") return transfer ? link + ": not saved after " + (s.wait || 0) + " s. Tap Save in Cashew, then continue."
+    : link + ": " + (s.added || 0) + " of " + (s.of || 0) + " added after " + (s.wait || 0) + " s. Check the browser."
+  if (s.phase === "done") {
+    var nLinks = s.links !== undefined ? s.links : (s.total || 0)
+    var text = (s.rows > 0 ? "Added " + _cashewPlural(s.rows, "row", "rows") : "Sent") + " in " + _cashewPlural(nLinks, "link", "links")
+    if (s.transfers > 0) text += " and " + _cashewPlural(s.transfers, "transfer", "transfers")
+    text += "."
+    if (s.tracked === "yes") text += " Marked as tracked."
+    else if (s.tracked === "off") text += " Not marked as tracked (the option is off)."
+    else if (s.tracked === "unconfirmed") text += " Not marked as tracked: Cashew did not confirm every step."
+    return text + " Check them in Cashew, then close the Cashew tabs (a reloaded tab adds its rows again)."
+  }
+  if (s.phase === "stopped") return "Stopped at " + (transfer ? "transfer " : "link ") + (s.index || 0) + " of " + (s.total || 0) + "."
   return ""
 }
 

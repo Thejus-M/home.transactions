@@ -390,3 +390,56 @@ class PanelSource(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class PeriodFilter(unittest.TestCase):
+    def js(self, expression, **values):
+        out = subprocess.run([NODE, "-e", SCRIPT, str(ROOT / "Model.js"), json.dumps(values), expression],
+                             capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_from_and_to_keep_the_rows_inside_the_period(self):
+        rows = [row("a", date="2026-11-01"), row("b", date="2026-11-05"), row("c", date="2026-11-07")]
+        f = self.js("Object.assign(defaultFilter(), {from: '2026-11-02', to: '2026-11-06'})")
+        got = self.js("filterTransactions(input.r, input.f, {today: '2026-11-07'}).map(function (t) { return t.id })", r=rows, f=f)
+        self.assertEqual(got, ["b"])
+        only_from = self.js("Object.assign(defaultFilter(), {from: '2026-11-05'})")
+        self.assertEqual(self.js("filterTransactions(input.r, input.f, {today: '2026-11-07'}).map(function (t) { return t.id })",
+                                 r=rows, f=only_from), ["b", "c"])
+        one_day = self.js("Object.assign(defaultFilter(), {from: '2026-11-07', to: '2026-11-07'})")
+        self.assertEqual(self.js("filterTransactions(input.r, input.f, {}).map(function (t) { return t.id })", r=rows, f=one_day), ["c"])
+
+    def test_chip_remove_save_and_month_exclusive(self):
+        f = self.js("filterWithPeriod(Object.assign(defaultFilter(), {month: '2026-10'}), '2026-11-12', '2026-11-16')")
+        self.assertEqual((f["month"], f["from"], f["to"]), ("", "2026-11-12", "2026-11-16"))
+        chips = self.js("activeFilterChips(input.f, [])", f=f)
+        self.assertEqual(chips, [{"id": "period", "label": "12-Nov – 16-Nov"}])
+        cleared = self.js("removeFilterPart(input.f, 'period')", f=f)
+        self.assertEqual((cleared["from"], cleared["to"]), ("", ""))
+        back = self.js("filterWithPart(input.f, 'month', '2026-11')", f=f)
+        self.assertEqual((back["month"], back["from"], back["to"]), ("2026-11", "", ""))
+        self.assertNotIn("from", json.loads(self.js("serializeFilter(input.f)", f=f)))
+        self.assertEqual(self.js("countActive(input.f)", f=f), 1)
+
+    def test_calendar_cells_start_on_monday_and_mark_the_month(self):
+        cells = self.js("calendarCells('2026-11')")
+        self.assertEqual(len(cells), 42)
+        self.assertEqual(cells[0], {"iso": "2026-10-26", "day": 26, "inMonth": False})     # 1 Nov 2026 is a Sunday
+        self.assertEqual(cells[6], {"iso": "2026-11-01", "day": 1, "inMonth": True})
+        self.assertEqual(sum(1 for c in cells if c["inMonth"]), 30)
+        self.assertEqual(self.js("calendarCells('nope')"), [])
+
+    def test_period_pick_and_label(self):
+        pick = lambda f, t, d: self.js("periodPick(input.f, input.t, input.d)", f=f, t=t, d=d)
+        self.assertEqual(pick("", "", "2026-11-12"), {"from": "2026-11-12", "to": ""})
+        self.assertEqual(pick("2026-11-12", "", "2026-11-16"), {"from": "2026-11-12", "to": "2026-11-16"})
+        self.assertEqual(pick("2026-11-12", "", "2026-11-03"), {"from": "2026-11-03", "to": "2026-11-12"})
+        self.assertEqual(pick("2026-11-12", "2026-11-16", "2026-11-20"), {"from": "2026-11-20", "to": ""})
+        self.assertEqual(pick("2026-11-12", "", "bad"), {"from": "2026-11-12", "to": ""})
+        label = lambda f, t: self.js("periodLabel(input.f, input.t)", f=f, t=t)
+        self.assertEqual(label("2026-11-12", "2026-11-12"), "12-Nov")
+        self.assertEqual(label("2026-11-12", ""), "From 12-Nov")
+        self.assertEqual(label("", "2026-11-16"), "Until 16-Nov")
+        self.assertEqual(label("", ""), "")
+
