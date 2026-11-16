@@ -2700,11 +2700,18 @@ function cashewRememberAccount(state, accountId, name) {
 // Indexes of the drafts the table shows. With `onlyFilter`, only drafts whose
 // id is a key of `idSet` (the ids the RECENT filter lets through).
 // `closedSet` ({id: true}): rows of a closed account are skipped silently.
+// A transfer is whole or not at all: when one side passes the filter (an "Out" filter, a date range that
+// cuts a transfer at midnight), its other side (same pairId) is shown too, so the pair stays one card and
+// one Cashew transfer instead of a lone leg.
 function cashewShownIndexes(drafts, onlyFilter, idSet, closedSet) {
-  var out = []
+  var out = [], pass = {}, pairs = {}
   for (var i = 0; i < drafts.length; i++) {
     if (closedSet && closedSet[drafts[i].id]) continue
-    if (!onlyFilter || (idSet && idSet[drafts[i].id])) out.push(i)
+    if (!onlyFilter || (idSet && idSet[drafts[i].id])) { pass[i] = true; if (drafts[i].pairId) pairs[drafts[i].pairId] = true }
+  }
+  for (var k = 0; k < drafts.length; k++) {
+    if (closedSet && closedSet[drafts[k].id]) continue
+    if (pass[k] || (drafts[k].pairId && pairs[drafts[k].pairId])) out.push(k)
   }
   return out
 }
@@ -3095,7 +3102,8 @@ function cashewSendText(st) {
     if (s.tracked === "yes") text += " Marked as tracked."
     else if (s.tracked === "off") text += " Not marked as tracked (the option is off)."
     else if (s.tracked === "unconfirmed") text += " Not marked as tracked: Cashew did not confirm every step."
-    return text + " Check them in Cashew, then close the Cashew tabs (a reloaded tab adds its rows again)."
+    return text + (s.transfers > 0 ? " Check them in Cashew, then close the transfer tabs (a reloaded tab adds its rows again)."
+      : " Check them in Cashew.")
   }
   if (s.phase === "stopped") return "Stopped at " + (transfer ? "transfer " : "link ") + (s.index || 0) + " of " + (s.total || 0) + "."
   return ""

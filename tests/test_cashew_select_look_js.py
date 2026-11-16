@@ -178,7 +178,7 @@ class SelectLook(unittest.TestCase):
         self.assertEqual(t(phase="timeout", index=2, total=5, added=12, of=17, wait=60),
                          "Link 2 of 5: 12 of 17 added after 60 s. Check the browser.")
         self.assertIn("not saved after 180 s", t(phase="timeout", kind="transfer", index=1, total=1, wait=180))
-        self.assertTrue(t(phase="done", total=5, rows=141).startswith("Added 141 rows in 5 links. Check them in Cashew"))
+        self.assertEqual(t(phase="done", total=5, rows=141), "Added 141 rows in 5 links. Check them in Cashew.")
         self.assertTrue(t(phase="done", total=1, rows=1).startswith("Added 1 row in 1 link."))
         self.assertTrue(t(phase="done", total=2, rows=0).startswith("Sent in 2 links."))
         self.assertTrue(t(phase="done", links=2, transfers=3, rows=20, tracked="yes")
@@ -291,6 +291,14 @@ class SelectLook(unittest.TestCase):
         self.assertEqual(got["lines"], [{"text": "Masala Shawaya Rice", "amount": "₹230"}, {"text": "PEPSI", "amount": "₹40"}])
         bare = self.js("billPeek({merchant: '', total: null, items: []})")
         self.assertEqual((bare["title"], bare["lines"], bare["total"], bare["more"]), ("Unreadable bill", [], "", 0))
+
+    def test_a_filter_that_lets_one_side_of_a_transfer_through_shows_both(self):
+        ds = [draft("o", "-160.00", "transfer", pairId="p"), draft("i", "160.00", "transfer", pairId="p"),
+              draft("a"), draft("z", "5.00", "transfer", pairId="q")]
+        got = self.js("cashewShownIndexes(input.d, true, {o: true, a: true}, {})", d=ds)
+        self.assertEqual(got, [0, 1, 2])                       # the in side comes along; the other pair does not
+        self.assertEqual(self.js("cashewShownIndexes(input.d, true, {i: true}, {o: true})", d=ds), [1])   # closed stays out
+        self.assertEqual(self.js("cashewShownIndexes(input.d, false, null, {})", d=ds), [0, 1, 2, 3])
 
 
 if __name__ == "__main__":

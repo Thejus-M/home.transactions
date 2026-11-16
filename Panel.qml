@@ -787,6 +787,10 @@ Panel {
   property bool cashewSendFresh: false        // "done" and the drafts did not change since
   property string cashewSendPhase: ""         // "" | open | wait | blind | timeout | done | stopped
   property string cashewSendTracked: ""       // at "done": yes | off | unconfirmed
+  // A normal link opens in a browser window on a hidden workspace (bin/cashew-open-hidden) and the window is
+  // closed once Cashew has its rows: nothing shows. A transfer page needs a tap, so it opens normally.
+  property string cashewSendWin: ""           // the hidden window of the current step ("" = none)
+  property bool cashewSendHiddenOk: true      // false after the hidden way failed once (another browser)
   readonly property var cashewSendItem: root.cashewSendDone < root.cashewSendItems.length ? root.cashewSendItems[root.cashewSendDone] : null
   readonly property bool cashewSending: root.cashewSendPhase === "open" || root.cashewSendPhase === "wait" || root.cashewSendPhase === "blind"
   readonly property bool cashewSendPaused: root.cashewSendPhase === "timeout"
@@ -831,6 +835,7 @@ Panel {
     var items = Model.cashewSendPlan(out)
     if (items.length === 0) { root.cashewSendPhase = ""; root.cashewSendNote = "Nothing selected to send."; return }
     root.cashewSendItems = items
+    root.cashewSendHiddenOk = true
     root.cashewSendDone = 0
     root.cashewSendConfirmed = true
     root.cashewSendTracked = ""
@@ -853,7 +858,39 @@ Panel {
     var it = root.cashewSendItem
     if (root.cashewSendOpened || !it) return
     root.cashewSendOpened = true
-    Quickshell.execDetached(["xdg-open", it.url])
+    root.cashewSendWin = ""
+    if (it.kind === "link" && root.cashewSendHiddenOk) {
+      cashewOpenHiddenProc.command = [root.widgetDir + "/bin/cashew-open-hidden", it.url]
+      cashewOpenHiddenProc.running = true
+    } else {
+      Quickshell.execDetached(["xdg-open", it.url])
+    }
+  }
+  // The hidden window of the step is closed when the step is complete (or stopped).
+  function cashewSendCloseWin() {
+    if (root.cashewSendWin === "") return
+    Quickshell.execDetached(["hyprctl", "dispatch", "closewindow", "address:" + root.cashewSendWin])
+    root.cashewSendWin = ""
+  }
+  // After a timeout the person must look: the hidden workspace with the window is shown.
+  function cashewSendShowWin() {
+    if (root.cashewSendWin === "") return
+    Quickshell.execDetached(["hyprctl", "dispatch", "togglespecialworkspace", "cashew"])
+  }
+  Process {
+    id: cashewOpenHiddenProc
+    stdout: StdioCollector { id: cashewOpenHiddenOut }
+    onExited: function (exitCode) {
+      var it = root.cashewSendItem
+      if (exitCode === 0) {
+        root.cashewSendWin = (cashewOpenHiddenOut.text || "").trim()
+        if (!root.cashewSending && !root.cashewSendPaused) root.cashewSendCloseWin()   // stopped meanwhile
+      } else if (it && root.cashewSending) {
+        // Not possible here (exit 4: another browser) or no window came (5): open it the normal way.
+        if (exitCode === 4) root.cashewSendHiddenOk = false
+        if (exitCode !== 5) Quickshell.execDetached(["xdg-open", it.url])
+      }
+    }
   }
   function cashewSendLine(line) {
     if (!root.cashewSending) return
@@ -866,6 +903,7 @@ Panel {
   function cashewSendExited(exitCode) {
     if (!root.cashewSending) return                       // stopped by hand
     if (exitCode === 0) {
+      root.cashewSendCloseWin()
       root.cashewSendDone += 1
       root.cashewSendStart()
     } else if (exitCode === 3) {
@@ -881,12 +919,14 @@ Panel {
       root.cashewSendOpen()
       root.cashewSendPhase = "timeout"
       root.cashewSendSay()
+      root.cashewSendShowWin()
       root.cashewGuessNotify("Cashew: waiting for you", root.cashewSendNote)
     }
   }
   // After a timeout: the person looked at the browser and wants the remaining steps.
   function cashewSendContinue() {
     if (!root.cashewSendPaused) return
+    root.cashewSendCloseWin()
     root.cashewSendConfirmed = false
     root.cashewSendDone += 1
     root.cashewSendStart()
@@ -897,6 +937,7 @@ Panel {
     root.cashewSendSay()
     cashewSendBlindTimer.stop()
     cashewWaitProc.running = false
+    root.cashewSendCloseWin()
   }
   function cashewSendFinish() {
     root.cashewSendTracked = !root.cashewSendConfirmed ? "unconfirmed" : (root.cashewAutoTrack ? "yes" : "off")
@@ -924,6 +965,7 @@ Panel {
     id: cashewSendBlindTimer
     interval: 8000
     onTriggered: if (root.cashewSendPhase === "blind") {
+      root.cashewSendCloseWin()
       root.cashewSendDone += 1
       root.cashewSendStart()
     }
