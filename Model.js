@@ -1856,10 +1856,12 @@ function txnExplain(t, ctx) {
   rows.push({ k: "Counterparty", v: t.counterparty || t.merchant })
   rows.push({ k: "Account", v: [ctx.accountTag, t.accountType === "credit" ? "credit card" : "savings"]
                               .filter(function (s) { return s }).join("  ") })
-  var note = transactionNote(t)
-  if (note) rows.push({ k: "Remark", v: note })
-  // The note written in the widget: it goes to Cashew first and decides the category (txdb/cashew.py).
-  rows.push({ k: "Note", v: ctx.userNote ? ctx.userNote : (note ? "none (the remark is used)  ·  ✎ to write one" : "none  ·  ✎ to write one") })
+  // The note: the one written in the widget, else the UPI remark (ctx.userNote is already that choice; the
+  // remark stands in when it is missing). It goes to Cashew first and decides the category (txdb/cashew.py).
+  var remark = transactionNote(t)
+  var note = ctx.userNote || remark
+  rows.push({ k: "Note", v: note ? note : "none  ·  ✎ to write one" })
+  if (remark && remark.trim() !== String(note).trim()) rows.push({ k: "Remark", v: remark })
   rows.push({ k: "Category", v: txnCategoryText(t) })
   rows.push({ k: "Statement", v: t.merchant })
   if (t.reference) rows.push({ k: "Reference", v: groupRef(t.reference) })

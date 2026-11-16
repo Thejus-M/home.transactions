@@ -264,8 +264,13 @@ class SelectLook(unittest.TestCase):
              "categoryBy": "default", "askAi": True, "tracked": False}
         rows = {r["k"]: r["v"] for r in self.js("txnExplain(input.t, {userNote: 'badminton court'}).rows", t=t)}
         self.assertEqual(rows["Note"], "badminton court")
+        self.assertEqual(rows["Remark"], "BATMINTON")                       # replaced by a note of its own: still shown
+        remark = {r["k"]: r["v"] for r in self.js("txnExplain(input.t, {}).rows", t=t)}
+        self.assertEqual(remark["Note"], "BATMINTON")                       # no note written: the remark IS the note
+        self.assertNotIn("Remark", remark)
         self.assertEqual(rows["Category"], "Friend Settlement › Split Paid  (HDFC default;  the AI reads the note when the Cashew window opens)")
-        empty = {r["k"]: r["v"] for r in self.js("txnExplain(input.t, {}).rows", t=dict(t, categoryBy="note", askAi=False))}
+        empty = {r["k"]: r["v"] for r in self.js("txnExplain(input.t, {}).rows",
+                                                  t=dict(t, merchant="SWIGGY", counterparty="", categoryBy="note", askAi=False))}
         self.assertTrue(empty["Note"].startswith("none"))
         self.assertEqual(empty["Category"], "Friend Settlement › Split Paid  (from the note)")
         self.assertEqual(self.js("txnCategoryText({})"), "none yet")

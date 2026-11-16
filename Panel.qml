@@ -11520,6 +11520,9 @@ Panel {
     readonly property string accountName: Model.accountChipText(txn, store.cardOverviews, store.accountNameOverrides)
     readonly property string note: Model.transactionNote(txn)
     readonly property string userNote: store.txnNotes[card.txn.id] || ""
+    // The note of this payment: the one written in the widget, else the UPI remark ("BATMINTON"). It is the
+    // note everywhere (the row, the "i" card, the editor, Cashew), before and after the AI looks at it.
+    readonly property string effectiveNote: card.userNote !== "" ? card.userNote : card.note
     // Content slides left by this much while the pointer is over the row, which
     // reveals the "i" and edit buttons at the right edge.
     property real slide: (card._hot || card.infoOpen) && !card.editing ? Style.space(62) : 0
@@ -11530,8 +11533,9 @@ Panel {
     function saveEdit() {
       store.setTransactionName(card.groupKey, (editFieldLoader.item ? editFieldLoader.item.text : ""))
       // noteArea lives inside the lazily built edit panel, so it is read through the Loader.
-      var noteText = editLoader.item ? editLoader.item.noteText : card.userNote
-      if (noteText.trim() !== card.userNote) store.setTxnNote(card.txn.id, noteText)
+      var noteText = editLoader.item ? editLoader.item.noteText : card.effectiveNote
+      // Saved only when it differs from what is shown: an untouched remark stays the remark.
+      if (noteText.trim() !== card.effectiveNote.trim()) store.setTxnNote(card.txn.id, noteText)
       card.editing = false
       card.refocus()
     }
@@ -11751,7 +11755,7 @@ Panel {
             id: noteIconSlot
             // A bill, a note, or both: one mark each (TxnMark.qml, icons/*.svg).
             readonly property bool hasBill: !!card.linkedReceipt
-            readonly property bool hasNote: card.userNote !== ""
+            readonly property bool hasNote: card.effectiveNote !== ""
             visible: hasBill || hasNote
             width: Style.space(20)
             height: Style.space(20)
@@ -11780,7 +11784,7 @@ Panel {
               ToolTip.visible: noteMouse.containsMouse
               ToolTip.text: (noteIconSlot.hasBill ? "Bill: " + Model.receiptTitle(card.linkedReceipt || {}) + " — open" : "")
                 + (noteIconSlot.hasBill && noteIconSlot.hasNote ? "\n" : "")
-                + (noteIconSlot.hasNote ? "Note: " + card.userNote : "")
+                + (noteIconSlot.hasNote ? "Note: " + card.effectiveNote : "")
               ToolTip.delay: 300
             }
           }
@@ -11998,7 +12002,7 @@ Panel {
       info: !card.infoOpen ? null
         : (card.txn.transferId
           ? Model.transferExplain(card.txn, { accountTag: card.accountName })
-          : Model.txnExplain(card.txn, { accountTag: card.accountName, userNote: card.userNote,
+          : Model.txnExplain(card.txn, { accountTag: card.accountName, userNote: card.effectiveNote,
               receiptMerchant: card.linkedReceipt ? (card.linkedReceipt.merchant || Model.receiptTitle(card.linkedReceipt)) : "" }))
     }
 
@@ -12254,8 +12258,8 @@ Panel {
           font.family: Style.font.family
           font.pixelSize: Style.font.body
           background: null
-          onVisibleChanged: if (visible) text = card.userNote
-          Component.onCompleted: text = card.userNote
+          onVisibleChanged: if (visible) text = card.effectiveNote
+          Component.onCompleted: text = card.effectiveNote
           Keys.onEscapePressed: { card.editing = false; card.refocus() }
         }
       }
@@ -12581,11 +12585,11 @@ Panel {
       }
 
       Text {
-        visible: card.userNote !== ""
+        visible: card.effectiveNote !== ""
         width: parent.width
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
-        text: "Note: " + card.userNote
+        text: "Note: " + card.effectiveNote
         color: Qt.darker(root.foreground, 1.1)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -12604,7 +12608,8 @@ Panel {
       }
 
       Text {
-        visible: card.note !== ""
+        // The remark only when a note of its own replaced it (else the remark IS the note, shown above).
+        visible: card.userNote !== "" && card.note !== "" && card.note.trim() !== card.userNote.trim()
         width: parent.width
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
