@@ -245,6 +245,31 @@ class SelectLook(unittest.TestCase):
         self.assertEqual(self.js("cashewGuessRows(input.d, [0], {f: true}, true)", d=ds), [])            # already asked
         self.assertEqual(self.js("cashewGuessRows(input.d, [0], {}, true)", d=[dict(ds[0], guessed=True)]), [])
 
+    def test_a_note_driven_answer_is_pinned_on_the_row_and_asked_alone(self):
+        ds = [draft("f", category="Sports", subcategory="", guessed=True, askAi=True, groupKey="UPI|ashwin"),
+              draft("g", category="Food Out", subcategory="Lunch", guessed=True, groupKey="UPI|cafe")]
+        got = self.js("cashewAcceptGuesses(input.d, {version: 1}).state", d=ds)
+        self.assertEqual(got["txn"]["f"], {"category": "Sports", "subcategory": ""})
+        self.assertNotIn("UPI|ashwin", got["categories"])                    # not for every payment to the person
+        self.assertEqual(got["categories"]["UPI|cafe"], {"category": "Food Out", "subcategory": "Lunch"})
+        some = self.js("cashewAcceptSome(input.d, {version: 1}, ['f']).state", d=ds)
+        self.assertEqual(some["txn"]["f"]["category"], "Sports")
+        groups = self.js("cashewGuessGroups(input.r)", r=[{"id": "a", "groupKey": "UPI|x", "askAi": True},
+                                                          {"id": "b", "groupKey": "UPI|x"}, {"id": "c", "groupKey": "UPI|x"}])
+        self.assertEqual(sorted(len(g["rows"]) for g in groups), [1, 2])
+
+    def test_the_info_card_shows_the_note_and_where_the_category_came_from(self):
+        t = {"id": "x", "merchant": "UPI-ASHWIN K-a@oksbi-SBIN0070031-1-BATMINTON", "counterparty": "ASHWIN K",
+             "bank": "HDFC", "accountType": "checking", "category": "Friend Settlement", "subcategory": "Split Paid",
+             "categoryBy": "default", "askAi": True, "tracked": False}
+        rows = {r["k"]: r["v"] for r in self.js("txnExplain(input.t, {userNote: 'badminton court'}).rows", t=t)}
+        self.assertEqual(rows["Note"], "badminton court")
+        self.assertEqual(rows["Category"], "Friend Settlement › Split Paid  (HDFC default;  the AI reads the note when the Cashew window opens)")
+        empty = {r["k"]: r["v"] for r in self.js("txnExplain(input.t, {}).rows", t=dict(t, categoryBy="note", askAi=False))}
+        self.assertTrue(empty["Note"].startswith("none"))
+        self.assertEqual(empty["Category"], "Friend Settlement › Split Paid  (from the note)")
+        self.assertEqual(self.js("txnCategoryText({})"), "none yet")
+
 
 if __name__ == "__main__":
     unittest.main()

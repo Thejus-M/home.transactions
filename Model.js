@@ -1838,6 +1838,16 @@ function transferExplain(x, ctx) {
   return res
 }
 
+// "Food Out › Lunch  (from the note)" for the "i" panel: the category the Cashew export picks and why.
+function txnCategoryText(t) {
+  var cat = t && t.category ? t.category + (t.subcategory ? " › " + t.subcategory : "") : "none yet"
+  var why = []
+  if (t && t.categoryBy === "note") why.push("from the note")
+  if (t && t.categoryBy === "default") why.push("HDFC default")
+  if (t && t.askAi) why.push("the AI reads the note when the Cashew window opens")
+  return why.length ? cat + "  (" + why.join(";  ") + ")" : cat
+}
+
 // Texts for the "i" panel of an ordinary transaction.
 // ctx: { accountTag, receiptMerchant }
 function txnExplain(t, ctx) {
@@ -1848,6 +1858,9 @@ function txnExplain(t, ctx) {
                               .filter(function (s) { return s }).join("  ") })
   var note = transactionNote(t)
   if (note) rows.push({ k: "Remark", v: note })
+  // The note written in the widget: it goes to Cashew first and decides the category (txdb/cashew.py).
+  rows.push({ k: "Note", v: ctx.userNote ? ctx.userNote : (note ? "none (the remark is used)  ·  ✎ to write one" : "none  ·  ✎ to write one") })
+  rows.push({ k: "Category", v: txnCategoryText(t) })
   rows.push({ k: "Statement", v: t.merchant })
   if (t.reference) rows.push({ k: "Reference", v: groupRef(t.reference) })
   rows.push({ k: "Status", v: (t.tracked ? "Tracked" : "Not tracked")
@@ -2299,7 +2312,7 @@ function cashewGuessRows(drafts, shown, tried, defaultedOnly) {
     if (title === "" && merchant === "" && note === "") continue
     out.push({ id: d.id, title: title, merchant: merchant, notes: note,
                amount: d.amount || "", kind: d.kind || "", bank: d.bank || "", accountType: d.accountId ? String(d.accountId).split("|")[1] || "" : "",
-               groupKey: d.groupKey || "" })
+               groupKey: d.groupKey || "", askAi: !!d.askAi })
   }
   return out
 }
@@ -2315,7 +2328,8 @@ function cashewGuessGroups(rows) {
   var byKey = {}, out = []
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i]
-    var upi = !!r.groupKey && r.groupKey.indexOf("UPI|") === 0
+    // A row asked about for its own note is never merged with the payee's other rows.
+    var upi = !!r.groupKey && r.groupKey.indexOf("UPI|") === 0 && !r.askAi
     var key = upi ? r.groupKey : ("row:" + r.id)
     var g = byKey[key]
     if (!g) { g = { key: key, upi: upi, rows: [] }; byKey[key] = g; out.push(g) }
@@ -2407,12 +2421,19 @@ function cashewApplyGuesses(drafts, results) {
   return changed ? out : drafts
 }
 
+// An accepted guess is remembered for the payee, except on a row the AI read for its NOTE (askAi): that
+// answer belongs to this one payment ("BATMINTON"), not to every later payment to the same person.
+function _cashewRememberGuess(st, d) {
+  return d.askAi ? cashewPinCategory(st, d.id, d.category, d.subcategory)
+    : cashewRememberCategory(st, d.groupKey, d.category, d.subcategory)
+}
+
 // {drafts, state}: every guessed draft remembered for its merchant, mark cleared.
 function cashewAcceptGuesses(drafts, state) {
   var st = state
   var out = drafts.map(function (d) {
     if (!d.guessed) return d
-    st = cashewRememberCategory(st, d.groupKey, d.category, d.subcategory)
+    st = _cashewRememberGuess(st, d)
     return Object.assign({}, d, { guessed: false })
   })
   return { drafts: out, state: st }
@@ -2576,7 +2597,7 @@ function cashewAcceptSome(drafts, state, ids) {
   var st = state
   var out = drafts.map(function (d) {
     if (!set[d.id] || !d.guessed) return d
-    st = cashewRememberCategory(st, d.groupKey, d.category, d.subcategory)
+    st = _cashewRememberGuess(st, d)
     return Object.assign({}, d, { guessed: false })
   })
   return { drafts: out, state: st }

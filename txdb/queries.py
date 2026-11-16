@@ -46,6 +46,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         ok = d and d["kind"] != "transfer" and (d["category"], d["subcategory"]) != cashew.UNCATEGORIZED
         t["category"] = d["category"] if ok else ""
         t["subcategory"] = d["subcategory"] if ok else ""
+        # Why (the "i" card): "note" (a rule on the note), "default" (the HDFC savings default), ""; askAi: the
+        # note matched no rule, so the AI reads it when the Cashew window opens.
+        t["categoryBy"] = (d.get("categoryBy") or "") if ok else ""
+        t["askAi"] = bool(d and d.get("askAi"))
     # Pair the two sides of a movement between your own accounts (txdb/transfers.py).
     split = {r[0] for r in conn.execute("SELECT txn_id FROM transfer_splits")}
     tx_rows = [{"id": t["id"], "date": t["date"], "merchant": t["merchant"], "amount_paise": round(t["amount"] * 100),

@@ -552,6 +552,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
 
     defaulted: set[str] = set()                    # ids whose category is only the HDFC savings default
     ask_ai: dict[str, str] = {}                    # id -> its note, when the note matched no rule (the AI decides)
+    by_note_ids: set[str] = set()                  # ids whose category a rule on the note gave
     try:
         user_notes = {r[0]: r[1] for r in conn.execute("SELECT transaction_id, note FROM txn_notes")}
     except sqlite3.Error:                          # a database from before the notes table
@@ -590,6 +591,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
                 by_note = note_category(note, negative, rules, types)
                 if by_note:
                     cat, sub, warn = by_note[0], by_note[1], ""
+                    by_note_ids.add(r["id"])
                 else:
                     ask_ai[r["id"]] = note             # no rule knows the note: the AI reads it
             # HDFC savings (not a card, not another bank), no bill, nothing else to go on: Friend Settlement.
@@ -672,6 +674,9 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
             d["refundMode"] = refund_mode
         if r["id"] in defaulted and kind != "refund":
             d["defaulted"] = True                      # no rule, bill or answer gave the category
+            d["categoryBy"] = "default"
+        if r["id"] in by_note_ids and kind != "refund":
+            d["categoryBy"] = "note"
         if r["id"] in ask_ai and kind not in ("refund", "transfer"):
             # The row has a note no rule knows ("BATMINTON"): the AI decides from it (Model.cashewGuessRows).
             d["askAi"] = True

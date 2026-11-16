@@ -11998,7 +11998,7 @@ Panel {
       info: !card.infoOpen ? null
         : (card.txn.transferId
           ? Model.transferExplain(card.txn, { accountTag: card.accountName })
-          : Model.txnExplain(card.txn, { accountTag: card.accountName,
+          : Model.txnExplain(card.txn, { accountTag: card.accountName, userNote: card.userNote,
               receiptMerchant: card.linkedReceipt ? (card.linkedReceipt.merchant || Model.receiptTitle(card.linkedReceipt)) : "" }))
     }
 
