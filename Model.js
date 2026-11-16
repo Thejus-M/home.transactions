@@ -2748,6 +2748,155 @@ function cashewPatchMany(drafts, idxs, patch) {
   return out
 }
 
+// ---- Selection (the select-all checkbox) and "Look" (what Cashew receives) ----
+
+// The rows the list shows: cashewRowOrder narrowed by the window's own filters.
+// opts: { newestFirst, needOnly, guessedOnly }. A pair stays when either leg is guessed.
+function cashewVisibleRows(drafts, shown, opts) {
+  var o = opts || {}
+  var rows = cashewRowOrder(drafts, shown, o.newestFirst)
+  if (o.needOnly) rows = rows.filter(function (r) { return cashewNeedsCategory(drafts[r.idx]) })
+  if (o.guessedOnly) rows = rows.filter(function (r) {
+    var a = drafts[r.idx], b = r.partner >= 0 ? drafts[r.partner] : null
+    return !!((a && a.guessed) || (b && b.guessed))
+  })
+  return rows
+}
+
+// Draft indexes of those rows, the in leg of a transfer card included.
+function cashewRowIdxs(rows) {
+  var out = []
+  ;(rows || []).forEach(function (r) { out.push(r.idx); if (r.partner >= 0) out.push(r.partner) })
+  return out
+}
+
+// True for a row the drafter turned off on purpose: a refund netted into its purchase (or the fully
+// refunded purchase), a refund whose purchase becomes a Lent, a transfer leg whose partner is tracked.
+// Selecting everything must leave these off: sending a netted refund counts it twice.
+function cashewAutoOff(d) {
+  if (!d) return false
+  return d.refundMode === "skip" || (d.kind === "refund" && d.refundMode === "lent") || d.partnerTracked === true
+}
+
+// New array with include = value on `idxs`. Turning rows ON leaves the cashewAutoOff rows alone.
+// Drafts that do not change keep their identity.
+function cashewSetInclude(drafts, idxs, value) {
+  var hit = {}
+  ;(idxs || []).forEach(function (i) { hit[i] = true })
+  var on = value === true
+  return drafts.map(function (d, i) {
+    if (!hit[i] || !d) return d
+    if (on && cashewAutoOff(d)) return d
+    if ((d.include !== false) === on) return d
+    return Object.assign({}, d, { include: on })
+  })
+}
+
+// "all" | "some" | "none": the state of the select-all checkbox over `idxs` (auto-off rows do not count).
+function cashewSelectState(drafts, idxs) {
+  var can = 0, on = 0
+  ;(idxs || []).forEach(function (i) {
+    var d = drafts[i]
+    if (!d || cashewAutoOff(d)) return
+    can++
+    if (d.include !== false) on++
+  })
+  return on === 0 ? "none" : (on === can ? "all" : "some")
+}
+
+// Totals of the ticked rows among `idxs`: { total, on, income, expense, transfers, text }.
+// A transfer leg is not income or expense; a pair counts as one transfer.
+function cashewSelectionSummary(drafts, idxs) {
+  var total = 0, on = 0, inc = 0, exp = 0, pairs = {}, lone = 0
+  ;(idxs || []).forEach(function (i) {
+    var d = drafts[i]
+    if (!d) return
+    total++
+    if (d.include === false) return
+    on++
+    var p = Math.round(Number(String(d.amount || "0").replace(/,/g, "")) * 100) || 0
+    if (d.kind === "transfer") { if (d.pairId) pairs[d.pairId] = true; else lone++ }
+    else if (p < 0) exp += -p
+    else inc += p
+  })
+  var transfers = Object.keys(pairs).length + lone
+  var text = on + " of " + total + " selected"
+  if (on > 0) {
+    text += " · income " + cashewMoney(inc / 100) + " · expense " + cashewMoney(exp / 100)
+    if (transfers > 0) text += " · " + transfers + (transfers === 1 ? " transfer" : " transfers")
+  }
+  return { total: total, on: on, income: cashewMoney(inc / 100), expense: cashewMoney(exp / 100), transfers: transfers, text: text }
+}
+
+function _cashewUnpct(v) { return String(v === undefined || v === null ? "" : v).replace(/%25/g, "%") }
+
+// The entries of one link's JSON text, decoded the way Cashew reads them:
+// [{date, title, type: "income"|"expense", amount: "₹1,234.50", category, subcategory, account, note, byId, line}].
+// `line` is the whole entry as one text line. [] when the text is not a link's JSON.
+function cashewLookEntries(json) {
+  var data
+  try { data = JSON.parse(String(json || "")) } catch (e) { return [] }
+  var list = data && data.transactions
+  if (!Array.isArray(list)) return []
+  return list.map(function (e) {
+    var amount = String(e.amount || "0")
+    var type = amount.charAt(0) === "-" ? "expense" : "income"
+    var byId = !!e.categoryPk
+    var cat = byId ? "category id " + e.categoryPk : _cashewUnpct(e.category)
+    var sub = byId ? "" : _cashewUnpct(e.subcategory)
+    var o = { date: String(e.date || ""), title: _cashewUnpct(e.title), type: type, amount: cashewMoney(amount),
+              category: cat, subcategory: sub, account: _cashewUnpct(e.account),
+              note: _cashewUnpct(e.notes).split("\n")[0], byId: byId }
+    var parts = [o.date, o.type, o.amount, o.category + (o.subcategory ? " › " + o.subcategory : "")]
+    if (o.account) parts.push(o.account)
+    if (o.title) parts.push(o.title)
+    o.line = parts.join("  ·  ")
+    return o
+  })
+}
+
+// How each shown row leaves, from the builder's own result (`built` = cashewBuildLinks(...)):
+// { id: {how: "link"|"transfer"|"file"|"netted"|"partner"|"off", link: n (1-based, for "link")} }.
+function cashewRowFates(drafts, shown, built) {
+  var out = {}
+  var b = built || {}
+  ;(b.links || []).forEach(function (l, n) {
+    ;(l.ids || []).forEach(function (id) { out[id] = { how: "link", link: n + 1 } })
+  })
+  ;(b.transfers || []).forEach(function (t) {
+    ;(t.ids || []).forEach(function (id) { out[id] = { how: "transfer", link: 0 } })
+  })
+  var keep = null
+  if (shown) { keep = {}; shown.forEach(function (i) { keep[i] = true }) }
+  ;(drafts || []).forEach(function (d, i) {
+    if (!d || (keep && !keep[i]) || out[d.id]) return
+    var how = "off"
+    if (d.include !== false && d.viaFile) how = "file"
+    else if (d.refundMode === "skip" || (d.kind === "refund" && d.refundMode === "lent")) how = "netted"
+    else if (d.partnerTracked === true) how = "partner"
+    out[d.id] = { how: how, link: 0 }
+  })
+  return out
+}
+
+// One line for a row: what Cashew gets for it, or why it gets nothing.
+function cashewLookLine(d, fate, linkCount) {
+  if (!d) return ""
+  var f = fate || { how: "off", link: 0 }
+  if (f.how === "transfer") return "Cashew opens a transfer page for this pair: tap Save there."
+  if (f.how === "file") return "Added by file (txdb cashew-fix), not by link."
+  if (f.how === "netted") return d.kind === "refund" ? "Not sent: netted against its purchase." : "Not sent: refunded in full."
+  if (f.how === "partner") return "Not sent: the other side of this transfer is already tracked."
+  if (f.how !== "link") return "Not sent: not selected."
+  var debit = cashewIsDebit(d)
+  var type = d.kind === "transfer" ? (debit ? "transfer out" : "transfer in") : (debit ? "expense" : "income")
+  var cat = String(d.category || "") + (d.subcategory ? " › " + d.subcategory : "")
+  var parts = ["Goes in as " + type + " " + cashewMoney(d.amount), cat]
+  if (d.account) parts.push(String(d.account))
+  parts.push("link " + f.link + " of " + (linkCount || f.link))
+  return parts.join(" · ")
+}
+
 // Net total per day of the shown drafts: { "2026-11-08": "-₹9.78" }.
 function cashewDayTotals(drafts, shown) {
   var paise = {}, dayOf = {}

@@ -497,12 +497,10 @@ Panel {
     if (typed === true) root.cashewQueueLinks()
     else root.cashewRebuildLinks()
   }
+  // The select-all checkbox: only the rows the list shows now (its own filters included); turning rows on
+  // leaves the ones the drafter turned off on purpose (a netted refund, a leg whose partner is tracked).
   function cashewSetAll(value) {
-    var keep = ({})
-    root.cashewShown.forEach(function (i) { keep[i] = true })
-    root.cashewEdit(root.cashewDrafts.map(function (d, i) {
-      return keep[i] ? Object.assign({}, d, { include: value }) : d
-    }))
+    root.cashewEdit(Model.cashewSetInclude(root.cashewDrafts, cashewWin.rowIdxs, value))
   }
   function cashewSetState(next) {
     if (!root.cashewStateLoaded) { root.cashewState = next; return }
@@ -7615,6 +7613,9 @@ Panel {
     // whenever it's the active surface, it just doesn't get force-closed
     // the moment focus moves elsewhere.
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
+    // Minimised: only the small card takes the pointer; clicks elsewhere reach the windows below.
+    property Region miniMask: Region { item: cashewMini }
+    mask: cashewWin.compact ? cashewWin.miniMask : null
 
     // The in-card picker: "" (closed), "category" or "account".
     property string pickKind: ""
@@ -7631,6 +7632,16 @@ Panel {
     property bool oldestFirst: false
     property bool optionsOpen: false          // the Options row; persists across reopens
     property bool needOnly: false             // the list shows only rows with no category; persists across reopens
+    // Minimised: a small card in the corner with only what the sending step needs (totals, Send all, the
+    // links, Mark as tracked). The rest of the screen stays usable (see `mask`). Reset on every open.
+    property bool compact: false
+    property bool warnOpen: false             // the warnings list shows every line, not the first five
+    property var rowIdxs: []                  // draft indexes of the rows the list shows (set by syncRows)
+    readonly property string selectState: Model.cashewSelectState(root.cashewDrafts, cashewWin.rowIdxs)
+    readonly property var selection: Model.cashewSelectionSummary(root.cashewDrafts, cashewWin.rowIdxs)
+    // "Look": how every shown row leaves (which link, a transfer page, not sent), from the built links.
+    readonly property var fates: Model.cashewRowFates(root.cashewDrafts, root.cashewShown,
+      { links: root.cashewLinks, transfers: root.cashewTransfers })
     property bool askActive: false            // the ask-me sequence is running
     // The guess results panel (an in-card overlay).
     property bool resultsOpen: false
@@ -7662,6 +7673,7 @@ Panel {
       cashewWin.resultsOpen = false
       cashewWin.resultsRaw = false
       cashewWin.askActive = false
+      cashewWin.compact = false
       // Closing this window (Close button, Escape, backdrop click) no
       // longer stops a running guess - it keeps going in the background
       // and its results are there waiting the next time the window opens.
@@ -7691,17 +7703,13 @@ Panel {
     // the order toggle rebuilds it; every other edit keeps the delegates.
     ListModel { id: cwRows }
     function syncRows() {
-      var rows = Model.cashewRowOrder(root.cashewDrafts, root.cashewShown, !cashewWin.oldestFirst)
-      if (cashewWin.needOnly) rows = rows.filter(function (r) {
-        return Model.cashewNeedsCategory(root.cashewDrafts[r.idx])
-      })
-      if (root.cashewGuessedOnly) rows = rows.filter(function (r) {
-        var a = root.cashewDrafts[r.idx], b = r.partner >= 0 ? root.cashewDrafts[r.partner] : null
-        return !!((a && a.guessed) || (b && b.guessed))
-      })
+      var rows = Model.cashewVisibleRows(root.cashewDrafts, root.cashewShown,
+        { newestFirst: !cashewWin.oldestFirst, needOnly: cashewWin.needOnly, guessedOnly: root.cashewGuessedOnly })
+      cashewWin.rowIdxs = Model.cashewRowIdxs(rows)
       cwRows.clear()
       for (var i = 0; i < rows.length; i++) cwRows.append(rows[i])
     }
+    onCompactChanged: if (cashewWin.visible) (cashewWin.compact ? cashewMini : cashewCard).forceActiveFocus()
     onOldestFirstChanged: cashewWin.syncRows()
     onNeedOnlyChanged: cashewWin.syncRows()
     Connections {
@@ -7832,17 +7840,141 @@ Panel {
     }
 
     Rectangle {
+      visible: !cashewWin.compact
       anchors.fill: parent
       color: Qt.rgba(0, 0, 0, 0.78)
       MouseArea { anchors.fill: parent; onClicked: root.closeCashew() }
     }
 
+    // ---- minimised: only what the sending step needs
+    Item {
+      id: cashewMini
+      visible: cashewWin.compact
+      anchors { right: parent.right; bottom: parent.bottom; margins: Style.space(24) }
+      width: Style.space(380)
+      height: cwMiniCol.implicitHeight + Style.space(28)
+      focus: cashewWin.compact
+      Keys.onEscapePressed: function (event) { cashewWin.compact = false; event.accepted = true }
+
+      MouseArea { anchors.fill: parent; onClicked: {} }
+      BorderSurface {
+        anchors.fill: parent
+        color: Color.popups.background
+        borderSpec: Border.none()
+        radius: Style.cornerRadius
+      }
+
+      Column {
+        id: cwMiniCol
+        anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(14) }
+        spacing: Style.space(8)
+
+        Item {
+          width: parent.width
+          height: Style.space(28)
+          Text {
+            anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+            textFormat: Text.PlainText
+            text: "Cashew links"
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Row {
+            anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+            spacing: Style.space(6)
+            CashewBtn { label: "Expand"; onClicked: cashewWin.compact = false }
+            CashewBtn { label: "Close"; onClicked: root.closeCashew() }
+          }
+        }
+
+        Text {
+          width: parent.width
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          text: cashewWin.selection.text
+            + (root.cashewNeedCount > 0 ? "\n" + root.cashewNeedCount + " need a category" : "")
+            + (root.cashewWarnings.length > 0 ? "\n" + root.cashewWarnings.length + (root.cashewWarnings.length === 1 ? " warning" : " warnings") + " (expand to read)" : "")
+          color: cashewWin.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        CashewBtn {
+          primary: true
+          enabled: !root.cashewSending && root.cashewLinks.length + root.cashewTransfers.length > 0
+          label: root.cashewVerifyArmed ? "Unverified AI · click again"
+            : root.cashewSending ? ("Sending " + (root.cashewSendTotal - root.cashewSendQueue.length) + "/" + root.cashewSendTotal + "…")
+            : "Send all to Cashew web"
+          onClicked: root.cashewSendAll()
+        }
+        Text {
+          visible: root.cashewSendNote !== ""
+          width: parent.width
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          text: root.cashewSendNote
+          color: cashewWin.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        // One button per link (and per transfer page): open it in Cashew.
+        Flow {
+          width: parent.width
+          spacing: Style.space(6)
+          Repeater {
+            model: root.cashewLinks
+            delegate: CashewBtn {
+              id: mlk
+              required property var modelData
+              required property int index
+              property bool opened: false
+              active: mlk.opened
+              label: (mlk.opened ? "✓ " : "") + "Link " + (mlk.index + 1) + " · " + mlk.modelData.count
+              onClicked: {
+                if (!root.cashewVerifyGate()) return
+                Quickshell.execDetached(["xdg-open", mlk.modelData.url])
+                mlk.opened = true
+              }
+            }
+          }
+          Repeater {
+            model: root.cashewTransfers
+            delegate: CashewBtn {
+              id: mtr
+              required property var modelData
+              required property int index
+              property bool opened: false
+              active: mtr.opened
+              label: (mtr.opened ? "✓ " : "") + "Transfer " + (mtr.index + 1)
+              onClicked: {
+                if (!root.cashewVerifyGate()) return
+                Quickshell.execDetached(["xdg-open", mtr.modelData.url])
+                mtr.opened = true
+              }
+            }
+          }
+        }
+
+        CashewBtn {
+          enabled: root.cashewIncludedCount > 0
+          primary: cashewWin.confirmMark
+          label: cashewWin.confirmMark ? "Click again: mark " + root.cashewIncludedCount + " as tracked"
+            : "Mark " + root.cashewIncludedCount + " as tracked"
+          onClicked: if (cashewWin.confirmMark) cashewWin.markTracked(); else cashewWin.confirmMark = true
+        }
+      }
+    }
+
     Item {
       id: cashewCard
+      visible: !cashewWin.compact
       anchors.centerIn: parent
       width: Math.min(parent.width - Style.space(80), Style.space(1280))
-      height: Math.min(parent.height - Style.space(80), Style.space(680))
-      focus: true
+      height: Math.min(parent.height - Style.space(80), Style.space(900))
+      focus: !cashewWin.compact
       Keys.onPressed: function (event) {
         // N: categorise the next row. A text field takes the key first, so this
         // only runs when no field has the focus.
@@ -7918,6 +8050,7 @@ Panel {
             else cashewWin.resultsOpen = true
           }
           CashewBtn { label: cashewWin.optionsOpen ? "Options ▴" : "Options ▾"; active: cashewWin.optionsOpen; onClicked: cashewWin.optionsOpen = !cashewWin.optionsOpen }
+          CashewBtn { label: "Minimise"; onClicked: { cashewWin.pickKind = ""; cashewWin.askActive = false; cashewWin.compact = true } }
           CashewBtn { label: "Close"; onClicked: root.closeCashew() }
         }
       }
@@ -7936,8 +8069,6 @@ Panel {
           width: parent.width
           spacing: Style.space(6)
           CashewBtn { label: "Oldest first"; active: cashewWin.oldestFirst; onClicked: cashewWin.oldestFirst = !cashewWin.oldestFirst }
-          CashewBtn { label: "Include all"; onClicked: root.cashewSetAll(true) }
-          CashewBtn { label: "Exclude all"; onClicked: root.cashewSetAll(false) }
           CashewBtn {
             // silent: both sides of a transfer go in the bulk link (two Balance Correction rows, nothing to save);
             // page: Cashew opens one transfer page per pair and you tap Save (a real linked transfer).
@@ -8042,7 +8173,10 @@ Panel {
         }
         Text {
           visible: !cashewWin.linksCollapsed && root.cashewSendNote !== ""
-          anchors { verticalCenter: cwSendBtn.verticalCenter; right: cwSendBtn.left; rightMargin: Style.space(8) }
+          // bounded on the left by the "LINKS" label, so a long note is cut and does not run over it
+          anchors { verticalCenter: cwSendBtn.verticalCenter; left: parent.left; leftMargin: Style.space(64); right: cwSendBtn.left; rightMargin: Style.space(8) }
+          horizontalAlignment: Text.AlignRight
+          elide: Text.ElideLeft
           textFormat: Text.PlainText
           text: root.cashewSendNote
           color: cashewWin.muted
@@ -8122,8 +8256,16 @@ Panel {
               visible: root.cashewWarnings.length > 0
               width: parent.width
               spacing: Style.space(3)
+              Text {
+                textFormat: Text.PlainText
+                text: "Warnings · " + root.cashewWarnings.length
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
               Repeater {
-                model: root.cashewWarnings.slice(0, 5)
+                model: cashewWin.warnOpen ? root.cashewWarnings : root.cashewWarnings.slice(0, 5)
                 delegate: Text {
                   required property string modelData
                   width: parent.width
@@ -8137,13 +8279,10 @@ Panel {
                   font.pixelSize: Style.font.caption
                 }
               }
-              Text {
+              CashewBtn {
                 visible: root.cashewWarnings.length > 5
-                textFormat: Text.PlainText
-                text: "+" + (root.cashewWarnings.length - 5) + " more"
-                color: cashewWin.muted
-                font.family: Style.font.family
-                font.pixelSize: Style.font.caption
+                label: cashewWin.warnOpen ? "Show fewer" : "+" + (root.cashewWarnings.length - 5) + " more"
+                onClicked: cashewWin.warnOpen = !cashewWin.warnOpen
               }
             }
 
@@ -8240,6 +8379,7 @@ Panel {
                 required property int index
                 property bool copied: false
                 property bool showRaw: false
+                property bool showLook: false
                 // Stays set once Open is tapped, so a page of several links
                 // keeps track of which ones are done after a scroll away.
                 property bool opened: false
@@ -8287,7 +8427,8 @@ Panel {
                     }
                   }
 
-                  Row {
+                  Flow {
+                    width: parent.width
                     spacing: Style.space(6)
                     CashewBtn {
                       label: root.cashewVerifyArmed ? "Unverified AI · click again" : (lk.copied ? "Copied" : "Copy")
@@ -8309,10 +8450,46 @@ Panel {
                       }
                     }
                     CashewBtn {
+                      label: "Look"
+                      active: lk.showLook
+                      onClicked: lk.showLook = !lk.showLook
+                    }
+                    CashewBtn {
                       label: "Raw JSON"
                       active: lk.showRaw
                       onClicked: lk.showRaw = !lk.showRaw
                     }
+                  }
+
+                  // Look: every entry of this link the way Cashew reads it (income or expense by the sign).
+                  Flickable {
+                    id: lkLookFlick
+                    visible: lk.showLook
+                    width: parent.width
+                    height: lk.showLook ? Math.min(lkLookCol.implicitHeight, Style.space(220)) : 0
+                    clip: true
+                    contentWidth: width
+                    contentHeight: lkLookCol.implicitHeight
+                    boundsBehavior: Flickable.StopAtBounds
+                    Column {
+                      id: lkLookCol
+                      width: parent.width
+                      spacing: Style.space(3)
+                      Repeater {
+                        model: lk.showLook ? Model.cashewLookEntries(lk.modelData.json) : []
+                        delegate: Text {
+                          required property var modelData
+                          width: lkLookCol.width
+                          wrapMode: Text.Wrap
+                          textFormat: Text.PlainText
+                          text: modelData.line
+                          color: modelData.type === "income" ? root.creditColor : cashewWin.muted
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption
+                        }
+                      }
+                    }
+                    ScrollWheelArea { anchors.fill: parent; target: lkLookFlick }
                   }
 
                   Flickable {
@@ -8819,13 +8996,34 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Text {
-              textFormat: Text.PlainText
-              text: cashewWin.needOnly ? "ROWS WITH NO CATEGORY" : "TRANSACTIONS"
-              color: cashewWin.muted
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-              font.bold: true
+            // The select-all checkbox sits over the row checkboxes (same left inset) and acts on the rows the
+            // list shows. Beside it: how many are selected and their income / expense totals.
+            Row {
+              leftPadding: Style.space(8)
+              spacing: Style.space(10)
+              CashewCheck {
+                anchors.verticalCenter: parent.verticalCenter
+                checked: cashewWin.selectState === "all"
+                partial: cashewWin.selectState === "some"
+                onToggled: root.cashewSetAll(cashewWin.selectState !== "all")
+              }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: cashewWin.needOnly ? "ROWS WITH NO CATEGORY" : "TRANSACTIONS"
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: cashewWin.selection.text
+                color: cashewWin.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
             }
 
             Flow {
@@ -8912,7 +9110,8 @@ Panel {
             width: cwList.width
             height: Style.space(40)
             Text {
-              anchors { left: parent.left; leftMargin: Style.space(4); bottom: parent.bottom; bottomMargin: Style.space(6) }
+              // same left inset as the row checkboxes
+              anchors { left: parent.left; leftMargin: Style.space(8); bottom: parent.bottom; bottomMargin: Style.space(6) }
               textFormat: Text.PlainText
               text: Model.cashewDayLabel(cdHead.section)
               color: cashewWin.muted
@@ -8920,7 +9119,8 @@ Panel {
               font.pixelSize: Style.font.body
             }
             Text {
-              anchors { right: parent.right; rightMargin: Style.space(10); bottom: parent.bottom; bottomMargin: Style.space(6) }
+              // ends where the row amounts end: row margin 10 + actions 52 + gap 10 + cell padding 4
+              anchors { right: parent.right; rightMargin: Style.space(76); bottom: parent.bottom; bottomMargin: Style.space(6) }
               textFormat: Text.PlainText
               text: cashewWin.dayTotals[cdHead.section] || ""
               color: cashewWin.muted
@@ -8948,7 +9148,7 @@ Panel {
             property bool infoOpen: false
             readonly property bool wide: false      // one layout at every width: two lines per row
             readonly property var srcTxn: crow.infoOpen ? store.transactions.find(function (t) { return t.id === crow.d.id }) : null
-            height: crow.isTransfer ? Style.space(68) : (crow.wide ? Style.space(60) : Style.space(68)) + (crow.infoOpen ? Style.space(22) : 0)
+            height: crow.isTransfer ? Style.space(68) : (crow.wide ? Style.space(60) : Style.space(68)) + (crow.infoOpen ? Style.space(40) : 0)
             radius: Style.space(12)
             color: crow.idx === cashewWin.flashIdx ? Util.alpha(Color.accent, 0.22) : Util.alpha(root.foreground, crowHover.hovered ? 0.06 : 0)
             HoverHandler { id: crowHover }
@@ -9142,11 +9342,22 @@ Panel {
 
                 Text {
                   visible: crow.infoOpen
-                  anchors { left: cTitle.left; right: parent.right; rightMargin: Style.space(70); bottom: parent.bottom; bottomMargin: Style.space(4) }
+                  anchors { left: cTitle.left; right: parent.right; rightMargin: Style.space(70); bottom: parent.bottom; bottomMargin: Style.space(22) }
                   elide: Text.ElideRight
                   textFormat: Text.PlainText
                   text: crow.srcTxn ? ("Raw: " + crow.srcTxn.merchant + "  ·  " + Model.formatFullDate(crow.srcTxn.date)) : "Source not in the current list"
                   color: cashewWin.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+                // Look: what Cashew gets for this row, or why it gets nothing.
+                Text {
+                  visible: crow.infoOpen
+                  anchors { left: cTitle.left; right: parent.right; rightMargin: Style.space(70); bottom: parent.bottom; bottomMargin: Style.space(4) }
+                  elide: Text.ElideRight
+                  textFormat: Text.PlainText
+                  text: Model.cashewLookLine(crow.d, cashewWin.fates[crow.d.id], root.cashewLinks.length)
+                  color: root.foreground
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
                 }
@@ -9554,6 +9765,7 @@ Panel {
   component CashewCheck: Rectangle {
     id: cc
     property bool checked: false
+    property bool partial: false              // some, not all (the select-all checkbox): shows a dash
     signal toggled()
     width: Style.space(18)
     height: width
@@ -9571,9 +9783,9 @@ Panel {
     }
     Text {
       anchors.centerIn: parent
-      visible: cc.checked
+      visible: cc.checked || cc.partial
       textFormat: Text.PlainText
-      text: "✓"
+      text: cc.checked ? "✓" : "–"
       color: root.foreground
       font.pixelSize: Style.font.caption
       font.bold: true
