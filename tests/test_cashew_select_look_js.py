@@ -214,6 +214,8 @@ class SelectLook(unittest.TestCase):
         done = left(phase="done", items=items, done=1)
         self.assertEqual((done["rows"], done["links"], done["transfers"], done["doneRows"]), (0, 0, 0, 6))
         self.assertEqual(left(phase="", idleRows=1, idleLinks=1)["text"], "1 transaction left · 1 link left")
+        stopped = left(phase="stopped", items=items, done=1, added=0, idleRows=99, idleLinks=9)
+        self.assertEqual((stopped["rows"], stopped["links"], stopped["total"], stopped["doneRows"]), (3, 1, 6, 3))
         self.assertEqual(self.js("cashewSendLeft(null).rows"), 0)
 
     def test_send_row_states(self):

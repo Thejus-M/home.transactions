@@ -796,6 +796,9 @@ Panel {
       phase: counting ? root.cashewSendPhase : "", items: root.cashewSendItems, done: root.cashewSendDone,
       added: root.cashewSendAdded, idleRows: idleRows, idleLinks: root.cashewLinks.length, idleTransfers: root.cashewTransfers.length })
   }
+  // The send itself, always (the progress card): never mixed with the counts of the list as it is now.
+  readonly property var cashewSendProgress: Model.cashewSendLeft({
+    phase: root.cashewSendPhase, items: root.cashewSendItems, done: root.cashewSendDone, added: root.cashewSendAdded })
   onCashewDraftsChanged: root.cashewSendFresh = false
   function cashewSendSay() {
     var items = root.cashewSendItems, it = root.cashewSendItem
@@ -9541,8 +9544,9 @@ Panel {
                 Text {
                   id: cwProgBig
                   textFormat: Text.PlainText
-                  text: String(root.cashewSendLeftNow.rows)
-                  color: root.cashewSendLeftNow.rows === 0 ? root.creditColor : root.foreground
+                  // done: how many were added; else how many of this send are left
+                  text: String(root.cashewSendPhase === "done" ? root.cashewSendProgress.doneRows : root.cashewSendProgress.rows)
+                  color: root.cashewSendPhase === "done" ? root.creditColor : root.foreground
                   font.family: Style.font.family
                   font.pixelSize: Style.font.body + 12
                   font.bold: true
@@ -9550,7 +9554,11 @@ Panel {
                 Text {
                   anchors.baseline: cwProgBig.baseline
                   textFormat: Text.PlainText
-                  text: "of " + root.cashewSendLeftNow.total + " transactions left"
+                  text: root.cashewSendPhase === "done"
+                    ? (root.cashewSendProgress.doneRows === 1 ? "transaction added" : "transactions added")
+                    : root.cashewSendPhase === "stopped"
+                    ? "of " + root.cashewSendProgress.total + " not added (stopped)"
+                    : "of " + root.cashewSendProgress.total + " transactions left"
                   color: cashewWin.muted
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -9577,7 +9585,7 @@ Panel {
               radius: height / 2
               color: Util.alpha(root.foreground, 0.1)
               Rectangle {
-                width: root.cashewSendLeftNow.total > 0 ? parent.width * root.cashewSendLeftNow.doneRows / root.cashewSendLeftNow.total : 0
+                width: root.cashewSendProgress.total > 0 ? parent.width * root.cashewSendProgress.doneRows / root.cashewSendProgress.total : 0
                 height: parent.height
                 radius: parent.radius
                 color: root.cashewSendPhase === "done" ? root.creditColor : (root.cashewSendPaused ? root.pendingColor : Color.accent)
@@ -9590,7 +9598,7 @@ Panel {
               text: {
                 var lt = 0, tt = 0
                 root.cashewSendItems.forEach(function (x) { if (x.kind === "transfer") tt++; else lt++ })
-                var l = root.cashewSendLeftNow
+                var l = root.cashewSendProgress
                 return "Links " + (lt - l.links) + " of " + lt + (tt > 0 ? "  ·  transfers " + (tt - l.transfers) + " of " + tt : "")
               }
               color: cashewWin.muted

@@ -3038,7 +3038,8 @@ function _cashewPlural(n, one, many) { return n + " " + (n === 1 ? one : many) }
 function cashewSendLeft(st) {
   var s = st || {}
   var items = s.items || []
-  var running = s.phase === "open" || s.phase === "wait" || s.phase === "blind" || s.phase === "timeout"
+  // "stopped" counts the send too: what was done before the stop, not the list of now.
+  var running = s.phase === "open" || s.phase === "wait" || s.phase === "blind" || s.phase === "timeout" || s.phase === "stopped"
   var rows, links, transfers, total, doneRows
   if (running || s.phase === "done") {
     var done = s.phase === "done" ? items.length : Math.max(0, Math.min(s.done || 0, items.length))
