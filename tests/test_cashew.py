@@ -359,6 +359,10 @@ class CliTests(Base):
     def test_untracked_prints_transfer_pages_after_bulk(self):
         self.add(self.sbi, row(1, "2026-10-02", -500.0, SBI_OUT))
         self.add(self.hdfc, row(2, "2026-10-02", 500.0, HDFC_IN), row(3, "2026-10-03", -10.0, "Tea shop"))
+        p = self.cli("cashew-links", "--untracked")                    # the default is silent: no transfer page
+        self.assertNotIn("addTransferRoute", p.stdout)
+        self.assertIn("3 transactions in 1 links and 0 transfer pages", p.stderr)
+        self.state_path.write_text(json.dumps({"version": 1, "categories": {}, "accounts": {}, "transfers": "page"}))
         p = self.cli("cashew-links", "--untracked")
         lines = p.stdout.splitlines()
         i = lines.index("# transfer pages (tap Save in Cashew for each):")
@@ -366,7 +370,8 @@ class CliTests(Base):
         self.assertEqual(len(lines) - i - 1, 1)
         self.assertTrue(lines[i + 1].startswith("https://cashewapp.web.app/addTransferRoute?amountFrom=500.00&"))
         self.assertIn("1 transfer pages", p.stderr)
-        self.state_path.write_text(json.dumps({"version": 1, "categories": {}, "accounts": {}, "base": "web"}))
+        self.state_path.write_text(json.dumps({"version": 1, "categories": {}, "accounts": {}, "base": "web",
+                                                "transfers": "page"}))
         lines = self.cli("cashew-links", "--untracked").stdout.splitlines()
         self.assertTrue(lines[0].startswith("https://budget-track.web.app/addTransaction?JSON="))
         self.assertTrue(lines[-1].startswith("https://budget-track.web.app/addTransferRoute?"))
