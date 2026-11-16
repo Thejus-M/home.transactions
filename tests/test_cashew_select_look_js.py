@@ -193,10 +193,12 @@ class SelectLook(unittest.TestCase):
     def test_send_plan_puts_links_first_then_one_item_per_transfer(self):
         built = {"links": [{"url": "u1", "count": 3, "ids": ["a", "b", "c"]}, {"url": "u2", "count": 1, "ids": ["d"]}],
                  "transfers": [{"url": "t1", "ids": ["o", "i"], "accountFrom": "HDFC", "accountTo": "SBI", "amount": "160.00"}]}
+        built["transfers"].append({"url": "t2", "ids": ["o2", "i2"], "accountFrom": "SBI", "accountTo": "ICICI", "amount": "5.00"})
         got = self.js("cashewSendPlan(input.b)", b=built)
         self.assertEqual([(g["kind"], g["url"], g["count"], g["ids"]) for g in got],
-                         [("link", "u1", 3, ["a", "b", "c"]), ("link", "u2", 1, ["d"]), ("transfer", "t1", 2, ["o", "i"])])
-        self.assertEqual(got[2]["title"], "HDFC → SBI ₹160.00")
+                         [("link", "u1", 3, ["a", "b", "c"]), ("link", "u2", 1, ["d"]),
+                          ("transfers", "t1", 4, ["o", "i", "o2", "i2"])])        # all transfers: ONE step, one window
+        self.assertEqual((got[2]["urls"], got[2]["n"], got[2]["title"]), (["t1", "t2"], 2, "2 transfers"))
         self.assertEqual(self.js("cashewSendPlan(null)"), [])
 
     def test_send_left_idle_running_and_done(self):
@@ -217,6 +219,16 @@ class SelectLook(unittest.TestCase):
         stopped = left(phase="stopped", items=items, done=1, added=0, idleRows=99, idleLinks=9)
         self.assertEqual((stopped["rows"], stopped["links"], stopped["total"], stopped["doneRows"]), (3, 1, 6, 3))
         self.assertEqual(self.js("cashewSendLeft(null).rows"), 0)
+
+    def test_send_left_and_text_with_all_transfers_in_one_step(self):
+        items = [{"kind": "link", "count": 3, "ids": ["a"]}, {"kind": "transfers", "count": 6, "n": 3, "ids": ["o", "i"]}]
+        mid = self.js("cashewSendLeft(input.s)", s={"phase": "wait", "items": items, "done": 1, "added": 3})
+        self.assertEqual((mid["rows"], mid["links"], mid["transfers"]), (3, 0, 2))      # 3 rows = 1 transfer saved
+        t = lambda **st: self.js("cashewSendText(input.s)", s=dict(st, kind="transfers", n=3))
+        self.assertEqual(t(phase="wait", added=2), "Transfers · 1 of 3 saved · tap Save in each tab")
+        self.assertEqual(t(phase="open"), "Transfers · opening 3 pages")
+        self.assertEqual(t(phase="timeout", added=4, wait=360), "Transfers: 2 of 3 saved after 360 s. Save the rest, then continue.")
+        self.assertEqual(t(phase="stopped", added=0), "Stopped at the transfers (0 of 3 saved).")
 
     def test_send_row_states(self):
         items = [{"ids": ["a", "b"]}, {"ids": ["c"]}, {"ids": ["o", "i"]}]

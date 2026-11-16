@@ -3021,19 +3021,23 @@ function cashewLookLine(d, fate, linkCount) {
 
 // ---- "Add all to Cashew": the queue, what is left, the state of every row, the status line
 
-// The queue of a send, from a cashewBuildLinks result: the bulk links first, then one item per real
-// transfer (a Cashew transfer page: the person taps Save, Cashew adds 2 rows).
-// [{kind: "link"|"transfer", url, count, ids, title}]
+// The queue of a send, from a cashewBuildLinks result: the bulk links first (each runs hidden), then ONE
+// step with every real transfer: one visible window, one Cashew transfer page per tab, all at once. The
+// person taps Save in each tab; Cashew adds 2 rows per transfer.
+// [{kind: "link", url, count, ids, title} | {kind: "transfers", url, urls, count, n, ids, title}]
 function cashewSendPlan(built) {
   var b = built || {}
   var out = []
   ;(b.links || []).forEach(function (l) {
     out.push({ kind: "link", url: l.url, count: l.count, ids: (l.ids || []).slice(), title: "" })
   })
-  ;(b.transfers || []).forEach(function (t) {
-    out.push({ kind: "transfer", url: t.url, count: 2, ids: (t.ids || []).slice(),
-               title: (t.accountFrom || "?") + " → " + (t.accountTo || "?") + " " + cashewMoney(t.amount) })
-  })
+  var ts = b.transfers || []
+  if (ts.length > 0) {
+    var ids = []
+    ts.forEach(function (t) { (t.ids || []).forEach(function (id) { ids.push(id) }) })
+    out.push({ kind: "transfers", url: ts[0].url, urls: ts.map(function (t) { return t.url }), count: 2 * ts.length,
+               n: ts.length, ids: ids, title: _cashewPlural(ts.length, "transfer", "transfers") })
+  }
   return out
 }
 
@@ -3054,9 +3058,15 @@ function cashewSendLeft(st) {
     items.forEach(function (it, i) {
       total += it.count
       if (i < done) { doneRows += it.count; return }
-      if (it.kind === "transfer") transfers++; else links++
+      if (it.kind === "transfers") transfers += it.n || 0
+      else if (it.kind === "transfer") transfers++
+      else links++
     })
-    if (done < items.length) doneRows += Math.max(0, Math.min(s.added || 0, items[done].count))
+    if (done < items.length) {
+      var got = Math.max(0, Math.min(s.added || 0, items[done].count))
+      doneRows += got
+      if (items[done].kind === "transfers") transfers -= Math.floor(got / 2)     // 2 rows = 1 transfer saved
+    }
     rows = total - doneRows
   } else {
     rows = s.idleRows || 0; links = s.idleLinks || 0; transfers = s.idleTransfers || 0
@@ -3086,6 +3096,14 @@ function cashewSendRowStates(items, done, phase) {
 // tracked (at "done"): "yes" | "off" (the option is off) | "unconfirmed" (an item was not confirmed).
 function cashewSendText(st) {
   var s = st || {}
+  if (s.kind === "transfers") {
+    var saved = Math.floor((s.added || 0) / 2), n = s.n || 0
+    if (s.phase === "open") return "Transfers · opening " + _cashewPlural(n, "page", "pages")
+    if (s.phase === "wait") return "Transfers · " + saved + " of " + n + " saved · tap Save in each tab"
+    if (s.phase === "blind") return "Transfers · " + n + " pages open (Cashew cannot be checked here: waiting " + (s.wait || 0) + " s)"
+    if (s.phase === "timeout") return "Transfers: " + saved + " of " + n + " saved after " + (s.wait || 0) + " s. Save the rest, then continue."
+    if (s.phase === "stopped") return "Stopped at the transfers (" + saved + " of " + n + " saved)."
+  }
   var transfer = s.kind === "transfer"
   var link = (transfer ? "Transfer " : "Link ") + (s.index || 0) + " of " + (s.total || 0)
   if (s.phase === "open") return link + " · opening"

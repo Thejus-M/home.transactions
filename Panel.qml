@@ -798,7 +798,13 @@ Panel {
   readonly property bool cashewSendPaused: root.cashewSendPhase === "timeout"
   readonly property bool cashewAutoTrack: root.cashewState.autoTrack !== false
   property string cashewSendNote: ""
-  function cashewSendSecs(kind, blind) { return blind ? (kind === "transfer" ? 30 : 8) : (kind === "transfer" ? 180 : 60) }
+  // How long a step may take: a hidden link 60 s; the transfers step 3 minutes plus 1 more per extra
+  // transfer (you tap Save in each tab), at most 15. Without a readable copy of Cashew: a fixed wait.
+  function cashewSendSecs(it, blind) {
+    var kind = it ? it.kind : "link", n = it && it.n ? it.n : 1
+    if (kind === "link") return blind ? 8 : 60
+    return blind ? Math.min(30 * n, 300) : Math.min(180 + 60 * (n - 1), 900)
+  }
   // What is left to add, for the minimised card and the progress card.
   readonly property var cashewSendLeftNow: {
     var idleRows = 0
@@ -815,10 +821,14 @@ Panel {
   onCashewDraftsChanged: root.cashewSendFresh = false
   function cashewSendSay() {
     var items = root.cashewSendItems, it = root.cashewSendItem
-    var kind = it ? it.kind : (items.length ? items[Math.min(root.cashewSendDone, items.length) - 1 >= 0 ? Math.min(root.cashewSendDone, items.length) - 1 : 0].kind : "link")
+    var last = items.length ? items[Math.max(0, Math.min(root.cashewSendDone, items.length) - 1)] : null
+    var shown = it || last
+    var kind = shown ? shown.kind : "link"
     var index = 0, total = 0, links = 0, transfers = 0, rows = 0
     items.forEach(function (x, i) {
-      if (x.kind === "transfer") transfers++; else links++
+      if (x.kind === "transfers") transfers += x.n || 0
+      else if (x.kind === "transfer") transfers++
+      else links++
       rows += x.count
       if (x.kind !== kind) return
       total++
@@ -826,8 +836,9 @@ Panel {
     })
     root.cashewSendNote = Model.cashewSendText({
       phase: root.cashewSendPhase, kind: kind, index: index, total: total, title: it ? it.title : "",
+      n: shown && shown.n ? shown.n : 0,
       added: root.cashewSendAdded, of: it ? it.count : 0, rows: rows, links: links, transfers: transfers,
-      tracked: root.cashewSendTracked, wait: root.cashewSendSecs(kind, root.cashewSendPhase === "blind") })
+      tracked: root.cashewSendTracked, wait: root.cashewSendSecs(shown, root.cashewSendPhase === "blind") })
   }
   function cashewSendAll() {
     if (root.cashewSending || root.cashewSendPaused || !root.cashewVerifyGate()) return
@@ -853,7 +864,7 @@ Panel {
     root.cashewSendOpened = false
     root.cashewSendPhase = "open"
     root.cashewSendSay()
-    cashewWaitProc.command = ["python3", root.txdbBin, "cashew-wait", String(it.count), "--timeout", String(root.cashewSendSecs(it.kind, false))]
+    cashewWaitProc.command = ["python3", root.txdbBin, "cashew-wait", String(it.count), "--timeout", String(root.cashewSendSecs(it, false))]
     cashewWaitProc.running = true
   }
   function cashewSendOpen() {
@@ -863,22 +874,25 @@ Panel {
     root.cashewSendWin = ""
     root.cashewSendWinHidden = it.kind === "link"
     if (root.cashewSendHiddenOk) {
-      cashewOpenHiddenProc.command = [root.widgetDir + "/bin/cashew-open", it.kind === "link" ? "--hidden" : "--show", it.url]
+      // a link: one hidden window; the transfers: ONE visible window with every transfer page as a tab
+      cashewOpenHiddenProc.command = [root.widgetDir + "/bin/cashew-open", it.kind === "link" ? "--hidden" : "--show"]
+        .concat(it.urls && it.urls.length ? it.urls : [it.url])
       cashewOpenHiddenProc.running = true
     } else {
-      Quickshell.execDetached(["xdg-open", it.url])
+      ;(it.urls && it.urls.length ? it.urls : [it.url]).forEach(function (u) { Quickshell.execDetached(["xdg-open", u]) })
     }
   }
   // The hidden window of the step is closed when the step is complete (or stopped).
   function cashewSendCloseWin() {
     if (root.cashewSendWin === "") return
-    Quickshell.execDetached(["hyprctl", "dispatch", "closewindow", "address:" + root.cashewSendWin])
+    // Hyprland 0.56: dispatch takes Lua (the old "closewindow address:..." form fails without a sign)
+    Quickshell.execDetached(["hyprctl", "dispatch", 'hl.dsp.window.close({ window = "address:' + root.cashewSendWin + '" })'])
     root.cashewSendWin = ""
   }
   // After a timeout the person must look: the hidden workspace with the window is shown.
   function cashewSendShowWin() {
     if (root.cashewSendWin === "" || !root.cashewSendWinHidden) return
-    Quickshell.execDetached(["hyprctl", "dispatch", "togglespecialworkspace", "cashew"])
+    Quickshell.execDetached(["hyprctl", "dispatch", 'hl.dsp.workspace.toggle_special("cashew")'])
   }
   Process {
     id: cashewOpenHiddenProc
@@ -891,7 +905,7 @@ Panel {
       } else if (it && root.cashewSending) {
         // Not possible here (exit 4: another browser) or no window came (5): open it the normal way.
         if (exitCode === 4) root.cashewSendHiddenOk = false
-        if (exitCode !== 5) Quickshell.execDetached(["xdg-open", it.url])
+        if (exitCode !== 5) (it.urls && it.urls.length ? it.urls : [it.url]).forEach(function (u) { Quickshell.execDetached(["xdg-open", u]) })
       }
     }
   }
@@ -915,7 +929,7 @@ Panel {
       root.cashewSendConfirmed = false
       root.cashewSendPhase = "blind"
       root.cashewSendSay()
-      cashewSendBlindTimer.interval = root.cashewSendSecs(root.cashewSendItem ? root.cashewSendItem.kind : "link", true) * 1000
+      cashewSendBlindTimer.interval = root.cashewSendSecs(root.cashewSendItem, true) * 1000
       cashewSendBlindTimer.restart()
     } else {
       // Timeout (2), or the check itself failed: stop here and let the person look.
@@ -8425,7 +8439,7 @@ Panel {
 
         // A line only when the person has to do something: tap Save on a transfer, or look after a timeout.
         Text {
-          visible: root.cashewSendPaused || (root.cashewSending && root.cashewSendItem !== null && root.cashewSendItem.kind === "transfer")
+          visible: root.cashewSendPaused || (root.cashewSending && root.cashewSendItem !== null && root.cashewSendItem.kind !== "link")
           width: parent.width
           wrapMode: Text.Wrap
           textFormat: Text.PlainText
@@ -9638,7 +9652,7 @@ Panel {
               textFormat: Text.PlainText
               text: {
                 var lt = 0, tt = 0
-                root.cashewSendItems.forEach(function (x) { if (x.kind === "transfer") tt++; else lt++ })
+                root.cashewSendItems.forEach(function (x) { if (x.kind === "transfers") tt += x.n || 0; else if (x.kind === "transfer") tt++; else lt++ })
                 var l = root.cashewSendProgress
                 return "Links " + (lt - l.links) + " of " + lt + (tt > 0 ? "  ·  transfers " + (tt - l.transfers) + " of " + tt : "")
               }
