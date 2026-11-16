@@ -435,16 +435,21 @@ def bill_note(conn, txn_id: str, title: str) -> str:
     return "\n".join(out)
 
 
-def build_notes(bank: str, merchant: str, widget_note: str | None, bill: str, lead: str = "") -> str:
-    """Empty unless something means something: a lead line (a refund says what it refunds), the UPI
-    remark, the user's own note, the bill."""
-    parts = [lead] if lead else []
+def build_notes(bank: str, merchant: str, widget_note: str | None, bill: str, lead: str = "",
+                user_note: str | None = None) -> str:
+    """Empty unless something means something: the note the user wrote on the transaction in the widget
+    (txn_notes) first, then a lead line (a refund says what it refunds), the UPI remark, the row's own note,
+    the bill. When the text is too long, lines go from the end, so the user's note stays."""
+    mine = " ".join(str(user_note or "").split())
+    parts = [mine] if mine else []
+    if lead:
+        parts.append(lead)
     remark = upi_remark(merchant, bank)
-    if remark:
+    if remark and _alnum(remark) != _alnum(mine):
         parts.append(remark)
     own = _squash(widget_note)
-    if own and own != _squash(keys.note(bank, merchant)) and _alnum(own) != _alnum(remark):
-        parts.append(own)                            # a note the user wrote, not the one read from the row
+    if own and own != _squash(keys.note(bank, merchant)) and _alnum(own) != _alnum(remark) and _alnum(own) != _alnum(mine):
+        parts.append(own)                            # a note on the row, not the one read from the bank text
     if bill:
         parts.append(bill)
     lines = "\n".join(parts).split("\n")
@@ -518,6 +523,10 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
     bill_cats, linked = _bill_categories(conn), _linked_ids(conn)
 
     refund_of = _refund_links(conn)
+    try:
+        user_notes = {r[0]: r[1] for r in conn.execute("SELECT transaction_id, note FROM txn_notes")}
+    except sqlite3.Error:                          # a database from before the notes table
+        user_notes = {}
     refunded: dict[str, int] = {}                  # purchase id -> paise refunded to it
     skipped: dict[str, int] = {}                   # ... of which netted into the purchase (mode "skip")
     netted_on: dict[str, list[str]] = {}           # purchase id -> dates of those refunds
@@ -615,7 +624,8 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
             "id": r["id"], "include": include, "pending": r["status"] != "settled", "fromBill": from_bill, "partnerTracked": bool(leg and leg.get("partnerTracked")), "date": r["date"], "title": title,
             "amount": format_amount(amount_paise), "category": cat, "subcategory": sub,
             "account": account or "",
-            "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title), notes_lead) if with_notes else "",
+            "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title), notes_lead,
+                                 user_notes.get(r["id"])) if with_notes else "",
             "kind": kind, "bank": r["bank"], "last4": r["last4"], "accountId": aid,
             "groupKey": r["group_key"], "merchant": r["merchant"] or "", "pairId": leg["pairId"] if leg else "", "warn": warn,
         }

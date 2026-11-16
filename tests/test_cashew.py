@@ -417,6 +417,19 @@ class NoteTests(Base):
         self.assertEqual(r("UPI-SAVINGS-x@oksbi-SBIN0001000-125045259403-Savings", "HDFC"), "")   # same as the name
         self.assertEqual(r("Upi-swiggy", "HDFC"), "")                                         # card row
 
+    def test_the_note_written_in_the_widget_goes_to_cashew_first(self):
+        self.add(self.hdfc, row(1, "2026-10-02", -250.0, "UPI-THEJUS M-8921768575@UPI-SBIN0001000-125045259403-FOR CC BILLS"))
+        tid = self.conn.execute("SELECT id FROM transactions").fetchone()[0]
+        self.assertEqual({x["id"]: x for x in self.drafts()}[tid]["notes"], "FOR CC BILLS")
+        p = subprocess.run([sys.executable, str(ROOT / "bin/txdb"), "txn-note", tid, "Claude", "subscription"],
+                           env={**os.environ, "TXDB_DB": str(self.path)}, capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual({x["id"]: x for x in self.drafts()}[tid]["notes"], "Claude subscription\nFOR CC BILLS")
+        long = cashew.build_notes("HDFC", "Tea", "", "x\n" * 400, "", "mine")
+        self.assertTrue(long.startswith("mine\n") and len(long) <= cashew.NOTES_MAX)       # the bill is cut, not the note
+        self.assertEqual(cashew.build_notes("HDFC", "UPI-A-a@x-SBIN0001000-1-FOR CC BILLS", "", "", "", "for cc bills"),
+                         "for cc bills")                                                       # the remark again: once
+
     def test_notes_are_empty_by_default_and_hold_the_remark(self):
         self.add(self.hdfc, row(1, "2026-10-02", -250.0, "UPI-SHOP A-a@oksbi-SBIN0001000-125045259403-MF and RD"),
                  row(2, "2026-10-03", -50.0, "UPI-SHOP B-b@oksbi-SBIN0001000-125045259404-NO REMARKS"))
