@@ -107,31 +107,33 @@ class Export(R.Base):
         os.environ.pop("TXDB_CASHEW_TWINS", None)
         super().tearDown()
 
-    def test_the_refund_goes_to_the_income_twin_by_id_and_keeps_the_category_name_for_display(self):
+    def test_a_known_twin_is_not_used_the_refund_goes_to_the_real_category(self):
+        # Links carry categoryPolarity=false, so the real expense category takes the refund as income.
         refunds.set_link(self.conn, self.back, self.out, mode="income")
         credit = self.drafts()[self.back]
         self.assertEqual((credit["category"], credit["subcategory"]), ("Shopping", "Footwear"))     # the same category
-        self.assertEqual((credit["categoryPk"], credit["subcategoryPk"]), ("i-shop", "i-foot"))
+        self.assertNotIn("categoryPk", credit)
         self.assertEqual((credit["refundCategory"], credit["refundSubcategory"]), ("Shopping", "Footwear"))
         self.assertEqual(credit["amount"], "3816.00")
 
-    def test_the_link_has_the_ids_not_the_names_and_no_warning(self):
+    def test_the_link_has_the_names_not_the_twin_ids_and_no_warning(self):
         refunds.set_link(self.conn, self.back, self.out, mode="income")
         out = cashew.build_links([x for x in self.drafts().values() if x["id"] in (self.out, self.back)])
         self.assertEqual(out["warnings"], [])
         entries = {e["amount"]: e for e in json.loads(urllib.parse.unquote(out["links"][0]["url"].split("JSON=")[1]))["transactions"]}
         refund, purchase = entries["3816.00"], entries["-3816.00"]
-        self.assertEqual((refund["categoryPk"], refund["subcategoryPk"]), ("i-shop", "i-foot"))
-        self.assertNotIn("category", refund)                       # a name would find the EXPENSE Shopping
+        self.assertEqual((refund["category"], refund["subcategory"]), ("Shopping", "Footwear"))
+        self.assertNotIn("categoryPk", refund)
+        self.assertEqual(refund["categoryPolarity"], "false")      # income by the sign, in the expense Shopping
         self.assertEqual((purchase["category"], purchase["subcategory"]), ("Shopping", "Footwear"))
         self.assertNotIn("categoryPk", purchase)
 
-    def test_without_a_twin_the_refund_is_added_by_file_in_its_own_category(self):
+    def test_without_a_twin_the_refund_goes_by_link_in_its_own_category(self):
         cashew_twins.save({}, self.tw)
         refunds.set_link(self.conn, self.back, self.out, mode="income")
         credit = self.drafts()[self.back]
         self.assertEqual((credit["category"], credit["subcategory"]), ("Shopping", "Footwear"))
-        self.assertTrue(credit["viaFile"])
+        self.assertNotIn("viaFile", credit)
         self.assertNotIn("categoryPk", credit)
 
     def test_with_a_twin_no_file_is_needed(self):

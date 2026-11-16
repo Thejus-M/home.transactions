@@ -2627,6 +2627,7 @@ function cashewFixResult(stdout, stderr) {
 }
 
 // Plain notes for the Cashew window about linked refunds in the shown rows (not warnings):
+// links carry categoryPolarity=false, so an income refund goes in its purchase's own category;
 // income refunds need the Income box ticked in Cashew's budget filter, skipped pairs are not sent,
 // and a "lent" purchase needs a hand edit in Cashew (a link cannot create a Lent).
 function cashewRefundNotes(drafts, shown) {
@@ -2644,8 +2645,15 @@ function cashewRefundNotes(drafts, shown) {
     else if (d.refundMode === "lent") lent.push(d.title || d.id)
   })
   var out = []
-  if (files > 0) out.push(files + (files === 1 ? " row is" : " rows are") + " added by file, not by link: a link would store a refund as spend and a payment under an income category as income (Cashew takes the type from the category). Run: txdb cashew-fix, then import the file it writes in Cashew.")
+  if (files > 0) out.push(files + (files === 1 ? " row is" : " rows are") + " marked to be added by file, not by link. Run: txdb cashew-fix, then import the file it writes in Cashew.")
   if (twin > 0) out.push(twin + (twin === 1 ? " refund goes" : " refunds go") + " in as income under the income twin of its category (sent by id).")
+  var same = 0
+  drafts.forEach(function (d, i) {
+    if (keep && !keep[i]) return
+    if (d.kind === "refund" && d.include !== false && !d.viaFile && !d.categoryPk && d.refundMode !== "skip" && d.refundCategory) same++
+  })
+  plain -= same
+  if (same > 0) out.push(same + (same === 1 ? " refund goes" : " refunds go") + " in as income in the category of the purchase.")
   if (plain > 0) out.push(plain + (plain === 1 ? " refund has" : " refunds have") + " no purchase to copy a category from, so " + (plain === 1 ? "it goes" : "they go") + " under Cashback & Rewards > Refund.")
   if (netted > 0) out.push(netted + (netted === 1 ? " refund is" : " refunds are") + " netted into " + (netted === 1 ? "its purchase" : "their purchases")
     + " (same category): a fully refunded purchase is not sent, a partly refunded one is sent at its net amount.")
@@ -2907,6 +2915,7 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
     var twinPk = _cashewStr(d.categoryPk), twinSubPk = _cashewStr(d.subcategoryPk)
     if (twinPk) { /* an income twin chosen by id: its type is income, so the credit fits */ }
     else if (cat === "Uncategorized" && sub !== "Miscellaneous") warnings.push("no category: " + label)
+    else if (d.kind === "refund") { /* income in its purchase's expense category, by categoryPolarity=false */ }
     else if (types.hasOwnProperty(cat)) {
       var t = types[cat], neg = amount.charAt(0) === "-"
       var friendOk = cat === "Friend Settlement" && sub === "Split Paid"
@@ -2923,6 +2932,7 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
       if (sub) e.subcategory = _cashewPct(sub)
     }
     if (acct) e.account = _cashewPct(acct)
+    e.categoryPolarity = "false"   // the sign of the amount decides income or expense, not the category's type
     e.fallbackCategory = "Uncategorized"
     return JSON.stringify(e)
   }

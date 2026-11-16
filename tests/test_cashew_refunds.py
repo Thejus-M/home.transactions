@@ -77,10 +77,9 @@ class Export(Base):
         self.assertEqual(buy["refundMode"], "net")
         self.assertFalse(got[part]["include"])                            # the refund itself is not exported
 
-    def test_an_income_mode_refund_keeps_the_purchases_category_and_is_added_by_file_not_by_link(self):
-        # Cashew (6.7.2) stores a link row's income flag from the category TYPE: a refund sent under Shopping came out
-        # as spend. Cashew itself allows income under Shopping (a row has its own flag), so the refund is written into
-        # a copy of its database (txdb/cashew_fix.py) and left out of the links.
+    def test_an_income_mode_refund_keeps_the_purchases_category_and_goes_by_link(self):
+        # By default Cashew (6.7.2) takes a link row's income flag from the category TYPE: a refund sent under
+        # Shopping came out as spend. Links carry categoryPolarity=false, so the positive amount makes it income.
         refunds.set_link(self.conn, self.back, self.out, mode="income")
         got = self.drafts()
         credit, buy = got[self.back], got[self.out]
@@ -89,18 +88,30 @@ class Export(Base):
         self.assertEqual((buy["category"], buy["subcategory"]), ("Shopping", "Footwear"))
         self.assertEqual(credit["amount"], "3816.00")                                                # money in: positive
         self.assertEqual(buy["amount"], "-3816.00")
-        self.assertTrue(credit["viaFile"])
+        self.assertNotIn("viaFile", credit)
+        self.assertNotIn("categoryPk", credit)
         self.assertTrue(credit["title"].startswith("Refund: "))
         self.assertIn("02-Nov-26 ₹3816", credit["notes"])
         self.assertTrue(credit["include"] and buy["include"])
         self.assertNotIn("viaFile", buy)
 
-    def test_the_link_builder_leaves_the_file_row_out_and_sends_only_the_purchase(self):
+    def test_the_link_sends_the_refund_as_income_in_the_purchases_category(self):
         refunds.set_link(self.conn, self.back, self.out, mode="income")
         out = cashew.build_links([x for x in self.drafts().values() if x["id"] in (self.out, self.back)])
         self.assertEqual(out["warnings"], [])
         entries = json.loads(urllib.parse.unquote(out["links"][0]["url"].split("JSON=")[1]))["transactions"]
-        self.assertEqual([e["amount"] for e in entries], ["-3816.00"])
+        self.assertEqual([e["amount"] for e in entries], ["-3816.00", "3816.00"])
+        refund = entries[1]
+        self.assertEqual((refund["category"], refund["subcategory"]), ("Shopping", "Footwear"))
+        self.assertEqual([e["categoryPolarity"] for e in entries], ["false", "false"])   # the sign decides, not the type
+
+    def test_every_entry_carries_category_polarity_false(self):
+        plain = [d(1, amount="-10.00", category="Shopping", subcategory="Footwear", kind="spend"),
+                 d(2, amount="810.12", category="Friend Settlement", subcategory="Split Paid", kind="income")]
+        out = cashew.build_links(plain)
+        entries = json.loads(urllib.parse.unquote(out["links"][0]["url"].split("JSON=")[1]))["transactions"]
+        self.assertEqual([e["categoryPolarity"] for e in entries], ["false", "false"])
+        self.assertEqual(list(entries[0])[-2:], ["categoryPolarity", "fallbackCategory"])
 
     def test_an_expense_category_chosen_on_the_refund_itself_wins_but_warns(self):
         # The person's own pick is kept; the builder warns, because Cashew would show it as spend.
@@ -140,11 +151,11 @@ class RefundParity(P.Parity):
         drafts = [
             d(1, kind="refund", amount="3816.00", category="Cashback & Rewards", subcategory="Refund", title="Refund: Flipkart",
               refundOf="x", refundMode="income", notes="Refund of Flipkart 02-Nov-26 ₹3816 · Shopping › Footwear"),
-            d(2, kind="refund", amount="10.00", category="Shopping", subcategory="Footwear", refundOf="x"),   # expense category: warns
+            d(2, kind="refund", amount="10.00", category="Shopping", subcategory="Footwear", refundOf="x"),   # expense category: fine for a refund
             d(3, kind="refund", amount="5.00", category="Uncategorized", subcategory="Unknown", refundOf=""),
         ]
         py = self.both(drafts)
-        self.assertEqual(len([w for w in py["warnings"] if "does not fit" in w]), 1)
+        self.assertEqual(len([w for w in py["warnings"] if "does not fit" in w]), 0)
 
 
 class FileRowParity(P.Parity):

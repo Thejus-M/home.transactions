@@ -120,6 +120,8 @@ class RefundJs(unittest.TestCase):
             {"id": "g", "kind": "spend", "include": True, "viaFile": True, "title": "Friend"},
             {"id": "a", "kind": "refund", "refundMode": "income", "include": True, "categoryPk": "i-shop", "title": "Refund: X"},
             {"id": "p", "kind": "refund", "refundMode": "income", "include": True, "title": "Refund: P"},
+            {"id": "s", "kind": "refund", "refundMode": "income", "include": True, "title": "Refund: S",
+             "refundCategory": "Shopping", "refundSubcategory": "Footwear"},
             {"id": "b", "kind": "refund", "refundMode": "skip", "include": False, "title": "Refund: Y"},
             {"id": "c", "kind": "spend", "refundMode": "skip", "include": False, "title": "Y"},
             {"id": "n", "kind": "spend", "refundMode": "net", "include": True, "title": "Z"},
@@ -127,15 +129,16 @@ class RefundJs(unittest.TestCase):
             {"id": "e", "kind": "spend", "include": True, "title": "Coffee"},
         ]
         notes = self.js("cashewRefundNotes(input.d, null)", d=drafts)
-        self.assertEqual(len(notes), 6)
-        self.assertIn("2 rows are added by file, not by link", notes[0])
+        self.assertEqual(len(notes), 7)
+        self.assertIn("2 rows are marked to be added by file, not by link", notes[0])
         self.assertIn("txdb cashew-fix", notes[0])
         self.assertIn("1 refund goes in as income under the income twin", notes[1])
-        self.assertIn("1 refund has no purchase to copy a category from", notes[2])
-        self.assertIn("1 refund is netted into its purchase", notes[3])
-        self.assertIn("1 purchase is sent at the amount left", notes[4])
-        self.assertIn('open "Shoes" in Cashew', notes[5])
-        self.assertEqual(self.js("cashewRefundNotes(input.d, [8])", d=drafts), [])      # only shown rows count
+        self.assertIn("1 refund goes in as income in the category of the purchase", notes[2])
+        self.assertIn("1 refund has no purchase to copy a category from", notes[3])
+        self.assertIn("1 refund is netted into its purchase", notes[4])
+        self.assertIn("1 purchase is sent at the amount left", notes[5])
+        self.assertIn('open "Shoes" in Cashew', notes[6])
+        self.assertEqual(self.js("cashewRefundNotes(input.d, [9])", d=drafts), [])      # only shown rows count
         self.assertEqual(self.js("cashewRefundNotes([], null)"), [])
 
     def test_the_file_button_counts_its_rows_and_reads_the_result(self):

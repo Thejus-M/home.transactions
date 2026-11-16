@@ -22,7 +22,7 @@ import sqlite3
 import urllib.parse
 from pathlib import Path
 
-from . import cashew_twins, keys, transfers
+from . import keys, transfers
 
 APP_BASE = "https://cashewapp.web.app/"            # the Android / iOS app
 WEB_BASE = "https://budget-track.web.app/"          # the Cashew web app
@@ -37,10 +37,13 @@ UNCATEGORIZED = ("Uncategorized", "Unknown")
 BALANCE = "Balance Correction"
 FRIEND = "Friend Settlement"
 FRIEND_SUB = "Split Paid"                            # both directions
-# A linked refund is filed here. The deployed Cashew (6.7.2) takes income or expense from the CATEGORY's
-# type, not from the sign of the amount in the link: a +3816.00 under "Shopping" (an expense category)
-# came out as spend, like the purchase (seen on screen, 2026-11-15). Only an income-type category shows as income.
+# A linked refund whose purchase has no category is filed here.
 REFUND_CATEGORY = ("Cashback & Rewards", "Refund")
+# By default Cashew (6.7.2) takes income or expense from the CATEGORY's type, not from the sign of the amount:
+# a +3816.00 under "Shopping" (an expense category) came out as spend (seen on screen, 2026-11-15). That is the
+# documented `categoryPolarity` parameter (default true). Every entry is sent with categoryPolarity=false, so the
+# sign of the amount decides: a positive amount is income in an expense category too (tested on screen, 2026-11-16).
+CATEGORY_POLARITY = "false"
 
 
 def default_state_path() -> Path:
@@ -515,7 +518,6 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
     bill_cats, linked = _bill_categories(conn), _linked_ids(conn)
 
     refund_of = _refund_links(conn)
-    twins = cashew_twins.load()
     refunded: dict[str, int] = {}                  # purchase id -> paise refunded to it
     skipped: dict[str, int] = {}                   # ... of which netted into the purchase (mode "skip")
     netted_on: dict[str, list[str]] = {}           # purchase id -> dates of those refunds
@@ -562,17 +564,16 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
         include = not (leg and leg.get("partnerTracked") and not r["tracked"])
         amount_paise = r["amount_paise"]
         notes_lead, refund_mode, refund_to = "", "", None
-        refund_from, twin_pks, file_row = None, None, False
+        refund_from = None
         link = refund_of.get(r["id"])
         if link and r["amount_paise"] > 0 and not leg:
-            # A credit that gives back a purchase (txdb/refunds.py). Cashew (6.7.2) takes income or expense
-            # ONLY from the category's type and ignores the sign in the link (tested on screen, 2026-11-15),
-            # so a refund can never be income under the purchase's own expense category. Hence:
+            # A credit that gives back a purchase (txdb/refunds.py). Links carry categoryPolarity=false, so
+            # the positive amount makes it income under the purchase's own expense category.
             #  "skip" (the default, "net against the purchase"): the refund is not exported; the purchase is
             #     exported at its net amount in its own category, or not at all when fully refunded. The
             #     category total in Cashew is then right.
-            #  "income": the refund is exported as income under REFUND_CATEGORY (an income-type category),
-            #     the note says which purchase and which category it belongs to.
+            #  "income": the refund is exported as income in the purchase's category (REFUND_CATEGORY when the
+            #     purchase has none), the note says which purchase it belongs to.
             #  "lent": the refund is not exported; the purchase is, and the person turns it into a Lent in
             #     Cashew by hand.
             refund_mode, refund_to = link["mode"], link["original"]
@@ -590,13 +591,6 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
                     refund_from = (o_cat, o_sub)
                     if not (own_pick and own_pick[0]):
                         cat, sub, warn = o_cat, o_sub, ""            # the purchase's own category: the SAME one
-                    twin = None if (own_pick and own_pick[0]) else cashew_twins.lookup(twins, o_cat, o_sub)
-                    if twin:
-                        twin_pks = twin           # an income twin of it was set up in Cashew: sent by id, no file needed
-                    else:
-                        # A link would file it under the expense category as SPEND (Cashew takes the type from the
-                        # category). It is written into Cashew's database with the income flag instead (cashew_fix).
-                        file_row = True
             elif link["note"]:
                 notes_lead = f"Refund of {link['note']}"
             kind = "refund"
@@ -628,11 +622,7 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
         if refund_to is not None:
             d["refundOf"] = refund_to
         if refund_from:
-            d["refundCategory"], d["refundSubcategory"] = refund_from      # the purchase's category (the twin's name)
-        if twin_pks:
-            d["categoryPk"], d["subcategoryPk"] = twin_pks[0], twin_pks[1]
-        if file_row and include:
-            d["viaFile"], d["fileReason"] = True, "refund in its purchase's category"
+            d["refundCategory"], d["refundSubcategory"] = refund_from      # the purchase's category
         if refund_mode:
             d["refundMode"] = refund_mode
         out.append(d)
@@ -657,6 +647,8 @@ def _entry(d: dict, warnings: list[str], types: dict[str, str]) -> dict:
         pass                                   # an income twin chosen by id: its type is income, the credit fits
     elif cat == UNCATEGORIZED[0] and sub != "Miscellaneous":      # Miscellaneous is a deliberate choice
         warnings.append(f"no category: {label}")
+    elif d.get("kind") == "refund":
+        pass                                   # income in its purchase's expense category, by categoryPolarity=false
     elif cat in types and not _fits(types[cat], amount.startswith("-")) \
             and not _friend_fits(cat, sub, amount.startswith("-")):
         warnings.append(f"category {cat!r} does not fit the amount sign: {label}")
@@ -673,6 +665,7 @@ def _entry(d: dict, warnings: list[str], types: dict[str, str]) -> dict:
             e["subcategory"] = escape_percent(sub)
     if acct:
         e["account"] = escape_percent(acct)
+    e["categoryPolarity"] = CATEGORY_POLARITY      # the sign of the amount decides income or expense
     e["fallbackCategory"] = FALLBACK_CATEGORY      # never the forced "Select Category" prompt
     return e
 
@@ -722,8 +715,8 @@ def build_links(draft_list: list[dict], max_chars: int = DEFAULT_MAX_CHARS, base
     accountFrom, accountTo, ids}], "warnings": [..]}. `base` is "app" or "web"."""
     types, warnings = _types(), []
     root = normalize_base(base)
-    # `viaFile` rows (txdb/cashew_fix.py) are written into Cashew's database, not sent: a link cannot give them the
-    # right income/expense flag.
+    # `viaFile` rows (txdb/cashew_fix.py) are written into Cashew's database, not sent. Nothing sets the mark
+    # since links carry categoryPolarity=false; a draft that still has it is left out as before.
     inc = [d for d in draft_list if d.get("include", True) and not d.get("viaFile")]
     inc.sort(key=lambda d: (str(d.get("date") or ""), str(d.get("id") or "")))
     paired = _pair_legs(inc)

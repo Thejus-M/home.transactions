@@ -11548,8 +11548,8 @@ Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
-          // Cashew takes income/expense from the category's TYPE and ignores the sign, so "same category" means
-          // an income twin of it (same name, income type, sent by id: txdb cashew-twins). Or net it into the purchase.
+          // Links carry categoryPolarity=false, so "same category" is the purchase's own category with a positive
+          // amount (income). Or net it into the purchase.
           TxnBtn { label: "Income: same category"; primary: card.txn.refundMode === "income"; onClicked: store.setRefundMode(card.txn.id, "income") }
           TxnBtn { label: "Net against purchase"; primary: card.txn.refundMode === "skip"; onClicked: store.setRefundMode(card.txn.id, "skip") }
           TxnBtn { label: "Lent (manual)"; primary: card.txn.refundMode === "lent"; onClicked: store.setRefundMode(card.txn.id, "lent") }

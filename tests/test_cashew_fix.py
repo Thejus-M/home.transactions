@@ -69,15 +69,15 @@ class Fix(unittest.TestCase):
         self.assertEqual(self.idx.category("friend settlements", "")[0], "c-friend")
         self.assertIsNone(self.idx.category("Nope", ""))
 
-    def test_a_sign_that_disagrees_with_the_cashew_category_type_is_marked(self):
+    def test_a_sign_that_disagrees_with_the_cashew_category_type_is_not_marked(self):
+        # Links carry categoryPolarity=false: the sign of the amount decides, so a link gets these rows right.
         rows = [draft(viaFile=False, kind="spend", category="Friend Settlement", subcategory="Split Paid", amount="-14000.00"),   # debit, income category
                 draft(viaFile=False, kind="income", category="Friend Settlement", subcategory="Settle", amount="245.12"),        # credit, income category: fine
                 draft(viaFile=False, kind="spend", category="Food Out", subcategory="", amount="-20.00"),                      # fine
                 draft(viaFile=False, kind="spend", category="Uncategorized", subcategory="Unknown", amount="-3.00")]
         marked = cashew_fix.flag(rows, self.idx)
-        self.assertEqual(marked, 1)
-        self.assertTrue(rows[0]["viaFile"])
-        self.assertFalse(any(r.get("viaFile") for r in rows[1:]))
+        self.assertEqual(marked, 0)
+        self.assertFalse(any(r.get("viaFile") for r in rows))
 
     def test_the_purchase_of_a_file_refund_goes_by_file_too(self):
         purchase = draft(id="p1", kind="spend", viaFile=False, title="FLIPKART", amount="-3816.00", date="2026-11-02", refundMode=None)

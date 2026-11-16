@@ -1,6 +1,8 @@
-"""Income twins of the expense categories, so a refund can be income in "the same category".
+"""Income twins of the expense categories, so a refund can be income in "the same category". NOT NEEDED any
+more: links carry categoryPolarity=false (txdb/cashew.py), so a refund is income in the real category and
+txdb/cashew.py no longer looks a twin up. `find_browser_copy` and `read_backup` are still used by cashew-fix.
 
-Cashew (6.7.2) takes income or expense ONLY from a category's type and ignores the sign in a link (tested on
+History: by default (categoryPolarity=true) Cashew (6.7.2) takes income or expense ONLY from a category's type and ignores the sign in a link (tested on
 screen, 2026-11-15). A refund therefore cannot be income under the expense category "Shopping". What Cashew can
 do is hold a second category named "Shopping" whose type is INCOME (with the same icon and colour). The refund
 goes there, by the twin's id (categoryPk / subcategoryPk in the link: a name would find the expense one).

@@ -12,6 +12,7 @@
   txdb receipt-cash <receiptId>          paid in cash: park it, stop asking
   txdb receipt-ignore <receiptId>        not a bill, or a duplicate photo
   txdb receipt-review <receiptId> <0|1>  raise or clear "check this parse"
+  (cashew-fix and cashew-twins are not needed any more: links carry categoryPolarity=false, the sign decides)
   txdb cashew-fix [--base FILE] [--out FILE] [--dry-run]  add the rows a Cashew link would get wrong (a refund in its
                                          purchase's category, a payment under an income category) to a COPY of the Cashew
                                          database with the right income flag; import the file in Cashew
@@ -131,9 +132,9 @@ def backup(conn, keep: int = 14) -> Path:
 
 
 def _mark_file_rows(items: list[dict]) -> None:
-    """Best effort: when the browser keeps a copy of the Cashew web database, mark the drafts a link would get
-    wrong (a credit under an expense category, a payment under an income category) so they are not sent by link
-    but added by file (`txdb cashew-fix`). Without that copy only refunds are marked (by cashew.drafts itself)."""
+    """Best effort: when the browser keeps a copy of the Cashew web database, let cashew_fix.flag complete the
+    `viaFile` marks (the purchase of a file-added refund). Nothing sets the mark by itself any more: links carry
+    categoryPolarity=false, so the sign of the amount decides income or expense."""
     try:
         from . import cashew_fix, cashew_twins
         copy = cashew_twins.find_browser_copy()

@@ -1,7 +1,10 @@
-"""Rows a Cashew LINK cannot get right, added straight into a copy of Cashew's database instead.
+"""Rows added straight into a copy of Cashew's database instead of by link. NOT NEEDED any more: links now
+carry categoryPolarity=false (txdb/cashew.py), so the sign of the amount decides and `flag` marks nothing new.
+The command stays for a draft that is marked `viaFile` by hand.
 
-The deployed Cashew (6.7.2, database version 48) ignores the sign of the amount in a link and takes income or
-expense from the category's TYPE (tested on screen and in its database, 2026-11-15). That is wrong for
+History: by default (categoryPolarity=true) the deployed Cashew (6.7.2, database version 48) ignores the sign of
+the amount in a link and takes income or expense from the category's TYPE (tested on screen and in its database,
+2026-11-15). That was wrong for
   - a refund: money IN, filed under its purchase's own expense category (Shopping), and
   - money you paid to a friend, filed under "Friend Settlements", which is an INCOME category in Cashew,
 because the link would store the refund as spend and the payment as income. Cashew itself allows both (a row has its
@@ -58,8 +61,9 @@ class Index:
 
 
 def flag(drafts: list[dict], idx: Index) -> int:
-    """Mark the drafts a link would get wrong (`viaFile`): a refund filed under its purchase's category, or a
-    credit/debit whose sign disagrees with the type of its Cashew category. Returns how many were marked."""
+    """Count the drafts marked `viaFile`, and mark the purchase of a file-added refund too. A sign that disagrees
+    with the type of the Cashew category is no longer marked: links carry categoryPolarity=false, so the sign of
+    the amount decides. Returns how many are marked."""
     n = 0
     by_id = {d.get("id"): d for d in drafts}
     for d in list(drafts):
@@ -73,15 +77,7 @@ def flag(drafts: list[dict], idx: Index) -> int:
     for d in drafts:
         if d.get("kind") == "transfer" or d.get("include") is False:
             continue
-        amount = float(d.get("amount") or 0)
-        got = idx.category(d.get("category", ""), d.get("subcategory", ""))
-        clash = bool(got) and got[2] != (amount > 0) and d.get("category") not in ("Uncategorized", "Balance Correction") \
-            and not d.get("categoryPk")
         if d.get("viaFile"):
-            n += 1                                       # already marked by txdb/cashew.py (a refund in its own category)
-        elif clash:
-            d["viaFile"] = True
-            d["fileReason"] = "its sign disagrees with the Cashew category type"
             n += 1
     return n
 
