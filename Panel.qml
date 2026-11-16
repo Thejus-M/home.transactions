@@ -422,7 +422,7 @@ Panel {
   readonly property string cashewBase: root.cashewState.base === "web" ? "web" : "app"
   // "silent" (default): a transfer goes in the bulk link as two Balance Correction rows, no page to save.
   // "page": one Cashew transfer page per pair (a real linked transfer, one tap each).
-  readonly property string cashewTransfers: root.cashewState.transfers === "page" ? "page" : "silent"
+  readonly property string cashewTransferMode: root.cashewState.transfers === "page" ? "page" : "silent"
   readonly property int cashewIncludedCount: Model.cashewIncluded(root.cashewDrafts, root.cashewShown).length
   // Rows of a closed account never reach the window's counts or links.
   readonly property var cashewClosedIds: {
@@ -724,7 +724,7 @@ Panel {
     cashewLinksTimer.stop()
     if (!root.cashewOpen) return
     try {
-      var out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, root.cashewBase, root.cashewTransfers)
+      var out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, root.cashewBase, root.cashewTransferMode)
       root.cashewLinksError = ""
       root.cashewLinks = out.links
       root.cashewTransfers = out.transfers
@@ -748,7 +748,7 @@ Panel {
   function cashewSendAll() {
     if (root.cashewSending || !root.cashewVerifyGate()) return
     var out
-    try { out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, "web", root.cashewTransfers) }
+    try { out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, "web", root.cashewTransferMode) }
     catch (e) { root.cashewSendNote = "Could not build the links: " + e; return }
     var urls = out.links.map(function (l) { return l.url }).concat(out.transfers.map(function (t) { return t.url }))
     if (urls.length === 0) { root.cashewSendNote = "Nothing selected to send."; return }
@@ -7941,10 +7941,10 @@ Panel {
           CashewBtn {
             // silent: both sides of a transfer go in the bulk link (two Balance Correction rows, nothing to save);
             // page: Cashew opens one transfer page per pair and you tap Save (a real linked transfer).
-            label: root.cashewTransfers === "silent" ? "Transfers: silent (2 rows)" : "Transfers: page (1 tap each)"
-            active: root.cashewTransfers === "silent"
+            label: root.cashewTransferMode === "silent" ? "Transfers: silent (2 rows)" : "Transfers: page (1 tap each)"
+            active: root.cashewTransferMode === "silent"
             onClicked: {
-              var next = Object.assign({}, root.cashewState, { transfers: root.cashewTransfers === "silent" ? "page" : "silent" })
+              var next = Object.assign({}, root.cashewState, { transfers: root.cashewTransferMode === "silent" ? "page" : "silent" })
               root.cashewSetState(next)
               root.cashewRebuildLinks()
             }
