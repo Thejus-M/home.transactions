@@ -844,8 +844,37 @@ Panel {
       added: root.cashewSendAdded, of: it ? it.count : 0, rows: rows, links: links, transfers: transfers,
       tracked: root.cashewSendTracked, wait: root.cashewSendSecs(shown, root.cashewSendPhase === "blind") })
   }
+  // "Add all" starts with a check: no Cashew tab may be open in Zen (txdb cashew-tabs). Cashew web keeps its
+  // whole database in each open tab and the last tab to save wins, so an open Cashew tab would overwrite the
+  // rows the send adds when it next saves or closes.
   function cashewSendAll() {
-    if (root.cashewSending || root.cashewSendPaused || !root.cashewVerifyGate()) return
+    if (root.cashewSending || root.cashewSendPaused || cashewTabsProc.running || !root.cashewVerifyGate()) return
+    root.cashewSendPhase = ""
+    root.cashewSendNote = "Checking that no Cashew tab is open in Zen…"
+    cashewTabsProc.running = true
+  }
+  Process {
+    id: cashewTabsProc
+    command: ["python3", root.txdbBin, "cashew-tabs"]
+    stdout: StdioCollector { id: cashewTabsOut }
+    onExited: function (exitCode) {
+      var r
+      try { r = JSON.parse(cashewTabsOut.text) } catch (e) { r = { open: -1, reason: "the check printed no result" } }
+      if (r.open > 0) {
+        var where = (r.tabs || []).slice(0, 3).map(function (t) { return "window " + t.window + " tab " + t.tab }).join(", ")
+        root.cashewSendNote = "Not started: " + r.open + (r.open === 1 ? " Cashew tab is" : " Cashew tabs are") + " open in Zen ("
+          + where + "). Close every Cashew tab, wait 15 s (Zen saves its tab list that often), then press Add all again."
+        root.cashewGuessNotify("Cashew: close the Cashew tabs first", root.cashewSendNote)
+        return
+      }
+      if (r.open < 0) {
+        root.cashewSendNote = "Not started: " + (r.reason || "Zen's tab list could not be read") + "."
+        return
+      }
+      root.cashewSendAllGo()
+    }
+  }
+  function cashewSendAllGo() {
     var out
     try { out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, "web", root.cashewTransferMode) }
     catch (e) { root.cashewSendNote = "Could not build the links: " + e; return }

@@ -204,6 +204,11 @@ def main(argv: list[str]) -> int:
         return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
+    if cmd == "cashew-tabs":
+        # cashew-tabs: the open Cashew web tabs in Zen's saved session (txdb/zen_tabs.py), as JSON.
+        from . import zen_tabs
+        print(json.dumps(zen_tabs.check(), ensure_ascii=False))
+        return 0
     if cmd == "cashew-dupes":
         # cashew-dupes [--json]: rows Cashew holds more often than the bank has them (txdb/cashew_dupes.py)
         from . import cashew, cashew_dupes, cashew_twins
