@@ -1158,6 +1158,24 @@ function receiptSubtitle(r) {
   return parts.join(" · ")
 }
 
+// The small paper bill the note mark shows (a sticky note stuck to it): the merchant, the day, the first
+// `max` items and the total. { title, sub, lines: [{text, amount}], more, total }.
+function billPeek(r, max) {
+  var n = max || 4
+  var items = (r && r.items) || []
+  var sym = currencySymbol((r && r.currency) || "INR")
+  var money = function (v) { return v === null || v === undefined || v === "" ? "" : sym + formatGrouped(Number(v)) }
+  var lines = items.slice(0, n).map(function (it) {
+    return { text: String(it.description || "").replace(/\s+/g, " ").trim() || "Item", amount: money(it.amount) }
+  })
+  var total = r ? (r.printedTotal !== null && r.printedTotal !== undefined ? r.printedTotal : r.total) : null
+  var sub = []
+  if (r && r.date) sub.push(formatDate(r.date))
+  if (r && r.time) sub.push(r.time)
+  return { title: r ? receiptTitle(r) : "", sub: sub.join(" · "), lines: lines,
+           more: Math.max(0, items.length - n), total: money(total) }
+}
+
 // "2026-11-05" -> "05-Nov-26" (formatDate). Anything that is not an ISO date
 // is handed back untouched rather than mangled.
 function formatReceiptDate(iso) {

@@ -275,6 +275,16 @@ class SelectLook(unittest.TestCase):
         self.assertEqual(empty["Category"], "Friend Settlement › Split Paid  (from the note)")
         self.assertEqual(self.js("txnCategoryText({})"), "none yet")
 
+    def test_bill_peek(self):
+        r = {"merchant": "GRILL BAY", "date": "2026-11-12", "time": "20:15", "currency": "INR", "total": 270, "printedTotal": 270,
+             "items": [{"description": "Masala  Shawaya Rice", "amount": 230}, {"description": "PEPSI", "amount": 40},
+                       {"description": "a", "amount": 1}, {"description": "b", "amount": 1}, {"description": "c", "amount": 1}]}
+        got = self.js("billPeek(input.r, 2)", r=r)
+        self.assertEqual((got["title"], got["sub"], got["more"], got["total"]), ("GRILL BAY", "12-Nov · 20:15", 3, "₹270"))
+        self.assertEqual(got["lines"], [{"text": "Masala Shawaya Rice", "amount": "₹230"}, {"text": "PEPSI", "amount": "₹40"}])
+        bare = self.js("billPeek({merchant: '', total: null, items: []})")
+        self.assertEqual((bare["title"], bare["lines"], bare["total"], bare["more"]), ("Unreadable bill", [], "", 0))
+
 
 if __name__ == "__main__":
     unittest.main()
