@@ -360,9 +360,9 @@ class CliTests(Base):
         self.add(self.sbi, row(1, "2026-10-02", -500.0, SBI_OUT))
         self.add(self.hdfc, row(2, "2026-10-02", 500.0, HDFC_IN), row(3, "2026-10-03", -10.0, "Tea shop"))
         self.state_path.write_text(json.dumps({"version": 1, "categories": {}, "accounts": {}, "transfers": "silent"}))
-        p = self.cli("cashew-links", "--untracked")                    # silent: no transfer page
-        self.assertNotIn("addTransferRoute", p.stdout)
-        self.assertIn("3 transactions in 1 links and 0 transfer pages", p.stderr)
+        p = self.cli("cashew-links", "--untracked")                    # an old saved "silent" is ignored
+        self.assertIn("addTransferRoute", p.stdout)
+        self.assertIn("1 transfer pages", p.stderr)
         self.state_path.write_text(json.dumps({"version": 1, "categories": {}, "accounts": {}, "transfers": "page"}))
         p = self.cli("cashew-links", "--untracked")
         lines = p.stdout.splitlines()

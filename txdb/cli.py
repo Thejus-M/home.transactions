@@ -176,9 +176,8 @@ def _cashew(cmd: str, args: list[str]) -> int:
         out({"categories": cashew.load_categories(), "accountNames": cashew.account_names(state),
              "drafts": items, "state": state})
         return 0
-    # the widget's default is "page" (real transfers); only a saved "silent" puts both legs in the links
-    result = cashew.build_links(items, base=state.get("base") or "app",
-                                transfers="silent" if state.get("transfers") == "silent" else "page")
+    # always real transfers: one transfer page per pair (a link cannot make two rows one linked transfer)
+    result = cashew.build_links(items, base=state.get("base") or "app", transfers="page")
     for link in result["links"]:
         print(link["url"])
     if result["transfers"]:

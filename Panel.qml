@@ -432,9 +432,10 @@ Panel {
       return ""
     })()
   })
-  // "page" (default): one Cashew transfer page per pair (a real linked transfer: tap Save in Cashew; "Add all"
-  // waits for the tap). "silent": a transfer goes in the bulk link as two Balance Correction rows, no tap.
-  readonly property string cashewTransferMode: root.cashewState.transfers === "silent" ? "silent" : "page"
+  // Always "page": one Cashew transfer page per pair, a real LINKED transfer (tap Save in Cashew; "Add all"
+  // waits for the tap). The old "silent" mode put both legs in the bulk link as two separate Balance
+  // Correction rows, which Cashew cannot link (a link cannot set paired_transaction_fk); it is gone.
+  readonly property string cashewTransferMode: "page"
   readonly property int cashewIncludedCount: Model.cashewIncluded(root.cashewDrafts, root.cashewShown).length
   // Rows of a closed account never reach the window's counts or links.
   readonly property var cashewClosedIds: {
@@ -485,6 +486,12 @@ Panel {
     root.cashewState = data.state || ({ version: 1, categories: {}, accounts: {} })
     root.cashewStateSavedJson = JSON.stringify(root.cashewState)
     root.cashewStateLoaded = true
+    if (root.cashewState.transfers !== undefined) {      // the old silent / page switch: gone
+      var clean = Object.assign({}, root.cashewState)
+      delete clean.transfers
+      root.cashewState = clean
+      cashewStateTimer.restart()
+    }
     var mp = root.cashewState.mini
     if (mp && typeof mp.x === "number" && typeof mp.y === "number") { root.miniX = mp.x; root.miniY = mp.y }
     // Unconfirmed AI guesses saved in the state file come back as they were.
@@ -8508,17 +8515,6 @@ Panel {
           width: parent.width
           spacing: Style.space(6)
           CashewBtn { label: "Oldest first"; active: cashewWin.oldestFirst; onClicked: cashewWin.oldestFirst = !cashewWin.oldestFirst }
-          CashewBtn {
-            // silent: both sides of a transfer go in the bulk link (two Balance Correction rows, nothing to save);
-            // page: Cashew opens one transfer page per pair and you tap Save (a real linked transfer).
-            label: root.cashewTransferMode === "silent" ? "Transfers: silent (2 rows)" : "Transfers: page (1 tap each)"
-            active: root.cashewTransferMode === "silent"
-            onClicked: {
-              var next = Object.assign({}, root.cashewState, { transfers: root.cashewTransferMode === "silent" ? "page" : "silent" })
-              root.cashewSetState(next)
-              root.cashewRebuildLinks()
-            }
-          }
           CashewBtn {
             label: root.cashewAutoTrack ? "After adding: mark as tracked" : "After adding: keep untracked"
             active: root.cashewAutoTrack
