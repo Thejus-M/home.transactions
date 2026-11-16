@@ -787,9 +787,11 @@ Panel {
   property bool cashewSendFresh: false        // "done" and the drafts did not change since
   property string cashewSendPhase: ""         // "" | open | wait | blind | timeout | done | stopped
   property string cashewSendTracked: ""       // at "done": yes | off | unconfirmed
-  // A normal link opens in a browser window on a hidden workspace (bin/cashew-open-hidden) and the window is
-  // closed once Cashew has its rows: nothing shows. A transfer page needs a tap, so it opens normally.
-  property string cashewSendWin: ""           // the hidden window of the current step ("" = none)
+  // Every step opens in a new browser window (bin/cashew-open) that is closed once Cashew has its rows: a
+  // normal link in a hidden window (nothing shows, the focus stays), a transfer page in a visible one (the
+  // person taps Save). No tab is left behind.
+  property string cashewSendWin: ""           // the window of the current step ("" = none)
+  property bool cashewSendWinHidden: false
   property bool cashewSendHiddenOk: true      // false after the hidden way failed once (another browser)
   readonly property var cashewSendItem: root.cashewSendDone < root.cashewSendItems.length ? root.cashewSendItems[root.cashewSendDone] : null
   readonly property bool cashewSending: root.cashewSendPhase === "open" || root.cashewSendPhase === "wait" || root.cashewSendPhase === "blind"
@@ -859,8 +861,9 @@ Panel {
     if (root.cashewSendOpened || !it) return
     root.cashewSendOpened = true
     root.cashewSendWin = ""
-    if (it.kind === "link" && root.cashewSendHiddenOk) {
-      cashewOpenHiddenProc.command = [root.widgetDir + "/bin/cashew-open-hidden", it.url]
+    root.cashewSendWinHidden = it.kind === "link"
+    if (root.cashewSendHiddenOk) {
+      cashewOpenHiddenProc.command = [root.widgetDir + "/bin/cashew-open", it.kind === "link" ? "--hidden" : "--show", it.url]
       cashewOpenHiddenProc.running = true
     } else {
       Quickshell.execDetached(["xdg-open", it.url])
@@ -874,7 +877,7 @@ Panel {
   }
   // After a timeout the person must look: the hidden workspace with the window is shown.
   function cashewSendShowWin() {
-    if (root.cashewSendWin === "") return
+    if (root.cashewSendWin === "" || !root.cashewSendWinHidden) return
     Quickshell.execDetached(["hyprctl", "dispatch", "togglespecialworkspace", "cashew"])
   }
   Process {

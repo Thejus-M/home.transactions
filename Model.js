@@ -3102,8 +3102,7 @@ function cashewSendText(st) {
     if (s.tracked === "yes") text += " Marked as tracked."
     else if (s.tracked === "off") text += " Not marked as tracked (the option is off)."
     else if (s.tracked === "unconfirmed") text += " Not marked as tracked: Cashew did not confirm every step."
-    return text + (s.transfers > 0 ? " Check them in Cashew, then close the transfer tabs (a reloaded tab adds its rows again)."
-      : " Check them in Cashew.")
+    return text + " Check them in Cashew."              // every window of the send is closed by the widget
   }
   if (s.phase === "stopped") return "Stopped at " + (transfer ? "transfer " : "link ") + (s.index || 0) + " of " + (s.total || 0) + "."
   return ""
