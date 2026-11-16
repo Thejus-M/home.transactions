@@ -12,6 +12,8 @@
   txdb receipt-cash <receiptId>          paid in cash: park it, stop asking
   txdb receipt-ignore <receiptId>        not a bill, or a duplicate photo
   txdb receipt-review <receiptId> <0|1>  raise or clear "check this parse"
+  txdb cashew-count                      how many transactions the Cashew web app has (the browser's copy)
+  txdb cashew-wait <n> [--timeout S]     wait until Cashew has n more transactions (the widget's "Add all")
   (cashew-fix and cashew-twins are not needed any more: links carry categoryPolarity=false, the sign decides)
   txdb cashew-fix [--base FILE] [--out FILE] [--dry-run]  add the rows a Cashew link would get wrong (a refund in its
                                          purchase's category, a payment under an income category) to a COPY of the Cashew
@@ -199,6 +201,28 @@ def main(argv: list[str]) -> int:
         return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
+    if cmd == "cashew-count":
+        # How many transactions the Cashew web app has (the copy the browser keeps). Exit 3 when there is none.
+        from . import cashew_twins
+        n = cashew_twins.browser_count()
+        if n is None:
+            print("cashew-count: the browser keeps no copy of the Cashew web app", file=sys.stderr)
+            return 3
+        print(n)
+        return 0
+    if cmd == "cashew-wait":
+        # cashew-wait <expect> [--timeout S] [--poll S]: wait until Cashew has <expect> more transactions.
+        # Prints {"ready":true,"base":n} (open the link now), then {"added":k,"of":n} per change.
+        # Exit 0 all added, 2 timeout, 3 no browser copy. (txdb/cashew_twins.py wait_added)
+        from . import cashew_twins
+        try:
+            expect = int(args[0])
+            timeout = float(args[args.index("--timeout") + 1]) if "--timeout" in args else 60.0
+            poll = float(args[args.index("--poll") + 1]) if "--poll" in args else 1.0
+        except (IndexError, ValueError):
+            print("usage: txdb cashew-wait <expect> [--timeout S] [--poll S]", file=sys.stderr)
+            return 2
+        return cashew_twins.wait_added(expect, timeout, poll, emit=lambda line: print(line, flush=True))
     if cmd == "cashew-fix":
         # cashew-fix [--base FILE] [--out FILE] [--dry-run]: add the rows a Cashew link would get wrong (a refund in
         # its purchase's category, a payment under an income category) to a copy of the Cashew database, with the

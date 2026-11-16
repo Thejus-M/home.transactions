@@ -94,6 +94,84 @@ class BrowserCopy(unittest.TestCase):
             self.assertIsNone(cashew_twins.find_browser_copy(Path(home)))
 
 
+def fake_web_db(path, rows=0):
+    """A Cashew web database as the browser keeps it: categories and transactions."""
+    fake_backup(path)
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE transactions (transaction_pk TEXT PRIMARY KEY, name TEXT, amount REAL)")
+    c.executemany("INSERT INTO transactions VALUES (?,?,?)", [(f"t{i}", "x" * 300, 1.0) for i in range(rows)])
+    c.commit()
+    c.close()
+
+
+def add_rows(path, n):
+    c = sqlite3.connect(path)
+    have = c.execute("SELECT count(*) FROM transactions").fetchone()[0]
+    c.executemany("INSERT INTO transactions VALUES (?,?,?)", [(f"t{have + i}", "y", 2.0) for i in range(n)])
+    c.commit()
+    c.close()
+
+
+class BrowserCount(unittest.TestCase):
+    def blob(self, home, name="351", rows=20):
+        folder = Path(home) / ".config" / "zen" / "profile" / "storage" / "default" / "https+++budget-track.web.app" / "idb" / "x.files"
+        folder.mkdir(parents=True, exist_ok=True)
+        fake_web_db(folder / name, rows)
+        return folder / name
+
+    def test_count_reads_the_newest_copy_and_leaves_no_temp_file(self):
+        import glob
+        with tempfile.TemporaryDirectory() as home:
+            self.assertIsNone(cashew_twins.browser_count(Path(home)))                      # no copy at all
+            old = self.blob(home, "351", 20)
+            new = self.blob(home, "384", 25)
+            os.utime(old, (1, 1))
+            before = set(glob.glob(os.path.join(tempfile.gettempdir(), "cashew-count-*")))
+            self.assertEqual(cashew_twins.browser_count(Path(home)), 25)
+            self.assertEqual(set(glob.glob(os.path.join(tempfile.gettempdir(), "cashew-count-*"))), before)
+            self.assertTrue(new.exists())
+
+    def test_wait_returns_0_when_the_rows_arrive_and_says_when_to_open_the_link(self):
+        import threading
+        with tempfile.TemporaryDirectory() as home:
+            blob = self.blob(home, rows=20)
+            lines = []
+            threading.Timer(0.3, add_rows, (blob, 2)).start()
+            threading.Timer(0.6, add_rows, (blob, 1)).start()
+            code = cashew_twins.wait_added(3, timeout=10, poll=0.05, emit=lines.append, home=Path(home))
+            got = [json.loads(l) for l in lines]
+            self.assertEqual(code, 0)
+            self.assertEqual(got[0], {"ready": True, "base": 20})
+            self.assertEqual(got[-1], {"added": 3, "of": 3})
+            self.assertTrue(all(g["of"] == 3 for g in got[1:]))
+
+    def test_wait_times_out_with_what_was_added_and_needs_a_copy(self):
+        import threading
+        with tempfile.TemporaryDirectory() as home:
+            self.assertEqual(cashew_twins.wait_added(1, timeout=0.1, poll=0.05, emit=lambda l: None, home=Path(home)), 3)
+            blob = self.blob(home, rows=20)
+            lines = []
+            threading.Timer(0.1, add_rows, (blob, 1)).start()
+            self.assertEqual(cashew_twins.wait_added(5, timeout=0.6, poll=0.05, emit=lines.append, home=Path(home)), 2)
+            self.assertEqual(json.loads(lines[-1]), {"added": 1, "of": 5})
+
+    def test_the_commands_print_the_count_and_the_exit_codes(self):
+        import subprocess, sys
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as home:
+            env = {**os.environ, "TXDB_BROWSER_HOME": home}
+            env.pop("TXDB_NO_BROWSER_COPY", None)
+            run = lambda *a: subprocess.run([sys.executable, str(root / "bin/txdb"), *a], env=env, capture_output=True, text=True)
+            self.assertEqual(run("cashew-count").returncode, 3)
+            self.assertEqual(run("cashew-wait", "1", "--timeout", "0.2", "--poll", "0.05").returncode, 3)
+            self.blob(home, rows=7)
+            self.assertEqual(run("cashew-count").stdout.strip(), "7")
+            p = run("cashew-wait", "1", "--timeout", "0.3", "--poll", "0.05")
+            self.assertEqual((p.returncode, json.loads(p.stdout.splitlines()[0])), (2, {"ready": True, "base": 7}))
+            self.assertEqual(run("cashew-wait", "0", "--timeout", "1", "--poll", "0.05").returncode, 0)
+            self.assertEqual(run("cashew-wait").returncode, 2)
+
+
 class Export(R.Base):
     def setUp(self):
         super().setUp()

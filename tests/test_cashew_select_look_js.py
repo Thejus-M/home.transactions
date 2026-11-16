@@ -167,6 +167,20 @@ class SelectLook(unittest.TestCase):
         long = self.js("llmStatusLines({reparsing: true, reparseText: input.t})", t="x" * 200)
         self.assertEqual((long[0]["label"], len(long[0]["detail"])), ("Reparsing a bill", 90))
 
+    def test_send_text_for_each_phase(self):
+        t = lambda **st: self.js("cashewSendText(input.s)", s=st)
+        self.assertEqual(t(phase="open", index=1, total=3), "Link 1 of 3 · opening")
+        self.assertEqual(t(phase="wait", index=2, total=5, added=12, of=17), "Link 2 of 5 · 12 of 17 added")
+        self.assertIn("waiting 8 s", t(phase="blind", index=1, total=2, wait=8))
+        self.assertEqual(t(phase="timeout", index=2, total=5, added=12, of=17, wait=60),
+                         "Link 2: 12 of 17 added after 60 s. Check the browser.".replace("Link 2:", "Link 2 of 5:"))
+        self.assertTrue(t(phase="done", total=5, rows=141).startswith("Added 141 rows in 5 links. Check them in Cashew"))
+        self.assertTrue(t(phase="done", total=1, rows=1).startswith("Added 1 row in 1 link."))
+        self.assertTrue(t(phase="done", total=2, rows=0).startswith("Sent in 2 links."))
+        self.assertEqual(t(phase="stopped", index=2, total=5), "Stopped at link 2 of 5.")
+        self.assertEqual(t(phase=""), "")
+        self.assertEqual(self.js("cashewSendText(null)"), "")
+
 
 if __name__ == "__main__":
     unittest.main()

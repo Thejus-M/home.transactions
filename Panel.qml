@@ -745,40 +745,128 @@ Panel {
   }
   function cashewQueueLinks() { if (root.cashewOpen) cashewLinksTimer.restart() }
 
-  // One click sends every selected row to the Cashew web app
-  // (https://budget-track.web.app/): the same links the cards below hold, but
-  // always the web ones whatever the Cashew: App / Web toggle says, opened one
-  // after another in the browser (a short pause between them so the browser
-  // and the page keep up). Rows without the tick, and rows hidden by the
-  // filter, are not sent, exactly like the cards.
-  property var cashewSendQueue: []
+  // One click adds every selected row to the Cashew web app (https://budget-track.web.app/), one link
+  // after the other: a link is opened, and the next one only when Cashew has added that link's rows.
+  // "Added" is read from the copy of Cashew's database the browser keeps (txdb cashew-wait): the count
+  // of its transactions must rise by the rows of the link. Always the web links, and transfers always
+  // as two rows inside the links (no transfer page that waits for a tap). Rows without the tick, and
+  // rows hidden by the filter, are not sent. The run goes on when the window is closed or minimised;
+  // a desktop notification tells how it ended, and Cashew opens in the browser for a look.
+  property var cashewSendQueue: []            // [{url, count}]: the links still to add, the current one first
   property int cashewSendTotal: 0
-  readonly property bool cashewSending: cashewSendQueue.length > 0
+  property int cashewSendIndex: 0             // 1-based: the link being added
+  property int cashewSendAdded: 0             // rows of that link Cashew has so far
+  property int cashewSendOf: 0                // rows of that link
+  property int cashewSendRows: 0              // rows of the finished links
+  property bool cashewSendOpened: false       // the current link was handed to the browser
+  property string cashewSendPhase: ""         // "" | open | wait | blind | timeout | done | stopped
+  readonly property int cashewSendWaitSecs: 60
+  readonly property int cashewSendBlindSecs: 8
+  readonly property bool cashewSending: root.cashewSendPhase === "open" || root.cashewSendPhase === "wait" || root.cashewSendPhase === "blind"
+  readonly property bool cashewSendPaused: root.cashewSendPhase === "timeout"
   property string cashewSendNote: ""
-  function cashewSendAll() {
-    if (root.cashewSending || !root.cashewVerifyGate()) return
-    var out
-    try { out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, "web", root.cashewTransferMode) }
-    catch (e) { root.cashewSendNote = "Could not build the links: " + e; return }
-    var urls = out.links.map(function (l) { return l.url }).concat(out.transfers.map(function (t) { return t.url }))
-    if (urls.length === 0) { root.cashewSendNote = "Nothing selected to send."; return }
-    root.cashewSendTotal = urls.length
-    root.cashewSendNote = ""
-    root.cashewSendQueue = urls
-    root.cashewSendNext()
-    if (root.cashewSendQueue.length > 0) cashewSendTimer.restart()
+  function cashewSendSay() {
+    root.cashewSendNote = Model.cashewSendText({
+      phase: root.cashewSendPhase, index: root.cashewSendIndex, total: root.cashewSendTotal,
+      added: root.cashewSendAdded, of: root.cashewSendOf, rows: root.cashewSendRows,
+      wait: root.cashewSendPhase === "blind" ? root.cashewSendBlindSecs : root.cashewSendWaitSecs })
   }
+  function cashewSendAll() {
+    if (root.cashewSending || root.cashewSendPaused || !root.cashewVerifyGate()) return
+    var out
+    try { out = Model.cashewBuildLinks(root.cashewDrafts, root.cashewShown, 6000, root.cashewCategories, "web", "silent") }
+    catch (e) { root.cashewSendNote = "Could not build the links: " + e; return }
+    var items = out.links.map(function (l) { return { url: l.url, count: l.count } })
+    if (items.length === 0) { root.cashewSendPhase = ""; root.cashewSendNote = "Nothing selected to send."; return }
+    root.cashewSendTotal = items.length
+    root.cashewSendRows = 0
+    root.cashewSendQueue = items
+    root.cashewSendNext()
+  }
+  // Starts the wait for the first link of the queue; the link itself is opened when the wait says it has
+  // read the count to start from ({"ready": true}), so no row can be added before the count is known.
   function cashewSendNext() {
     var q = root.cashewSendQueue
-    if (q.length === 0) return
-    Quickshell.execDetached(["xdg-open", q[0]])
-    root.cashewSendQueue = q.slice(1)
-    if (root.cashewSendQueue.length === 0) {
-      cashewSendTimer.stop()
-      root.cashewSendNote = "Sent " + root.cashewSendTotal + (root.cashewSendTotal === 1 ? " link" : " links") + " to Cashew web."
+    if (q.length === 0) { root.cashewSendFinish(); return }
+    root.cashewSendIndex = root.cashewSendTotal - q.length + 1
+    root.cashewSendOf = q[0].count
+    root.cashewSendAdded = 0
+    root.cashewSendOpened = false
+    root.cashewSendPhase = "open"
+    root.cashewSendSay()
+    cashewWaitProc.command = ["python3", root.txdbBin, "cashew-wait", String(q[0].count), "--timeout", String(root.cashewSendWaitSecs)]
+    cashewWaitProc.running = true
+  }
+  function cashewSendOpen() {
+    if (root.cashewSendOpened || root.cashewSendQueue.length === 0) return
+    root.cashewSendOpened = true
+    Quickshell.execDetached(["xdg-open", root.cashewSendQueue[0].url])
+  }
+  function cashewSendLine(line) {
+    if (!root.cashewSending) return
+    var m
+    try { m = JSON.parse(line) } catch (e) { return }
+    if (m.ready) { root.cashewSendOpen(); root.cashewSendPhase = "wait" }
+    if (m.added !== undefined) root.cashewSendAdded = Math.max(0, Number(m.added) || 0)
+    root.cashewSendSay()
+  }
+  function cashewSendExited(exitCode) {
+    if (!root.cashewSending) return                       // stopped by hand
+    if (exitCode === 0) {
+      root.cashewSendRows += root.cashewSendOf
+      root.cashewSendQueue = root.cashewSendQueue.slice(1)
+      root.cashewSendNext()
+    } else if (exitCode === 3) {
+      // The browser keeps no copy of Cashew that can be read (another browser): open the link and wait a fixed time.
+      root.cashewSendOpen()
+      root.cashewSendPhase = "blind"
+      root.cashewSendSay()
+      cashewSendBlindTimer.restart()
+    } else {
+      // Timeout (2), or the check itself failed: stop here and let the person look.
+      root.cashewSendOpen()
+      root.cashewSendRows += Math.min(root.cashewSendAdded, root.cashewSendOf)
+      root.cashewSendPhase = "timeout"
+      root.cashewSendSay()
+      root.cashewGuessNotify("Cashew: stopped at link " + root.cashewSendIndex + " of " + root.cashewSendTotal, root.cashewSendNote)
     }
   }
-  Timer { id: cashewSendTimer; interval: 1800; repeat: true; onTriggered: root.cashewSendNext() }
+  // After a timeout: the person looked at the browser and wants the remaining links.
+  function cashewSendContinue() {
+    if (!root.cashewSendPaused) return
+    root.cashewSendQueue = root.cashewSendQueue.slice(1)
+    root.cashewSendNext()
+  }
+  function cashewSendStop() {
+    if (!root.cashewSending && !root.cashewSendPaused) return
+    root.cashewSendPhase = "stopped"
+    root.cashewSendSay()
+    cashewSendBlindTimer.stop()
+    cashewWaitProc.running = false
+    root.cashewSendQueue = []
+  }
+  function cashewSendFinish() {
+    root.cashewSendPhase = "done"
+    root.cashewSendSay()
+    root.cashewGuessNotify("Cashew: all links added", root.cashewSendNote)
+    Quickshell.execDetached(["xdg-open", "https://budget-track.web.app/"])     // for a look at the result
+  }
+  Process {
+    id: cashewWaitProc
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function (line) { root.cashewSendLine(line) }
+    }
+    onExited: function (exitCode) { root.cashewSendExited(exitCode) }
+  }
+  Timer {
+    id: cashewSendBlindTimer
+    interval: root.cashewSendBlindSecs * 1000
+    onTriggered: if (root.cashewSendPhase === "blind") {
+      root.cashewSendQueue = root.cashewSendQueue.slice(1)
+      root.cashewSendNext()
+    }
+  }
   Timer {
     id: cashewLinksTimer
     interval: 30
@@ -8066,24 +8154,7 @@ Panel {
           }
         }
 
-        CashewBtn {
-          primary: true
-          enabled: !root.cashewSending && root.cashewLinks.length + root.cashewTransfers.length > 0
-          label: root.cashewVerifyArmed ? "Unverified AI · click again"
-            : root.cashewSending ? ("Sending " + (root.cashewSendTotal - root.cashewSendQueue.length) + "/" + root.cashewSendTotal + "…")
-            : "Send all to Cashew web"
-          onClicked: root.cashewSendAll()
-        }
-        Text {
-          visible: root.cashewSendNote !== ""
-          width: parent.width
-          wrapMode: Text.Wrap
-          textFormat: Text.PlainText
-          text: root.cashewSendNote
-          color: cashewWin.muted
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
+        CashewSendControls { width: parent.width }
 
         // One button per link (and per transfer page): open it in Cashew.
         Flow {
@@ -8187,6 +8258,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
             text: root.cashewGuessError !== "" ? root.cashewGuessError
+              : (root.cashewSending || root.cashewSendPaused) ? root.cashewSendNote
               : root.cashewGuessing ? Model.cashewGuessProgressText(root.cashewGuessProgress, root.cashewGuessDone, root.cashewGuessTotal)
               : root.cashewGuessedCount > 0 ? "✦ " + root.cashewGuessedCount + " AI categories wait for your confirmation"
               : root.cashewGuessDoneLine !== "" ? root.cashewGuessDoneLine
@@ -8213,6 +8285,25 @@ Panel {
             active: cashewWin.resultsOpen
             onClicked: if (root.cashewGuessedCount === 0) cashewWin.resultsOpen = !cashewWin.resultsOpen
             else cashewWin.resultsOpen = true
+          }
+          CashewBtn {
+            visible: !root.cashewSending && !root.cashewSendPaused
+            primary: true
+            enabled: root.cashewLinks.length > 0
+            label: root.cashewVerifyArmed ? "Unverified AI · click again" : "Add all to Cashew"
+            onClicked: root.cashewSendAll()
+          }
+          CashewBtn {
+            visible: root.cashewSendPaused
+            primary: true
+            label: root.cashewSendQueue.length > 1 ? "Continue with the next link" : "Finish"
+            onClicked: root.cashewSendContinue()
+          }
+          CashewBtn {
+            visible: root.cashewSending || root.cashewSendPaused
+            active: root.cashewSending
+            label: "■ Stop"
+            onClicked: root.cashewSendStop()
           }
           CashewBtn { label: cashewWin.optionsOpen ? "Options ▴" : "Options ▾"; active: cashewWin.optionsOpen; onClicked: cashewWin.optionsOpen = !cashewWin.optionsOpen }
           CashewBtn { label: "Minimise"; onClicked: { cashewWin.pickKind = ""; cashewWin.askActive = false; cashewWin.compact = true } }
@@ -8326,30 +8417,6 @@ Panel {
         }
 
         CashewBtn {
-          id: cwSendBtn
-          visible: !cashewWin.linksCollapsed
-          anchors { top: parent.top; right: cwBaseBtn.left; topMargin: Style.space(6); rightMargin: Style.space(6) }
-          primary: true
-          enabled: !root.cashewSending
-          label: root.cashewVerifyArmed ? "Unverified AI · click again"
-            : root.cashewSending ? ("Sending " + (root.cashewSendTotal - root.cashewSendQueue.length) + "/" + root.cashewSendTotal + "…")
-            : "Send all to Cashew web"
-          onClicked: root.cashewSendAll()
-        }
-        Text {
-          visible: !cashewWin.linksCollapsed && root.cashewSendNote !== ""
-          // bounded on the left by the "LINKS" label, so a long note is cut and does not run over it
-          anchors { verticalCenter: cwSendBtn.verticalCenter; left: parent.left; leftMargin: Style.space(64); right: cwSendBtn.left; rightMargin: Style.space(8) }
-          horizontalAlignment: Text.AlignRight
-          elide: Text.ElideLeft
-          textFormat: Text.PlainText
-          text: root.cashewSendNote
-          color: cashewWin.muted
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
-
-        CashewBtn {
           id: cwBaseBtn
           visible: !cashewWin.linksCollapsed
           anchors { top: parent.top; right: cwChevron.left; topMargin: Style.space(6); rightMargin: Style.space(6) }
@@ -8376,6 +8443,8 @@ Panel {
             id: cwLinksCol
             width: parent.width
             spacing: Style.space(10)
+
+            CashewSendControls { width: parent.width }
 
             Column {
               visible: root.cashewGuessedCount > 0
@@ -9924,6 +9993,45 @@ Panel {
       enabled: cb.enabled
       cursorShape: Qt.PointingHandCursor
       onClicked: cb.clicked()
+    }
+  }
+
+  // "Add all to Cashew": the button (Stop while it runs; Continue / Stop after a timeout) and the status line.
+  component CashewSendControls: Column {
+    id: csc
+    spacing: Style.space(6)
+    Flow {
+      width: csc.width
+      spacing: Style.space(6)
+      CashewBtn {
+        visible: !root.cashewSending && !root.cashewSendPaused
+        primary: true
+        enabled: root.cashewLinks.length > 0
+        label: root.cashewVerifyArmed ? "Unverified AI · click again" : "Add all to Cashew"
+        onClicked: root.cashewSendAll()
+      }
+      CashewBtn {
+        visible: root.cashewSendPaused
+        primary: true
+        label: root.cashewSendQueue.length > 1 ? "Continue with the next link" : "Finish"
+        onClicked: root.cashewSendContinue()
+      }
+      CashewBtn {
+        visible: root.cashewSending || root.cashewSendPaused
+        active: root.cashewSending
+        label: "■ Stop"
+        onClicked: root.cashewSendStop()
+      }
+    }
+    Text {
+      visible: root.cashewSendNote !== ""
+      width: csc.width
+      wrapMode: Text.Wrap
+      textFormat: Text.PlainText
+      text: root.cashewSendNote
+      color: root.cashewSendPaused ? root.pendingColor : (root.cashewSending ? Color.accent : Qt.darker(root.foreground, 1.2))
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
     }
   }
 

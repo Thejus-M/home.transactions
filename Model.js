@@ -2897,6 +2897,23 @@ function cashewLookLine(d, fate, linkCount) {
   return parts.join(" · ")
 }
 
+// The status line of "Add all to Cashew". st: { phase, index (1-based), total, added, of, rows, wait }.
+// phase: "open" (the link is being opened), "wait" (Cashew is adding its rows), "blind" (no copy of
+// Cashew to check: a fixed wait), "timeout", "done", "stopped", "" (nothing to say).
+function cashewSendText(st) {
+  var s = st || {}
+  var link = "Link " + (s.index || 0) + " of " + (s.total || 0)
+  var links = (s.total === 1 ? "1 link" : (s.total || 0) + " links")
+  if (s.phase === "open") return link + " · opening"
+  if (s.phase === "wait") return link + " · " + (s.added || 0) + " of " + (s.of || 0) + " added"
+  if (s.phase === "blind") return link + " · opened (Cashew cannot be checked here: waiting " + (s.wait || 0) + " s)"
+  if (s.phase === "timeout") return link + ": " + (s.added || 0) + " of " + (s.of || 0) + " added after " + (s.wait || 0) + " s. Check the browser."
+  if (s.phase === "done") return (s.rows > 0 ? "Added " + s.rows + (s.rows === 1 ? " row" : " rows") : "Sent") + " in " + links
+    + ". Check them in Cashew, then close the Cashew tabs (a reloaded tab adds its rows again)."
+  if (s.phase === "stopped") return "Stopped at link " + (s.index || 0) + " of " + (s.total || 0) + "."
+  return ""
+}
+
 // The model runs in progress, for the minimised windows: [{label, detail}].
 // state: { guessing, guessText, importing, importText, reparsing, reparseTitle, reparseText }.
 // `detail` of a streamed run is its last line with text, cut at 90 characters.

@@ -79,26 +79,95 @@ def find_browser_copy(home: Path | None = None) -> Path | None:
 
     if home is None and os.environ.get("TXDB_NO_BROWSER_COPY"):
         return None                       # tests and scripts switch the lookup off
-    home = home or Path.home()
+    for path in _browser_blobs(home):
+        copy = Path(tempfile.mkdtemp(prefix="cashew-web-")) / "cashew.sqlite"
+        try:
+            shutil.copyfile(path, copy)
+        except OSError:
+            continue
+        if _is_cashew_db(copy):
+            return copy
+    return None
+
+
+def _browser_blobs(home: Path | None = None) -> list[Path]:
+    """The files the browser keeps for the Cashew web app's IndexedDB, newest first. TXDB_BROWSER_HOME
+    names another home folder (tests)."""
+    home = Path(home or os.environ.get("TXDB_BROWSER_HOME") or Path.home())
     found = []
     for pattern in (".config/*/*/storage/default/https+++budget-track.web.app/idb/*.files/*",
                     ".mozilla/firefox/*/storage/default/https+++budget-track.web.app/idb/*.files/*"):
-        found += [p for p in home.glob(pattern) if p.is_file() and p.stat().st_size > 4096]
-    for path in sorted(found, key=lambda p: p.stat().st_mtime, reverse=True):
-        copy = Path(tempfile.mkdtemp(prefix="cashew-web-")) / "cashew.sqlite"
-        shutil.copyfile(path, copy)
-        try:
-            with open(copy, "rb") as fh:
-                if not fh.read(16).startswith(b"SQLite format 3"):
-                    continue
-            conn = sqlite3.connect(f"{copy.as_uri()}?mode=ro", uri=True)
-            ok = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'categories'").fetchone()
-            conn.close()
-        except (sqlite3.Error, OSError):
-            continue
-        if ok:
-            return copy
+        for p in home.glob(pattern):
+            try:
+                if p.is_file() and p.stat().st_size > 4096:
+                    found.append((p.stat().st_mtime, p))
+            except OSError:                # the browser replaced the file while we looked
+                continue
+    return [p for _, p in sorted(found, key=lambda x: x[0], reverse=True)]
+
+
+def _is_cashew_db(copy: Path) -> bool:
+    try:
+        with open(copy, "rb") as fh:
+            if not fh.read(16).startswith(b"SQLite format 3"):
+                return False
+        conn = sqlite3.connect(f"{copy.as_uri()}?mode=ro", uri=True)
+        ok = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'categories'").fetchone()
+        conn.close()
+    except (sqlite3.Error, OSError):
+        return False
+    return bool(ok)
+
+
+def browser_count(home: Path | None = None) -> int | None:
+    """How many transactions the Cashew web app has, read from the copy the browser keeps (see
+    find_browser_copy); None when there is no such copy. The browser's file is copied first and never opened;
+    the copy is deleted again."""
+    import shutil
+    import tempfile
+
+    if home is None and os.environ.get("TXDB_NO_BROWSER_COPY"):
+        return None
+    for path in _browser_blobs(home):
+        with tempfile.TemporaryDirectory(prefix="cashew-count-") as tmp:
+            copy = Path(tmp) / "cashew.sqlite"
+            try:
+                shutil.copyfile(path, copy)
+            except OSError:
+                continue
+            if not _is_cashew_db(copy):
+                continue
+            try:
+                conn = sqlite3.connect(f"{copy.as_uri()}?mode=ro", uri=True)
+                n = conn.execute("SELECT count(*) FROM transactions").fetchone()[0]
+                conn.close()
+            except sqlite3.Error:
+                continue
+            return int(n)
     return None
+
+
+def wait_added(expect: int, timeout: float = 60.0, poll: float = 1.0, emit=print, home: Path | None = None) -> int:
+    """Wait until the Cashew web app has `expect` more transactions than now. Emits one JSON line when it
+    is ready to start ({"ready": true, "base": n}: open the link NOW) and one per change
+    ({"added": k, "of": expect}). Returns 0 when all are there, 2 on timeout, 3 when the browser keeps no copy."""
+    import time
+
+    base = browser_count(home)
+    if base is None:
+        return 3
+    emit(json.dumps({"ready": True, "base": base}))
+    added, end = 0, time.monotonic() + timeout
+    while True:
+        now = browser_count(home)
+        if now is not None and now - base != added:
+            added = now - base
+            emit(json.dumps({"added": added, "of": expect}))
+        if added >= expect:
+            return 0
+        if time.monotonic() >= end:
+            return 2
+        time.sleep(poll)
 
 
 def lookup(twins: dict, category: str, subcategory: str) -> tuple[str, str] | None:
