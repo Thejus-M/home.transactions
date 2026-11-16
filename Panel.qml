@@ -915,12 +915,23 @@ Panel {
       ;(it.urls && it.urls.length ? it.urls : [it.url]).forEach(function (u) { Quickshell.execDetached(["xdg-open", u]) })
     }
   }
-  // The hidden window of the step is closed when the step is complete (or stopped).
-  function cashewSendCloseWin() {
-    if (root.cashewSendWin === "") return
-    // Hyprland 0.56: dispatch takes Lua (the old "closewindow address:..." form fails without a sign)
-    Quickshell.execDetached(["hyprctl", "dispatch", 'hl.dsp.window.close({ window = "address:' + root.cashewSendWin + '" })'])
+  // The window of the step is closed when the step is complete (or stopped). `then` runs once the window is
+  // gone plus 1 s (bin/cashew-open --close): a new Cashew must not load before the closing one has saved.
+  property var cashewAfterClose: null
+  function cashewSendCloseWin(then) {
+    if (root.cashewSendWin === "") { if (then) then(); return }
+    root.cashewAfterClose = then || null
+    cashewCloseProc.command = [root.widgetDir + "/bin/cashew-open", "--close", root.cashewSendWin]
     root.cashewSendWin = ""
+    cashewCloseProc.running = true
+  }
+  Process {
+    id: cashewCloseProc
+    onExited: function (exitCode) {
+      var then = root.cashewAfterClose
+      root.cashewAfterClose = null
+      if (then) then()
+    }
   }
   // After a timeout the person must look: the hidden workspace with the window is shown.
   function cashewSendShowWin() {
@@ -937,6 +948,13 @@ Panel {
         if (!root.cashewSending && !root.cashewSendPaused) root.cashewSendCloseWin()   // stopped meanwhile
       } else if (it && root.cashewSending) {
         // Not possible here (exit 4: another browser) or no window came (5): open it the normal way.
+        if (exitCode === 6) {
+          // Zen was closed meanwhile: a link would start it and Zen would restore its last window mid-send.
+          root.cashewSendPhase = "stopped"
+          root.cashewSendNote = "Stopped: Zen is not running. Start Zen, close its Cashew tabs, wait 15 s, then press Add all again (rows already added are not sent twice)."
+          cashewWaitProc.running = false
+          return
+        }
         if (exitCode === 4) root.cashewSendHiddenOk = false
         if (exitCode !== 5) (it.urls && it.urls.length ? it.urls : [it.url]).forEach(function (u) { Quickshell.execDetached(["xdg-open", u]) })
       }
@@ -953,7 +971,6 @@ Panel {
   function cashewSendExited(exitCode) {
     if (!root.cashewSending) return                       // stopped by hand
     if (exitCode === 0) {
-      root.cashewSendCloseWin()
       // Cashew has these rows now: mark them so a second "Add all" in this window does not send them again.
       var done = ({})
       ;(root.cashewSendItem ? root.cashewSendItem.ids || [] : []).forEach(function (id) { done[id] = true })
@@ -961,7 +978,7 @@ Panel {
         return done[d.id] ? Object.assign({}, d, { inCashew: true, include: false }) : d
       })
       root.cashewSendDone += 1
-      root.cashewSendStart()
+      root.cashewSendCloseWin(function () { if (root.cashewSending) root.cashewSendStart() })
     } else if (exitCode === 3) {
       // The browser keeps no copy of Cashew that can be read (another browser): open the step and wait a fixed time.
       root.cashewSendOpen()
@@ -982,10 +999,10 @@ Panel {
   // After a timeout: the person looked at the browser and wants the remaining steps.
   function cashewSendContinue() {
     if (!root.cashewSendPaused) return
-    root.cashewSendCloseWin()
     root.cashewSendConfirmed = false
     root.cashewSendDone += 1
-    root.cashewSendStart()
+    root.cashewSendPhase = "open"
+    root.cashewSendCloseWin(function () { root.cashewSendStart() })
   }
   function cashewSendStop() {
     if (!root.cashewSending && !root.cashewSendPaused) return
@@ -1021,9 +1038,8 @@ Panel {
     id: cashewSendBlindTimer
     interval: 8000
     onTriggered: if (root.cashewSendPhase === "blind") {
-      root.cashewSendCloseWin()
       root.cashewSendDone += 1
-      root.cashewSendStart()
+      root.cashewSendCloseWin(function () { if (root.cashewSending) root.cashewSendStart() })
     }
   }
   Timer {

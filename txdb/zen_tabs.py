@@ -96,8 +96,24 @@ def open_cashew_tabs(session: dict) -> list[dict]:
     return out
 
 
-def check(home: Path | None = None) -> dict:
-    """{"open": n, "tabs": [...], "session": path, "age": seconds since Zen wrote it} or {"open": -1, "reason"}."""
+def zen_running() -> bool | None:
+    """True when a Zen window is on screen (Hyprland), None when that cannot be told."""
+    import subprocess
+    try:
+        out = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=5).stdout
+        return any(c.get("class") == "zen" for c in json.loads(out or "[]"))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def check(home: Path | None = None, running: bool | None = None) -> dict:
+    """{"open": n, "tabs": [...], "session": path, "age": seconds since Zen wrote it} or {"open": -1, "reason"}.
+    Zen must be running: a send started with Zen closed would make Zen restore its last window (with its Cashew
+    tabs) in the middle of the send."""
+    if running is None and home is None:
+        running = zen_running()
+    if running is False:
+        return {"open": -1, "reason": "Zen is not running: start Zen, close its Cashew tabs, wait 15 s, then press Add all again"}
     home = Path(home or os.environ.get("TXDB_BROWSER_HOME") or Path.home())
     for profile in _profiles(home):
         src = _session_file(profile)
