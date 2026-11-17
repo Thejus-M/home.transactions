@@ -124,6 +124,15 @@ class Formatting(Harness):
         shaky = self.js("receiptStateMark(input.r)", r=receipt(state="unmatched", needsReview=True))
         self.assertEqual(plain["pill"], "TO LINK")
         self.assertEqual(shaky["pill"], "CHECK")
+        self.assertEqual((plain["tag"], shaky["tag"]), ("to link", "check"))
+        for state, tag in (("linked", "filed"), ("cash", "cash"), ("ignored", "ignored")):
+            mark = self.js("receiptStateMark(input.r)", r=receipt(state=state))
+            self.assertEqual(mark["tag"], tag)
+            self.assertIn("glyph", mark)
+
+    def test_a_receipt_without_a_merchant_is_titled_receipt(self):
+        self.assertEqual(self.js("receiptTitle({merchant: '  '})"), "Receipt")
+        self.assertEqual(self.js("receiptTitle({merchant: 'GRILL BAY'})"), "GRILL BAY")
 
     def test_dates_print_dd_mm_yyyy_and_parse_back_to_iso(self):
         self.assertEqual(self.js("formatReceiptDate('2026-11-05')"), "05-Nov" + _Y)

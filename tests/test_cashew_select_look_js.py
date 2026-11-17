@@ -313,7 +313,7 @@ class SelectLook(unittest.TestCase):
         self.assertEqual((got["title"], got["sub"], got["more"], got["total"]), ("GRILL BAY", "12-Nov · 20:15", 3, "₹270"))
         self.assertEqual(got["lines"], [{"text": "Masala Shawaya Rice", "amount": "₹230"}, {"text": "PEPSI", "amount": "₹40"}])
         bare = self.js("billPeek({merchant: '', total: null, items: []})")
-        self.assertEqual((bare["title"], bare["lines"], bare["total"], bare["more"]), ("Unreadable bill", [], "", 0))
+        self.assertEqual((bare["title"], bare["lines"], bare["total"], bare["more"]), ("Receipt", [], "", 0))
 
     def test_a_filter_that_lets_one_side_of_a_transfer_through_shows_both(self):
         ds = [draft("o", "-160.00", "transfer", pairId="p"), draft("i", "160.00", "transfer", pairId="p"),
@@ -337,12 +337,32 @@ class SelectLook(unittest.TestCase):
 
     def test_recurring_texts(self):
         st = lambda **x: self.js("recurringStateText(input.s)", s=x)
-        self.assertEqual(st(state="paid", paidOn="2026-11-14"), {"text": "paid 14-Nov", "tone": "credit"})
+        self.assertEqual(st(state="paid", paidOn="2026-11-14"), {"text": "paid 14-Nov", "short": "", "pill": "PAID", "tone": "credit"})
         self.assertEqual(st(state="due", inDays=3)["text"], "in 3 days")
         self.assertEqual(st(state="due", inDays=1)["text"], "tomorrow")
         self.assertEqual(st(state="due", inDays=0)["text"], "due today")
-        self.assertEqual(st(state="late", lateDays=6), {"text": "not seen in bank", "tone": "pending"})
+        self.assertEqual(st(state="late", lateDays=6), {"text": "not seen in bank", "short": "", "pill": "NOT SEEN", "tone": "debit"})
         self.assertEqual(st(state="ended", lastPaid="2026-04-18")["text"], "ended · last 18-Apr")
+        # pills and tones
+        self.assertEqual((st(state="due", inDays=0)["pill"], st(state="due", inDays=0)["tone"]), ("TODAY", "pending"))
+        self.assertEqual(st(state="due", inDays=1)["pill"], "TOMORROW")
+        self.assertEqual(st(state="due", inDays=2)["pill"], "IN 2D")
+        self.assertEqual(st(state="due", inDays=3)["pill"], "IN 3D")
+        far = st(state="due", inDays=12)
+        self.assertEqual((far["pill"], far["short"], far["tone"]), ("", "in 12d", "muted"))
+        self.assertEqual((st(state="ended")["pill"], st(state="ended")["tone"]), ("ENDED", "muted"))
+        # lines
+        line = lambda **x: self.js("recurringLine(input.s)", s=x)
+        self.assertEqual(line(active=True, state="due", next="2026-12-02", every=1, unit="month", account="Axis"), "next 02-Dec · Axis")
+        self.assertEqual(line(active=True, state="due", next="2026-12-02", every=3, unit="month", account="Axis"),
+                         "next 02-Dec · every 3 months · Axis")
+        self.assertEqual(line(active=True, state="paid", next="2026-12-28", every=1, unit="year", account="Axis"),
+                         "next 28-Dec · yearly · Axis")
+        self.assertEqual(line(active=False, state="ended", lastPaid="2026-04-18", account="Axis"), "ended · last 18-Apr · Axis")
+        self.assertEqual(self.js("recurringDetail(input.s)", s={"account": "Axis", "every": 1, "unit": "month", "paidCount": 15,
+                                                               "lastPaid": "2026-10-17", "category": "Investments",
+                                                               "subcategory": "Mutual Funds"}),
+                         "Axis · every month · 15 payments · last 17-Oct · Investments › Mutual Funds")
         self.assertEqual(self.js("recurringEvery({every: 3, unit: 'month'})"), "every 3 months")
         self.assertEqual(self.js("recurringEvery({every: 1, unit: 'month'})"), "every month")
         sm = self.js("recurringSummary(input.l)", l=[{"active": True, "amount": "-1000.00", "every": 1, "unit": "month"},
@@ -350,6 +370,20 @@ class SelectLook(unittest.TestCase):
                                                       {"active": False, "amount": "-50.00", "every": 1, "unit": "month"}])
         self.assertEqual((sm["active"], sm["ended"], sm["perMonth"]), (2, 1, 1299.67))
         self.assertTrue(sm["text"].startswith("2 ACTIVE"))
+
+    def test_recurring_order(self):
+        rows = [
+            {"title": "paidB", "active": True, "state": "paid", "next": "2026-12-20"},
+            {"title": "due9", "active": True, "state": "due", "inDays": 9},
+            {"title": "endOld", "active": False, "state": "ended", "lastPaid": "2025-01-01"},
+            {"title": "paidA", "active": True, "state": "paid", "next": "2026-12-05"},
+            {"title": "late", "active": True, "state": "late", "lateDays": 4},
+            {"title": "due1", "active": True, "state": "due", "inDays": 1},
+            {"title": "endNew", "active": False, "state": "ended", "lastPaid": "2026-04-18"},
+        ]
+        order = lambda ended: [s["title"] for s in self.js("recurringOrder(input.l, input.e)", l=rows, e=ended)]
+        self.assertEqual(order(False), ["late", "due1", "due9", "paidA", "paidB"])
+        self.assertEqual(order(True), ["late", "due1", "due9", "paidA", "paidB", "endNew", "endOld"])
 
 
 if __name__ == "__main__":

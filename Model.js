@@ -1142,7 +1142,7 @@ function receiptsSorted(list) {
 }
 
 function receiptTitle(r) {
-  return (r.merchant && r.merchant.trim()) || "Unreadable bill"
+  return (r.merchant && r.merchant.trim()) || "Receipt"
 }
 
 // "7 Oct · 12 items · GST ₹133" — never prints "undefined" or "NaN" for a
@@ -1160,17 +1160,77 @@ function receiptSubtitle(r) {
 
 // ---- recurring transactions set in Cashew (snapshot.recurring, txdb/cashew_recurring.py)
 
-// The state text of one series and its tone: { text, tone: "credit" | "pending" | "muted" | "" }.
+// The state of one series: { text, short, pill, tone: "credit" | "pending" | "debit" | "muted" | "" }.
+// pill is the short uppercase label of the row's state pill, or "" for no pill;
+// short is the plain grey text shown instead ("in 12d", a payment due in more than 3 days).
 function recurringStateText(s) {
-  if (!s) return { text: "", tone: "" }
-  if (s.state === "paid") return { text: "paid " + formatDate(s.paidOn), tone: "credit" }
-  if (s.state === "late") return { text: "not seen in bank", tone: "pending" }
+  if (!s) return { text: "", short: "", pill: "", tone: "" }
+  if (s.state === "paid") return { text: "paid " + formatDate(s.paidOn), short: "", pill: "PAID", tone: "credit" }
+  if (s.state === "late") return { text: "not seen in bank", short: "", pill: "NOT SEEN", tone: "debit" }
   if (s.state === "due") {
     var n = Number(s.inDays) || 0
-    return { text: n <= 0 ? "due today" : (n === 1 ? "tomorrow" : "in " + n + " days"), tone: "" }
+    var text = n <= 0 ? "due today" : (n === 1 ? "tomorrow" : "in " + n + " days")
+    if (n > 3) return { text: text, short: "in " + n + "d", pill: "", tone: "muted" }
+    return { text: text, short: "", pill: n <= 0 ? "TODAY" : (n === 1 ? "TOMORROW" : "IN " + n + "D"), tone: "pending" }
   }
-  if (s.state === "ended") return { text: s.lastPaid ? "ended · last " + formatDate(s.lastPaid) : "ended", tone: "muted" }
-  return { text: "", tone: "" }
+  if (s.state === "ended") return { text: s.lastPaid ? "ended · last " + formatDate(s.lastPaid) : "ended", short: "", pill: "ENDED", tone: "muted" }
+  return { text: "", short: "", pill: "", tone: "" }
+}
+
+// The interval when it is not every 1 month: "" | "yearly" | "weekly" | "daily" | "every 3 months" ...
+function recurringInterval(s) {
+  var n = Number(s && s.every) || 1, unit = (s && s.unit) || "month"
+  if (n === 1 && unit === "month") return ""
+  if (n === 1 && unit === "year") return "yearly"
+  if (n === 1 && unit === "week") return "weekly"
+  if (n === 1 && unit === "day") return "daily"
+  return recurringEvery(s)
+}
+
+// Line 2 of a recurring row: "next 02-Dec · every 3 months · Axis" / "ended · last 18-Apr · Axis".
+function recurringLine(s) {
+  if (!s) return ""
+  var parts = []
+  if (!s.active || s.state === "ended") parts.push(s.lastPaid ? "ended · last " + formatDate(s.lastPaid) : "ended")
+  else {
+    if (s.next) parts.push("next " + formatDate(s.next))
+    var iv = recurringInterval(s)
+    if (iv) parts.push(iv)
+  }
+  if (s.account) parts.push(s.account)
+  return parts.join(" · ")
+}
+
+// The detail line of an open row: "Axis · every month · 15 payments · last 17-Oct · Investments › Mutual Funds".
+function recurringDetail(s) {
+  if (!s) return ""
+  var parts = []
+  if (s.account) parts.push(s.account)
+  parts.push(recurringEvery(s))
+  var c = Number(s.paidCount) || 0
+  parts.push(c + (c === 1 ? " payment" : " payments"))
+  if (s.lastPaid) parts.push("last " + formatDate(s.lastPaid))
+  if (s.category) parts.push(s.category + (s.subcategory ? " › " + s.subcategory : ""))
+  return parts.join(" · ")
+}
+
+// The rows in order: late, then due (soonest first), then paid (by next date),
+// then ended (only when showEnded, last paid first).
+function recurringOrder(list, showEnded) {
+  var rank = function (s) {
+    if (!s.active || s.state === "ended") return 3
+    return s.state === "late" ? 0 : (s.state === "due" ? 1 : 2)
+  }
+  var cmp = function (x, y) { x = String(x || ""); y = String(y || ""); return x < y ? -1 : (x > y ? 1 : 0) }
+  return (list || []).filter(function (s) { return rank(s) < 3 || showEnded })
+    .sort(function (a, b) {
+      var ra = rank(a), rb = rank(b)
+      if (ra !== rb) return ra - rb
+      if (ra === 0) return (Number(b.lateDays) || 0) - (Number(a.lateDays) || 0)
+      if (ra === 1) return (Number(a.inDays) || 0) - (Number(b.inDays) || 0)
+      if (ra === 2) return cmp(a.next, b.next)
+      return cmp(b.lastPaid, a.lastPaid)
+    })
 }
 
 // "every month" / "every 3 months" / "every week" ...
@@ -1627,11 +1687,11 @@ function receiptIsBalanced(r) {
 // a hand edit that breaks the bill's own sums needs the same red flag a
 // shaky OCR/LLM read always got, not just at the next re-parse.
 function receiptStateMark(r) {
-  if (r.state === "linked") return { glyph: "✓", pill: "FILED", tone: "credit" }
-  if (r.state === "cash") return { glyph: "₹", pill: "CASH", tone: "muted" }
-  if (r.state === "ignored") return { glyph: "−", pill: "IGNORED", tone: "muted" }
-  if (r.needsReview || !receiptIsBalanced(r)) return { glyph: "!", pill: "CHECK", tone: "debit" }
-  return { glyph: "?", pill: "TO LINK", tone: "pending" }
+  if (r.state === "linked") return { glyph: "✓", pill: "FILED", tag: "filed", tone: "credit" }
+  if (r.state === "cash") return { glyph: "₹", pill: "CASH", tag: "cash", tone: "muted" }
+  if (r.state === "ignored") return { glyph: "−", pill: "IGNORED", tag: "ignored", tone: "muted" }
+  if (r.needsReview || !receiptIsBalanced(r)) return { glyph: "!", pill: "CHECK", tag: "check", tone: "debit" }
+  return { glyph: "?", pill: "TO LINK", tag: "to link", tone: "pending" }
 }
 
 var _RECEIPT_NOISE = /\b(UPI|P2M|P2A|P2V|DR|CR|NEFT|IMPS|RTGS|ACH|NACH|ECS|BANK|LTD|LIMITED|PVT|PRIVATE|INDIA|THE|AND|PAY|PAYMENT|PAYMENTS|TRANSFER|TO|FROM|BRN|POS|ATM|REF|TXN|STORE|SHOP|RETAIL|IN|OF|AT|HDFC|ICICI|AXIS|SBI|KOTAK|YES|PAYTM|GPAY|PHONEPE)\b/g

@@ -1276,7 +1276,6 @@ Panel {
   // its row has one. Without it the combined "8%" sat ~15px left of the
   // per-pool "15%" and read as a misalignment, which it was.
   readonly property int limitChevronSlot: Style.space(14)
-  readonly property int billStatusWidth: Style.space(63)
   readonly property int billFigureWidth: Style.space(79)
   readonly property bool billDue: store.anyBillDue()
   // Section figures for the BILLS header: what every card still wants, what
@@ -3765,58 +3764,9 @@ Panel {
             width: parent.width
             spacing: Style.spacing.xxs
             Repeater {
-              model: store.recurring.filter(function (s) { return s.active || root.recurringShowEnded })
-              delegate: Item {
-                id: recRow
-                required property var modelData
-                readonly property var st: Model.recurringStateText(recRow.modelData)
-                width: parent.width
-                height: Style.space(40)
-                opacity: recRow.modelData.active ? 1 : 0.55
-                Column {
-                  anchors { left: parent.left; right: recRight.left; leftMargin: Style.spacing.rowPaddingX + Style.space(24); rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
-                  spacing: Style.space(1)
-                  Text {
-                    width: parent.width
-                    elide: Text.ElideRight
-                    textFormat: Text.PlainText
-                    text: recRow.modelData.title
-                    color: root.foreground
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.body
-                  }
-                  Text {
-                    width: parent.width
-                    elide: Text.ElideRight
-                    textFormat: Text.PlainText
-                    text: recRow.modelData.account + "  ·  " + Model.recurringEvery(recRow.modelData)
-                      + (recRow.modelData.active ? "  ·  next " + Model.formatDate(recRow.modelData.next) : "")
-                    color: Qt.darker(root.foreground, 1.4)
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                  }
-                }
-                Column {
-                  id: recRight
-                  anchors { right: parent.right; rightMargin: Style.spacing.rowPaddingX; verticalCenter: parent.verticalCenter }
-                  spacing: Style.space(1)
-                  Text {
-                    anchors.right: parent.right
-                    textFormat: Text.PlainText
-                    text: Model.formatAmount({ amount: Number(recRow.modelData.amount), currency: "INR" })
-                    color: Number(recRow.modelData.amount) < 0 ? root.foreground : root.creditColor
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.body
-                  }
-                  Text {
-                    anchors.right: parent.right
-                    textFormat: Text.PlainText
-                    text: recRow.st.text
-                    color: recRow.st.tone === "credit" ? root.creditColor : (recRow.st.tone === "pending" ? root.pendingColor : Qt.darker(root.foreground, 1.4))
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                  }
-                }
+              model: Model.recurringOrder(store.recurring, root.recurringShowEnded)
+              delegate: RecurringRow {
+                width: recurringList.width
               }
             }
           }
@@ -6193,6 +6143,201 @@ Panel {
     }
   }
 
+  // RECURRING row: one recurring series set in Cashew (read only). The
+  // category circle of the transaction rows, the title and "next · account",
+  // and on the right the amount over a state pill. Click / Enter / Space
+  // opens one detail line under it.
+  component RecurringRow: BorderSurface {
+    id: recurringRow
+    required property var modelData
+    property bool expanded: false
+    readonly property var series: recurringRow.modelData
+    readonly property var st: Model.recurringStateText(recurringRow.series)
+    readonly property bool ended: !recurringRow.series.active || recurringRow.series.state === "ended"
+    readonly property bool isDebit: Number(recurringRow.series.amount) < 0
+    readonly property color directionColor: recurringRow.isDebit ? root.debitColor : root.creditColor
+    readonly property color toneColor: recurringRow.st.tone === "debit" ? root.debitColor
+      : (recurringRow.st.tone === "pending" ? root.pendingColor
+        : (recurringRow.st.tone === "credit" ? root.creditColor : Qt.darker(root.foreground, 1.4)))
+    readonly property string categoryIcon: recurringRow.series.category ? Model.categoryIcon(recurringRow.series.category, store.receiptCategories) : ""
+    readonly property string subIcon: recurringRow.series.category ? Model.subcategoryIcon(recurringRow.series.category, recurringRow.series.subcategory, store.receiptCategories) : ""
+    readonly property bool _hot: recHover.hovered || recurringRow.activeFocus
+    readonly property int collapsedHeight: Style.space(52)
+
+    implicitHeight: recurringRow.collapsedHeight + (recurringRow.expanded ? recDetail.implicitHeight + Style.space(8) : 0)
+    height: implicitHeight
+    clip: true
+    radius: Style.cornerRadius
+    opacity: recMouse.pressed ? 0.75 : (recurringRow.ended ? 0.6 : 1.0)
+    color: recurringRow._hot ? Style.controlFill(false, true, root.foreground, Color.accent) : "transparent"
+    borderSpec: recurringRow.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+
+    Behavior on implicitHeight { NumberAnimation { duration: 120 } }
+    Behavior on color { ColorAnimation { duration: 100 } }
+    Behavior on opacity { NumberAnimation { duration: 80 } }
+
+    HoverHandler { id: recHover }
+
+    activeFocusOnTab: true
+    Keys.onReturnPressed: recurringRow.expanded = !recurringRow.expanded
+    Keys.onEnterPressed: recurringRow.expanded = !recurringRow.expanded
+    Keys.onSpacePressed: recurringRow.expanded = !recurringRow.expanded
+    Keys.onUpPressed: root.focusNext(recurringRow, false)
+    Keys.onDownPressed: root.focusNext(recurringRow, true)
+
+    Item {
+      id: recCollapsed
+      anchors.top: parent.top
+      anchors.left: parent.left
+      anchors.right: parent.right
+      height: recurringRow.collapsedHeight
+
+      MouseArea {
+        id: recMouse
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: { recurringRow.forceActiveFocus(); recurringRow.expanded = !recurringRow.expanded }
+      }
+
+      // The category circle, as in the transaction rows.
+      Rectangle {
+        id: recAvatar
+        width: Style.space(36)
+        height: width
+        radius: width / 2
+        color: "transparent"
+        border.width: 1.5
+        border.color: Util.alpha(recurringRow.directionColor, 0.85)
+        anchors.left: parent.left
+        anchors.leftMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+
+        Text {
+          anchors.centerIn: parent
+          textFormat: Text.PlainText
+          text: recurringRow.categoryIcon !== "" ? recurringRow.categoryIcon : (recurringRow.isDebit ? "↓" : "↑")
+          color: recurringRow.directionColor
+          opacity: recurringRow.categoryIcon !== "" ? 1.0 : 0.6
+          font.family: recurringRow.categoryIcon !== "" ? "JetBrainsMono Nerd Font" : Style.font.family
+          font.bold: recurringRow.categoryIcon === ""
+          font.pixelSize: recurringRow.categoryIcon !== "" ? Style.font.title : Style.font.subtitle
+        }
+
+        Rectangle {
+          visible: recurringRow.subIcon !== ""
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          anchors.rightMargin: -Style.space(5)
+          anchors.bottomMargin: -Style.space(4)
+          width: Style.space(16)
+          height: width
+          radius: width / 2
+          color: Color.background
+          border.width: 1.5
+          border.color: Util.alpha(recurringRow.directionColor, 0.85)
+          Text {
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: recurringRow.subIcon
+            color: recurringRow.directionColor
+            font.family: "JetBrainsMono Nerd Font"
+            font.pixelSize: Style.space(10)
+          }
+        }
+      }
+
+      Column {
+        anchors.left: recAvatar.right
+        anchors.leftMargin: Style.space(10)
+        anchors.right: recAmountStack.left
+        anchors.rightMargin: Style.space(8)
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(2)
+        Text {
+          width: parent.width
+          elide: Text.ElideRight
+          textFormat: Text.PlainText
+          text: recurringRow.series.title || ""
+          color: root.foreground
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.subtitle
+        }
+        Text {
+          width: parent.width
+          elide: Text.ElideRight
+          textFormat: Text.PlainText
+          text: Model.recurringLine(recurringRow.series)
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+
+      Column {
+        id: recAmountStack
+        anchors.right: parent.right
+        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(3)
+        Text {
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          text: Model.formatAmount({ amount: Number(recurringRow.series.amount), currency: "INR" })
+          color: recurringRow.directionColor
+          font.family: Style.font.family
+          font.bold: true
+          font.pixelSize: Style.font.subtitle
+        }
+        Rectangle {
+          id: recPill
+          visible: recurringRow.st.pill !== ""
+          anchors.right: parent.right
+          width: recPillText.implicitWidth + Style.space(10)
+          height: recPillText.implicitHeight + Style.space(3)
+          radius: Style.space(4)
+          color: Util.alpha(recurringRow.toneColor, 0.18)
+          Text {
+            id: recPillText
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: recurringRow.st.pill
+            color: recurringRow.toneColor
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.caption - 1
+          }
+        }
+        Text {
+          visible: recurringRow.st.pill === "" && recurringRow.st.short !== ""
+          anchors.right: parent.right
+          textFormat: Text.PlainText
+          text: recurringRow.st.short
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+
+    // The detail line, shown when the row is open.
+    Text {
+      id: recDetail
+      visible: recurringRow.expanded
+      anchors.top: recCollapsed.bottom
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.leftMargin: Style.spacing.rowPaddingX + Style.space(46)
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      wrapMode: Text.WordWrap
+      textFormat: Text.PlainText
+      text: Model.recurringDetail(recurringRow.series)
+      color: Qt.darker(root.foreground, 1.4)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+  }
+
   // Compact BILLS row: a status gutter (the disc, and under it the one word
   // for where this bill stands), the card with its deadline, and the two
   // figures that matter — what the card wants now, and what this cycle has
@@ -6902,8 +7047,12 @@ Panel {
       : (receiptRow.mark.tone === "debit" ? root.debitColor
         : (receiptRow.mark.tone === "pending" ? root.pendingColor : Qt.darker(root.foreground, 1.4)))
     readonly property bool _hot: rowHoverR.hovered || receiptRow.activeFocus
-    readonly property int collapsedHeight: Style.space(44)
-    readonly property int contentLeft: Style.spacing.rowPaddingX + root.billStatusWidth + Style.spacing.md
+    readonly property int collapsedHeight: Style.space(52)
+    // The expanded part lines up with the title column (ring + gap).
+    readonly property int contentLeft: Style.spacing.rowPaddingX + Style.space(36) + Style.space(10)
+    readonly property bool hasCategory: !!(receiptRow.receipt.category && receiptRow.receipt.category.category)
+    readonly property string categoryIcon: receiptRow.hasCategory
+      ? Model.categoryIcon(receiptRow.receipt.category.category, store.receiptCategories) : ""
 
     implicitHeight: receiptRow.collapsedHeight
       + (receiptRow.expanded ? detailsPanelR.implicitHeight + Style.space(10) : 0)
@@ -6941,80 +7090,51 @@ Panel {
         onClicked: receiptRow.expanded = !receiptRow.expanded
       }
 
-      Item {
-        id: statusGutterR
+      // A ring like the transaction avatar: the state colour around the
+      // receipt's category icon (or a plain receipt glyph).
+      Rectangle {
+        id: avatarR
+        width: Style.space(36)
+        height: width
+        radius: width / 2
+        color: "transparent"
+        border.width: 1.5
+        border.color: Util.alpha(receiptRow.statusColor, 0.85)
         anchors.left: parent.left
         anchors.leftMargin: Style.spacing.rowPaddingX
         anchors.verticalCenter: parent.verticalCenter
-        width: root.billStatusWidth
-        height: avatarR.height + Style.space(4) + statePillR.height
 
-        Rectangle {
-          id: avatarR
-          width: Style.space(20)
-          height: width
-          radius: width / 2
-          color: Util.alpha(receiptRow.statusColor, 0.16)
-          anchors.top: parent.top
-          anchors.left: parent.left
-
-          Text {
-            anchors.centerIn: parent
-            textFormat: Text.PlainText
-            text: receiptRow.mark.glyph
-            color: receiptRow.statusColor
-            font.bold: true
-            font.pixelSize: Style.font.caption
-          }
-
-          // The one place a quick decision lives without opening the whole
-          // row — same precedent as BillRow's "mark as paid" disc.
-          MouseArea {
-            anchors.fill: parent
-            anchors.margins: -Style.space(10)
-            cursorShape: Qt.PointingHandCursor
-            onClicked: {
-              // An unmatched bill's quick decision now lives in the
-              // full-screen window (the small panel no longer carries its
-              // own link picker), so this disc opens straight there;
-              // anything else just expands the quick-glance thumbnail+text.
-              if (receiptRow.receipt.state === "unmatched") {
-                root.openReceiptDetail(receiptRow.receipt)
-              } else {
-                receiptRow.expanded = true
-              }
-            }
-          }
+        Text {
+          anchors.centerIn: parent
+          textFormat: Text.PlainText
+          text: receiptRow.categoryIcon !== "" ? receiptRow.categoryIcon : String.fromCodePoint(0xF0F28)
+          color: receiptRow.statusColor
+          font.family: "JetBrainsMono Nerd Font"
+          font.pixelSize: Style.font.title
         }
 
-        Rectangle {
-          id: statePillR
-          anchors.top: avatarR.bottom
-          anchors.topMargin: Style.space(4)
-          anchors.left: parent.left
-          implicitWidth: Math.min(parent.width, pillTextR.implicitWidth + Style.space(8))
-          implicitHeight: pillTextR.implicitHeight + Style.space(2)
-          width: implicitWidth
-          height: implicitHeight
-          radius: Style.space(4)
-          color: Util.alpha(receiptRow.statusColor, 0.18)
-
-          Text {
-            id: pillTextR
-            anchors.centerIn: parent
-            textFormat: Text.PlainText
-            text: receiptRow.mark.pill
-            color: receiptRow.statusColor
-            font.family: Style.font.family
-            font.bold: true
-            font.pixelSize: Style.font.caption
+        // The one place a quick decision lives without opening the whole
+        // row — same precedent as BillRow's "mark as paid" disc.
+        MouseArea {
+          anchors.fill: parent
+          anchors.margins: -Style.space(4)
+          cursorShape: Qt.PointingHandCursor
+          onClicked: {
+            // An unmatched bill's quick decision lives in the full-screen
+            // window, so this ring opens straight there; anything else
+            // just expands the quick-glance thumbnail+text.
+            if (receiptRow.receipt.state === "unmatched") {
+              root.openReceiptDetail(receiptRow.receipt)
+            } else {
+              receiptRow.expanded = true
+            }
           }
         }
       }
 
       Column {
-        anchors.left: statusGutterR.right
-        anchors.leftMargin: Style.spacing.md
+        anchors.left: avatarR.right
+        anchors.leftMargin: Style.space(10)
         anchors.right: amountStackR.left
         anchors.rightMargin: Style.spacing.md
         anchors.verticalCenter: parent.verticalCenter
@@ -7027,24 +7147,52 @@ Panel {
           color: root.foreground
           font.family: Style.font.family
           font.bold: true
-          font.pixelSize: Style.font.body
+          font.pixelSize: Style.font.subtitle
           elide: Text.ElideRight
         }
 
-        Text {
+        // Line 2: a state dot and word in the state colour, then the
+        // date / items / GST in grey.
+        Row {
           width: parent.width
-          textFormat: Text.PlainText
-          text: Model.receiptSubtitle(receiptRow.receipt)
-          color: Qt.darker(root.foreground, 1.5)
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
+          spacing: Style.space(4)
+
+          Rectangle {
+            id: stateDotR
+            width: Style.space(6)
+            height: width
+            radius: width / 2
+            color: receiptRow.statusColor
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          Text {
+            id: stateTagR
+            textFormat: Text.PlainText
+            text: receiptRow.mark.tag
+            color: receiptRow.statusColor
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          Text {
+            readonly property string sub: Model.receiptSubtitle(receiptRow.receipt)
+            width: Math.max(0, parent.width - stateDotR.width - stateTagR.implicitWidth - 2 * parent.spacing)
+            visible: sub !== ""
+            textFormat: Text.PlainText
+            text: "· " + sub
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+            anchors.verticalCenter: parent.verticalCenter
+          }
         }
       }
 
       Column {
         id: amountStackR
-        width: root.billFigureWidth
         anchors.right: parent.right
         anchors.rightMargin: Style.spacing.rowPaddingX
         anchors.verticalCenter: parent.verticalCenter
@@ -7052,13 +7200,12 @@ Panel {
 
         Text {
           anchors.right: parent.right
-          width: parent.width
-          horizontalAlignment: Text.AlignRight
           textFormat: Text.PlainText
           text: receiptRow.receipt.total != null
             ? Model.currencySymbol(receiptRow.receipt.currency) + Model.formatGrouped(receiptRow.receipt.total)
-            : "?"
-          color: root.debitColor
+            : "—"
+          color: receiptRow.receipt.total == null ? Qt.darker(root.foreground, 1.5)
+            : (receiptRow.mark.tag === "check" ? receiptRow.statusColor : root.foreground)
           font.family: Style.font.family
           font.bold: true
           font.pixelSize: Style.font.subtitle
@@ -7066,11 +7213,14 @@ Panel {
 
         Text {
           anchors.right: parent.right
-          width: parent.width
-          horizontalAlignment: Text.AlignRight
+          readonly property bool hasPaid: receiptRow.receipt.state === "linked"
+            && receiptRow.receipt.txnAmount != null && receiptRow.receipt.txnAmount !== ""
+            && !isNaN(Number(receiptRow.receipt.txnAmount))
+          visible: hasPaid
           textFormat: Text.PlainText
-          text: receiptRow.receipt.state === "linked" ? ("••" + receiptRow.receipt.txnAmount) : ""
-          visible: receiptRow.receipt.state === "linked"
+          text: hasPaid
+            ? "paid " + Model.currencySymbol(receiptRow.receipt.currency) + Model.formatGrouped(Math.abs(Number(receiptRow.receipt.txnAmount)))
+            : ""
           color: Qt.darker(root.foreground, 1.5)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
@@ -7078,7 +7228,7 @@ Panel {
       }
     }
 
-    Column {
+    Row {
       id: detailsPanelR
       visible: receiptRow.expanded
       anchors.top: collapsedRowR.bottom
@@ -7087,18 +7237,16 @@ Panel {
       anchors.right: parent.right
       anchors.leftMargin: receiptRow.contentLeft
       anchors.rightMargin: Style.spacing.rowPaddingX
-      spacing: Style.space(4)
+      spacing: Style.space(10)
 
-      Rectangle { width: parent.width; height: Style.spacing.hairline; color: Qt.darker(root.foreground, 1.8) }
-
-      // A small thumbnail, same footprint as every other row's inline
-      // content — clicking it opens the full review window below rather
-      // than growing the row itself, so the row stays a quick glance and
-      // the photo gets the space it actually needs only once asked for.
+      // A small thumbnail beside the bill — clicking it opens the full
+      // review window rather than growing the row itself, so the row stays
+      // a quick glance and the photo gets its space only once asked for.
       Rectangle {
+        id: thumbR
         visible: !!(receiptRow.receipt.thumbPath || receiptRow.receipt.storedPath)
-        width: Style.space(96)
-        height: Style.space(96)
+        width: Style.space(64)
+        height: Style.space(64)
         radius: Style.cornerRadius
         color: Qt.darker(root.foreground, 2.4)
         clip: true
@@ -7130,7 +7278,7 @@ Panel {
 
       // The bill, neatly (see MiniBill); the full editor is in the review window.
       MiniBill {
-        width: parent.width
+        width: parent.width - (thumbR.visible ? thumbR.width + parent.spacing : 0)
         receipt: receiptRow.receipt
       }
     }
