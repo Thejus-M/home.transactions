@@ -82,7 +82,8 @@ def find_browser_copy(home: Path | None = None) -> Path | None:
     if home is None:
         # the option chromiumSync: Cashew lives in its own Chromium profile; the last database read from it
         from . import cashew, cashew_chromium
-        if cashew.load_state().get("chromiumSync") is True and cashew_chromium.MIRROR.exists():
+        on = os.environ.get("TXDB_CASHEW_CHROMIUM") == "1" or cashew.load_state().get("chromiumSync") is True
+        if on and cashew_chromium.MIRROR.exists():
             folder = tempfile.mkdtemp(prefix="cashew-web-")
             import atexit
             atexit.register(shutil.rmtree, folder, True)

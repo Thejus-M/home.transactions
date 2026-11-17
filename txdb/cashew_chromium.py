@@ -61,22 +61,24 @@ _WRITE_JS = r"""(async (b64) => {
 class Chromium:
     """A headless Chromium on `profile`, driven over --remote-debugging-pipe (fd 3 in, fd 4 out)."""
 
-    def __init__(self, profile: Path, block_app: bool = True):
+    def __init__(self, profile: Path, block_app: bool = True, visible: bool = False):
         r1, w1 = os.pipe()
         r2, w2 = os.pipe()
 
         def child():
             os.dup2(r1, 3)
             os.dup2(w2, 4)
+        mode = ["--disable-popup-blocking"] if visible else ["--headless=new"]
         self.proc = subprocess.Popen(
-            ["chromium", "--headless=new", f"--user-data-dir={profile}", "--remote-debugging-pipe", "--no-first-run",
+            ["chromium", *mode, f"--user-data-dir={profile}", "--remote-debugging-pipe", "--no-first-run",
              "--no-default-browser-check", "about:blank"],
             pass_fds=(3, 4), preexec_fn=child, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         os.close(r1)
         os.close(w2)
         self._out, self._in = w1, r2
         self._buf, self._n, self.events = b"", 0, []
-        target = self.call("Target.createTarget", {"url": "about:blank"})["targetId"]
+        pages = [t for t in self.call("Target.getTargets")["targetInfos"] if t["type"] == "page"]
+        target = pages[0]["targetId"] if visible and pages else self.call("Target.createTarget", {"url": "about:blank"})["targetId"]
         self.sid = self.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
         self.block_app = block_app
 
@@ -295,8 +297,11 @@ def open_window(profile: Path = PROFILE):
     """Open the visible Cashew window on the profile (no wait)."""
     if in_use(profile):
         return
-    subprocess.Popen(["chromium", f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check", ORIGIN],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    # the window with the automatic login (login_window), in its own process that lives as long as the window
+    import sys as _sys
+    env = dict(os.environ, TXDB_CASHEW_CHROMIUM_PROFILE=str(profile))
+    subprocess.Popen([_sys.executable, str(Path(__file__).resolve().parents[1] / "bin" / "txdb"), "cashew-chromium", "login"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
 
 
 def stale(profile: Path = PROFILE, mirror: Path = MIRROR) -> bool:
@@ -315,3 +320,123 @@ def status(profile: Path = PROFILE) -> dict:
         out["rows"] = _check(MIRROR)
         out["mirrorTime"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(MIRROR.stat().st_mtime))
     return out
+
+
+def restore(backup: Path, profile: Path = PROFILE, mirror: Path = MIRROR) -> dict:
+    """Put a backup database back into the profile (the window must be closed). The current one is backed
+    up first. Returns {rows, backup}."""
+    data = Path(backup).read_bytes()
+    with tempfile.TemporaryDirectory(prefix="cashew-chromium-") as tmp:
+        probe = Path(tmp) / "r.sqlite"
+        probe.write_bytes(data)
+        rows = _check(probe)
+    with _Lock():
+        pid = in_use(profile)
+        if pid:
+            raise ValueError(f"the Cashew Chromium window is open (pid {pid}): close it first")
+        ch = Chromium(profile)
+        try:
+            ch.open_blank_origin()
+            old = base64.b64decode(ch.eval(_READ_JS))
+            bdir = backup_dir()
+            bdir.mkdir(parents=True, exist_ok=True)
+            saved = bdir / (time.strftime("%Y%m%d-%H%M%S") + "-before-restore.sqlite")
+            saved.write_bytes(old)
+            ch.eval(f"({_WRITE_JS})('{base64.b64encode(data).decode()}')", timeout=120)
+            if hashlib.sha256(base64.b64decode(ch.eval(_READ_JS))).digest() != hashlib.sha256(data).digest():
+                raise ValueError(f"the restore could not be checked; the old one is in {saved}")
+        finally:
+            ch.close()
+    mirror.parent.mkdir(parents=True, exist_ok=True)
+    mirror.write_bytes(data)
+    return {"rows": rows, "backup": str(saved)}
+
+
+# ---- the visible window with the automatic Google login (Cashew web cannot stay signed in)
+
+_PLACEHOLDER = "(() => { const p = document.querySelector('flt-semantics-placeholder'); if (p) p.click(); return 1 })()"
+_BUTTONS = ("JSON.stringify([...document.querySelectorAll('flt-semantics[role=button], flt-semantics [role=button]')]"
+            ".map(e => { const r = e.getBoundingClientRect(); return [(e.getAttribute('aria-label') || e.textContent || '')"
+            ".split('\\n')[0].trim(), r.x + r.width / 2, r.y + r.height / 2] }).filter(x => x[0]))")
+
+
+def _click(ch: Chromium, x: float, y: float, sid: str):
+    ch.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, sid)
+    for t in ("mousePressed", "mouseReleased"):
+        ch.call("Input.dispatchMouseEvent", {"type": t, "x": x, "y": y, "button": "left", "buttons": 1, "clickCount": 1}, sid)
+
+
+def _buttons(ch: Chromium) -> list:
+    ch.eval(_PLACEHOLDER)                      # Flutter builds its accessibility tree after this
+    time.sleep(0.8)
+    return json.loads(ch.eval(_BUTTONS) or "[]")
+
+
+def _tap(ch: Chromium, label: str, wait: float = 20.0) -> bool:
+    end = time.time() + wait
+    while time.time() < end:
+        for name, x, y in _buttons(ch):
+            if name.lower() == label.lower():
+                _click(ch, x, y, ch.sid)
+                return True
+        time.sleep(1)
+    return False
+
+
+def login_window(profile: Path = PROFILE, log=print) -> int:
+    """Open the visible Cashew window and sign in: More > Login > the first Google account. Stays until the
+    window is closed (it holds the debug pipe). Returns 0, or 1 when the login could not be done."""
+    if in_use(profile):
+        log("the Cashew window is already open")
+        return 0
+    ch = Chromium(profile, block_app=False, visible=True)
+    ok = False
+    try:
+        ch.call("Page.navigate", {"url": ORIGIN}, ch.sid)
+        if not _tap(ch, "More", wait=40):
+            raise RuntimeError("Cashew did not load")
+        time.sleep(1.5)
+        names = [b[0].lower() for b in _buttons(ch)]
+        if "logout" in names or "login" not in names:
+            ok = True                          # already signed in
+        elif _tap(ch, "Login", wait=10):
+            for _ in range(30):               # the Google account chooser popup
+                time.sleep(1)
+                pops = [t for t in ch.call("Target.getTargets")["targetInfos"]
+                        if t["type"] == "page" and "accounts.google.com" in t["url"]]
+                if pops:
+                    break
+            else:
+                raise RuntimeError("the Google login popup did not open")
+            sid = ch.call("Target.attachToTarget", {"targetId": pops[0]["targetId"], "flatten": True})["sessionId"]
+            ch.call("Page.bringToFront", {}, sid)
+            for _ in range(20):
+                time.sleep(1)
+                try:
+                    r = ch.call("Runtime.evaluate", {"returnByValue": True, "expression":
+                        "(() => { const e = document.querySelector('[data-identifier]') || [...document.querySelectorAll('button')]"
+                        ".find(b => /^(continue|allow)$/i.test(b.innerText.trim())); if (!e) return ''; const b = e.getBoundingClientRect();"
+                        " return JSON.stringify([b.x + b.width / 2, b.y + b.height / 2]) })()"}, sid, timeout=5)
+                except RuntimeError:
+                    ok = True                  # the popup closed: signed in
+                    break
+                v = (r.get("result") or {}).get("value")
+                if v:
+                    x, y = json.loads(v)
+                    _click(ch, x, y, sid)
+                    time.sleep(2)
+        if ok:
+            log("Cashew is open and signed in")
+        else:
+            log("the automatic login did not finish: log in by hand")
+    except (RuntimeError, TimeoutError) as e:
+        log(f"automatic login failed: {e}: log in by hand")
+    try:
+        ch.proc.wait()                         # keep the pipe until the person closes the window
+    finally:
+        for fd in (ch._out, ch._in):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    return 0 if ok else 1

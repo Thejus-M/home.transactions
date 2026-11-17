@@ -244,6 +244,8 @@ def main(argv: list[str]) -> int:
                 cashew_chromium.pull()
             elif sub == "open":
                 cashew_chromium.open_window()
+            elif sub == "login":
+                return cashew_chromium.login_window(log=lambda m: print(m, file=sys.stderr))
             elif sub != "status":
                 print("usage: txdb cashew-chromium status | pull | open", file=sys.stderr)
                 return 2
@@ -329,6 +331,7 @@ def main(argv: list[str]) -> int:
             chromium = cashew.load_state().get("chromiumSync") is True or "--chromium" in args
             chromium_open = None
             if chromium:
+                os.environ["TXDB_CASHEW_CHROMIUM"] = "1"     # every Cashew read in this run uses the Chromium copy
                 # Cashew in its own Chromium profile (txdb/cashew_chromium.py): refresh the copy when the
                 # person used the window since the last read; never while the window is open
                 from . import cashew_chromium

@@ -1,3 +1,7 @@
 #!/bin/sh
-# Open Cashew in its own Chromium profile (the one the widget writes into while it is closed).
-exec chromium --user-data-dir="$HOME/.local/share/cashew-chromium" --no-first-run --no-default-browser-check https://budget-track.web.app/ "$@"
+# Open Cashew in its own Chromium profile, up to date and signed in:
+# 1. write the waiting bank rows into Cashew (only while the window is closed),
+# 2. open the window and log in to Google (More > Login > the first account).
+here="$(dirname "$(readlink -f "$0")")"
+python3 "$here/txdb" cashew-sync --chromium --no-open >/dev/null 2>&1 || echo "cashew-chromium: the update failed; opening Cashew anyway" >&2
+exec python3 "$here/txdb" cashew-chromium login
