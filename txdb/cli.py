@@ -204,6 +204,43 @@ def main(argv: list[str]) -> int:
         return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
+    if cmd == "cashew-sync":
+        # cashew-sync [--dry-run]: the automatic sync. Every untracked row that is ready (ticked, a confirmed
+        # category, not waiting for the AI) and not yet in Cashew goes into ONE file, cashew-sync.sql, made
+        # again on every run (removed when nothing waits). The widget runs it after every change and shows
+        # the result next to the Cashew chip; the person imports the file in Cashew. Prints JSON:
+        # {pending, transfers, waitingCategory, inCashewIds, path, base, skipped}.
+        from . import cashew, cashew_file, cashew_twins
+        try:
+            base = cashew_twins.find_browser_copy()
+            if base is None:
+                raise ValueError("the browser keeps no copy of the Cashew web app")
+            conn = cashew.open_readonly(DB_PATH)
+            items = cashew.drafts(conn, cashew.load_state())
+            waiting = [d for d in items if d.get("include", True) and (d.get("askAi")
+                       or (d.get("kind") != "transfer" and d.get("category") in (None, "", cashew.UNCATEGORIZED[0])
+                           and d.get("subcategory") != "Miscellaneous") or d.get("warn"))]
+            ready = [d for d in items if d.get("include", True) and d not in waiting]
+            folder = cashew_file.default_dir()
+            folder.mkdir(parents=True, exist_ok=True)
+            out = folder / "cashew-sync.sql"
+            r = cashew_file.build(base, out, ready, dry_run="--dry-run" in args)
+            if r["added"] == 0 and out.exists() and "--dry-run" not in args:
+                out.unlink()                      # nothing waits: no stale file to import by mistake
+            # which untracked rows Cashew already has
+            from . import cashew_dedupe
+            cdb = sqlite3.connect(f"{base.as_uri()}?mode=ro", uri=True)
+            probe = [dict(d) for d in items]
+            cashew_dedupe.mark(probe, cdb)
+            cdb.close()
+            in_cashew = [d["id"] for d in probe if d.get("inCashew")]
+        except (ValueError, OSError, sqlite3.Error) as e:
+            print(json.dumps({"error": str(e)}))
+            return 1
+        print(json.dumps({"pending": r["added"], "transfers": r["transfers"], "waitingCategory": len(waiting),
+                          "inCashewIds": in_cashew, "path": r["path"], "base": r["base"], "skipped": r["skipped"]},
+                         ensure_ascii=False))
+        return 0
     if cmd == "cashew-file":
         # cashew-file [- | --all] [--dry-run] [--out FILE]: write the selected rows into a copy of the Cashew web
         # database for Cashew's own import (txdb/cashew_file.py). "-" reads {"drafts": [...]} from stdin (the

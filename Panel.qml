@@ -399,6 +399,49 @@ Panel {
   property bool cashewFixing: false
   property string cashewFixPath: ""
   property string cashewFixMessage: ""
+  // ---- automatic sync (txdb cashew-sync). After every change of the data (a fetch, a category, a note,
+  // tracked or not) and every 2 minutes (Cashew itself may have changed, for example after an import), the
+  // ready rows that Cashew does not have yet are written into one file, cashew-sync.sql. The badge next to the
+  // Cashew chip shows how many wait; a click copies the file path and opens Cashew for the import. Rows Cashew
+  // already has are marked as tracked when "After adding: mark as tracked" is on.
+  property var cashewSync: ({ pending: -1, transfers: 0, waitingCategory: 0, inCashewIds: [], path: "", error: "" })
+  readonly property string cashewSyncLabel: root.cashewSync.error ? "Sync: " + root.cashewSync.error
+    : root.cashewSync.pending < 0 ? "Sync: checking…"
+    : root.cashewSync.pending === 0 ? "Cashew is up to date"
+    : "Import " + root.cashewSync.pending + (root.cashewSync.pending === 1 ? " row" : " rows") + " into Cashew"
+  function cashewSyncNow() {
+    if (cashewSyncProc.running) { cashewSyncTimer.restart(); return }
+    cashewSyncProc.running = true
+  }
+  function cashewSyncClick() {
+    if (root.cashewSync.path) {
+      Quickshell.execDetached(["wl-copy", root.cashewSync.path])
+      Quickshell.execDetached(["xdg-open", "https://budget-track.web.app/"])
+      root.cashewGuessNotify("Cashew: import the sync file", "Path copied: " + root.cashewSync.path
+        + "\nIn Cashew: Settings, Backup, Import. Use the only open Cashew tab and refresh it when it asks.")
+    } else root.cashewSyncNow()
+  }
+  Timer { id: cashewSyncTimer; interval: 8000; onTriggered: root.cashewSyncNow() }
+  Timer { interval: 120000; running: true; repeat: true; onTriggered: root.cashewSyncNow() }
+  onTransactionsChanged: cashewSyncTimer.restart()
+  Process {
+    id: cashewSyncProc
+    command: ["python3", root.txdbBin, "cashew-sync"]
+    stdout: StdioCollector { id: cashewSyncOut }
+    onExited: function (exitCode) {
+      var r
+      try { r = JSON.parse((cashewSyncOut.text || "").trim().split("\n").pop()) } catch (e) { r = { error: "no result" } }
+      var before = root.cashewSync.pending
+      root.cashewSync = r.error ? Object.assign({}, root.cashewSync, { error: String(r.error).slice(0, 60) })
+        : { pending: r.pending, transfers: r.transfers, waitingCategory: r.waitingCategory, inCashewIds: r.inCashewIds || [], path: r.path || "", error: "" }
+      if (!r.error && root.cashewAutoTrack && (r.inCashewIds || []).length > 0)
+        store.setTrackedMany(r.inCashewIds.map(function (id) { return { id: id } }), true)
+      if (!r.error && r.pending > 0 && r.pending !== before)
+        root.cashewGuessNotify("Cashew: " + r.pending + (r.pending === 1 ? " row waits" : " rows wait"),
+          "The sync file is ready: click the sync badge next to Cashew, then import it in Cashew.")
+    }
+  }
+
   // "Create the Cashew file" (txdb cashew-file): the ticked, shown rows written straight into a copy of the
   // Cashew database, for Cashew's own import. No browser window. After the file is made the widget waits (up
   // to 30 min) for the import: when Cashew has the new rows, they are marked "already in Cashew" (and tracked
@@ -3462,6 +3505,56 @@ Panel {
             anchors.rightMargin: Style.spacing.rowPaddingX
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(4)
+
+            // The sync badge: how many rows wait in the Cashew sync file (txdb cashew-sync). A click copies the
+            // file path and opens Cashew for the import; with nothing waiting it checks again.
+            Rectangle {
+              id: cashewSyncBadge
+              anchors.verticalCenter: parent.verticalCenter
+              height: Style.space(24)
+              width: syncRow.implicitWidth + Style.space(14)
+              radius: Style.space(8)
+              readonly property bool waiting: root.cashewSync.pending > 0
+              color: syncMouse.containsMouse ? Util.alpha(root.foreground, 0.12) : Util.alpha(waiting ? root.pendingColor : root.foreground, waiting ? 0.16 : 0.06)
+              Row {
+                id: syncRow
+                anchors.centerIn: parent
+                spacing: Style.space(4)
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  textFormat: Text.PlainText
+                  text: root.cashewSync.error ? "!" : (cashewSyncBadge.waiting ? "󰓦" : (root.cashewSync.pending === 0 ? "󰄬" : "󰓦"))
+                  color: root.cashewSync.error ? root.debitColor : (cashewSyncBadge.waiting ? root.pendingColor : root.creditColor)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body
+                  RotationAnimation on rotation { running: cashewSyncProc.running; from: 0; to: 360; duration: 900; loops: Animation.Infinite }
+                }
+                Text {
+                  visible: cashewSyncBadge.waiting
+                  anchors.verticalCenter: parent.verticalCenter
+                  textFormat: Text.PlainText
+                  text: String(root.cashewSync.pending)
+                  color: root.pendingColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+              }
+              MouseArea {
+                id: syncMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.cashewSyncClick()
+              }
+              ToolTip.visible: syncMouse.containsMouse
+              ToolTip.text: root.cashewSync.error ? "Sync: " + root.cashewSync.error
+                : cashewSyncBadge.waiting ? root.cashewSync.pending + " rows wait in the sync file" + (root.cashewSync.transfers > 0 ? " (" + root.cashewSync.transfers + " transfers)" : "")
+                  + ". Click: copy its path and open Cashew to import it." + (root.cashewSync.waitingCategory > 0 ? "\n" + root.cashewSync.waitingCategory + " more need a category first." : "")
+                : root.cashewSync.pending === 0 ? "Cashew is up to date" + (root.cashewSync.waitingCategory > 0 ? " (" + root.cashewSync.waitingCategory + " rows need a category)" : "") + ". Click to check again."
+                : "Checking…"
+              ToolTip.delay: 300
+            }
 
             // Opens the Cashew verify window. Stays visible (just dimmed, with an
             // explanatory tooltip) even once nothing is untracked, instead of
@@ -8553,15 +8646,14 @@ Panel {
           }
         }
 
-        // The two numbers: transactions left and links left (and transfers, when there are any).
+        // The two numbers: rows waiting in the sync file, and rows waiting for a category.
         Row {
           spacing: Style.space(22)
           Repeater {
             model: [
-              { n: root.cashewSendLeftNow.rows, what: root.cashewSendLeftNow.rows === 1 ? "transaction left" : "transactions left" },
-              { n: root.cashewSendLeftNow.links, what: root.cashewSendLeftNow.links === 1 ? "link left" : "links left" }
-            ].concat(root.cashewSendLeftNow.transfers > 0
-              ? [{ n: root.cashewSendLeftNow.transfers, what: root.cashewSendLeftNow.transfers === 1 ? "transfer left" : "transfers left" }] : [])
+              { n: Math.max(0, root.cashewSync.pending), what: root.cashewSync.pending === 1 ? "row to import" : "rows to import" },
+              { n: Math.max(0, root.cashewSync.waitingCategory), what: "need a category" }
+            ]
             delegate: Column {
               required property var modelData
               spacing: 0
@@ -8586,19 +8678,11 @@ Panel {
 
         LlmStatus { width: parent.width }
 
-        // A line only when the person has to do something: tap Save on a transfer, or look after a timeout.
-        Text {
-          visible: root.cashewSendPaused || (root.cashewSending && root.cashewSendItem !== null && root.cashewSendItem.kind !== "link")
-          width: parent.width
-          wrapMode: Text.Wrap
-          textFormat: Text.PlainText
-          text: root.cashewSendNote
-          color: root.cashewSendPaused ? root.pendingColor : Color.accent
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
+        CashewBtn {
+          label: root.cashewSyncLabel
+          primary: root.cashewSync.pending > 0
+          onClicked: root.cashewSyncClick()
         }
-
-        CashewSendControls { width: parent.width; showNote: false }
       }
     }
 
@@ -8685,23 +8769,9 @@ Panel {
             else cashewWin.resultsOpen = true
           }
           CashewBtn {
-            visible: !root.cashewSending && !root.cashewSendPaused
-            primary: true
-            enabled: root.cashewLinks.length > 0
-            label: root.cashewVerifyArmed ? "Unverified AI · click again" : "Add all to Cashew"
-            onClicked: root.cashewSendAll()
-          }
-          CashewBtn {
-            visible: root.cashewSendPaused
-            primary: true
-            label: root.cashewSendDone + 1 < root.cashewSendItems.length ? "Continue" : "Finish"
-            onClicked: root.cashewSendContinue()
-          }
-          CashewBtn {
-            visible: root.cashewSending || root.cashewSendPaused
-            active: root.cashewSending
-            label: "■ Stop"
-            onClicked: root.cashewSendStop()
+            label: root.cashewSyncLabel
+            primary: root.cashewSync.pending > 0
+            onClicked: root.cashewSyncClick()
           }
           CashewBtn { label: cashewWin.optionsOpen ? "Options ▴" : "Options ▾"; active: cashewWin.optionsOpen; onClicked: cashewWin.optionsOpen = !cashewWin.optionsOpen }
           CashewBtn { label: "Minimise"; onClicked: { cashewWin.pickKind = ""; cashewWin.askActive = false; cashewWin.compact = true } }
@@ -9002,7 +9072,7 @@ Panel {
             }
 
             Repeater {
-              model: root.cashewLinks
+              model: []                      // links are not used any more (the sync file replaced them)
               delegate: Rectangle {
                 id: lk
                 required property var modelData
@@ -9153,7 +9223,7 @@ Panel {
 
             // Paired transfers: one Cashew transfer page each; Cashew cannot save them from a link.
             Column {
-              visible: root.cashewTransfers.length > 0
+              visible: false                  // transfer pages are not used any more
               width: parent.width
               spacing: Style.space(8)
               Text {
@@ -9746,7 +9816,7 @@ Panel {
         // ---- the send in progress: how much is left, a bar, the step, and "Left only"
         Item {
           id: cwProgress
-          visible: root.cashewSendPhase !== ""
+          visible: false                      // the link send is gone; the sync file replaced it
           anchors { top: cwLeftTitle.bottom; left: parent.left; right: parent.right }
           anchors.topMargin: visible ? Style.space(10) : 0
           height: visible ? cwProgCol.implicitHeight + Style.space(24) : 0
