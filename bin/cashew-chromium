@@ -1,7 +1,5 @@
 #!/bin/sh
-# Open Cashew in its own Chromium profile, up to date and signed in:
-# 1. write the waiting bank rows into Cashew (only while the window is closed),
-# 2. open the window and log in to Google (More > Login > the first account).
+# Open Cashew in its own Chromium profile and sign in (More > Login > the first account).
+# After the login, the waiting bank rows go straight into the open page; pull down in Cashew to sync.
 here="$(dirname "$(readlink -f "$0")")"
-python3 "$here/txdb" cashew-sync --chromium --no-open >/dev/null 2>&1 || echo "cashew-chromium: the update failed; opening Cashew anyway" >&2
 exec python3 "$here/txdb" cashew-chromium login

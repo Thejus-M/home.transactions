@@ -195,6 +195,28 @@ def _cashew(cmd: str, args: list[str]) -> int:
     return 0
 
 
+def cashew_ready(conn, state: dict) -> tuple[list, list, list, list, set]:
+    """(ready, waiting, every, items, tracked_ids): the rows the automatic sync sends to Cashew."""
+    import os
+    from . import cashew
+    every = cashew.drafts(conn, state, all_rows=True)      # tracked rows too: for notes and the catch-up
+    tracked_ids = {r[0] for r in conn.execute("SELECT transaction_id FROM tracked")}
+    items = [d for d in every if d["id"] not in tracked_ids]
+    # one-time catch-up: tracked rows that never reached Cashew (cashew-catchup; chosen 2026-11-17)
+    catch_path = Path(os.environ.get("TXDB_CASHEW_CATCHUP") or
+                      (Path.home() / ".local" / "state" / "omarchy" / "transactions-cashew-catchup.json"))
+    try:
+        catch_ids = set(json.loads(catch_path.read_text(encoding="utf-8")).get("ids") or [])
+    except (OSError, ValueError):
+        catch_ids = set()
+    items += [dict(d, include=True) for d in every if d["id"] in catch_ids and d["id"] in tracked_ids]
+    waiting = [d for d in items if d.get("include", True) and (d.get("askAi")
+               or (d.get("kind") != "transfer" and d.get("category") in (None, "", cashew.UNCATEGORIZED[0])
+                   and d.get("subcategory") != "Miscellaneous") or d.get("warn"))]
+    ready = [d for d in items if d.get("include", True) and d not in waiting]
+    return ready, waiting, every, items, tracked_ids
+
+
 def _recurring() -> dict:
     """{series: [...], error} for the snapshot and the command. Never raises."""
     try:
@@ -364,21 +386,7 @@ def main(argv: list[str]) -> int:
             auto_track = state.get("autoTrack") is not False
             # the option "write straight into Cashew while Zen is closed" (off by default), or --direct
             direct = "--direct" in args or state.get("directSync") is True
-            every = cashew.drafts(conn, state, all_rows=True)      # tracked rows too: for notes and the catch-up
-            tracked_ids = {r[0] for r in conn.execute("SELECT transaction_id FROM tracked")}
-            items = [d for d in every if d["id"] not in tracked_ids]
-            # one-time catch-up: tracked rows that never reached Cashew (cashew-catchup; chosen 2026-11-17)
-            catch_path = Path(os.environ.get("TXDB_CASHEW_CATCHUP") or
-                              (Path.home() / ".local" / "state" / "omarchy" / "transactions-cashew-catchup.json"))
-            try:
-                catch_ids = set(json.loads(catch_path.read_text(encoding="utf-8")).get("ids") or [])
-            except (OSError, ValueError):
-                catch_ids = set()
-            items += [dict(d, include=True) for d in every if d["id"] in catch_ids and d["id"] in tracked_ids]
-            waiting = [d for d in items if d.get("include", True) and (d.get("askAi")
-                       or (d.get("kind") != "transfer" and d.get("category") in (None, "", cashew.UNCATEGORIZED[0])
-                           and d.get("subcategory") != "Miscellaneous") or d.get("warn"))]
-            ready = [d for d in items if d.get("include", True) and d not in waiting]
+            ready, waiting, every, items, tracked_ids = cashew_ready(conn, state)
             # the bank's last statement balance per savings account (worked-out balances are not used)
             over = state.get("accounts") or {}
             balances = []
@@ -391,17 +399,8 @@ def main(argv: list[str]) -> int:
             folder = cashew_file.default_dir()
             folder.mkdir(parents=True, exist_ok=True)
             out = folder / "cashew-sync.sql"
-            if chromium and not chromium_open and "--dry-run" not in args:
-                # write straight into the Chromium profile, then open the Cashew window so it syncs
-                d = cashew_chromium.push(ready, note_drafts=every, open_after="--no-open" not in args)
-                if out.exists() and d["written"]:
-                    out.unlink()
-                print(json.dumps({"chromium": True, "pending": 0, "rows": 0, "written": d["written"],
-                                  "notes": d.get("notesUpdated", 0), "transfers": d["transfers"],
-                                  "waitingCategory": len(waiting), "inCashewIds": [], "path": "",
-                                  "backup": d["backup"], "base": d["base"], "skipped": d["skipped"],
-                                  "opened": d["opened"], "autoTrack": auto_track}, ensure_ascii=False))
-                return 0
+            # chromium: the edits run inside the open, signed-in Cashew window (cashew_chromium.live_loop);
+            # here only the count of what waits, read from the Chromium copy
             if direct:
                 # EXPERIMENTAL (txdb/cashew_direct.py): straight into Zen's storage, only while Zen is closed.
                 from . import cashew_direct

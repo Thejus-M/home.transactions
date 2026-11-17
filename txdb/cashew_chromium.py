@@ -392,6 +392,8 @@ def login_window(profile: Path = PROFILE, log=print) -> int:
     ch = Chromium(profile, block_app=False, visible=True)
     ok = False
     try:
+        ch.call("Page.enable", {}, ch.sid)
+        ch.call("Page.addScriptToEvaluateOnNewDocument", {"source": HOOK}, ch.sid)   # before Cashew loads
         ch.call("Page.navigate", {"url": ORIGIN}, ch.sid)
         if not _tap(ch, "More", wait=40):
             raise RuntimeError("Cashew did not load")
@@ -432,7 +434,9 @@ def login_window(profile: Path = PROFILE, log=print) -> int:
     except (RuntimeError, TimeoutError) as e:
         log(f"automatic login failed: {e}: log in by hand")
     try:
-        ch.proc.wait()                         # keep the pipe until the person closes the window
+        if ok:
+            live_loop(ch, log)                 # signed in: now the edits, inside the page, until the window closes
+        ch.proc.wait()
     finally:
         for fd in (ch._out, ch._in):
             try:
@@ -440,3 +444,125 @@ def login_window(profile: Path = PROFILE, log=print) -> int:
             except OSError:
                 pass
     return 0 if ok else 1
+
+
+# ---- live edits inside the open, signed-in Cashew page (no database upload)
+
+# Wraps sql.js before Cashew loads, to keep the Database objects drift makes (Cashew itself is not changed).
+HOOK = r"""(() => { window.__txdbDbs = []; let real;
+ const wrap = f => function (...a) { return f.apply(this, a).then(SQL => { const D = SQL.Database;
+   function W(...b) { const d = new D(...b); window.__txdbDbs.push(d); return d; } W.prototype = D.prototype;
+   Object.setPrototypeOf(W, D); SQL.Database = W; return SQL; }); };
+ Object.defineProperty(window, 'initSqlJs', { configurable: true, get() { return real; }, set(f) { real = wrap(f); } }); })()"""
+
+_LIVE_DB = ("(() => { const ds = (window.__txdbDbs || []).filter(d => { try { d.exec('select 1 from transactions limit 1');"
+            " return true } catch (e) { return false } }); if (ds.length !== 1) throw new Error('found ' + ds.length +"
+            " ' live Cashew databases'); return ds[0] })()")
+
+_SAVE_JS = r"""(async () => { const d = %s; const b = d.export();
+ const db = await new Promise((res, rej) => { const r = indexedDB.open('moor_databases'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+ await new Promise((res, rej) => { const tx = db.transaction('moor_databases', 'readwrite');
+   tx.objectStore('moor_databases').put(new Blob([b]), 'db'); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+ db.close(); return b.length; })()""" % _LIVE_DB
+
+
+def live_export(ch: Chromium) -> bytes:
+    """The live database of the open Cashew page."""
+    js = ("(() => { const b = %s.export(); let s = ''; for (let i = 0; i < b.length; i += 32768)"
+          " s += String.fromCharCode.apply(null, b.subarray(i, i + 32768)); return btoa(s) })()") % _LIVE_DB
+    return base64.b64decode(ch.eval(js))
+
+
+def live_run(ch: Chromium, stmts: list[str]) -> int:
+    """Run the statements on the live database in one transaction, then save it as drift does. Returns the
+    row count of transactions after."""
+    js = ("((stmts) => { const d = %s; d.run('BEGIN'); try { for (const s of stmts) d.run(s); d.run('COMMIT') }"
+          " catch (e) { d.run('ROLLBACK'); throw e } return d.exec('select count(*) from transactions')[0].values[0][0] })"
+          ) % _LIVE_DB
+    n = ch.eval(f"({js})({json.dumps(stmts)})", timeout=120)
+    ch.eval(_SAVE_JS, timeout=120)
+    return n
+
+
+def live_push(ch: Chromium, drafts: list[dict], note_drafts: list[dict] | None = None,
+              backups: Path | None = None) -> dict:
+    """Build the update on the live data and apply only the difference. Returns the build result plus
+    {statements, before, after, backup}. Raises ValueError and changes nothing on any doubt."""
+    from . import cashew_diff, cashew_file
+    with tempfile.TemporaryDirectory(prefix="cashew-live-") as tmp:
+        base = Path(tmp) / "base.sqlite"
+        base.write_bytes(live_export(ch))
+        before = _check(base)
+        new = Path(tmp) / "new.sqlite"
+        r = cashew_file.build(base, new, drafts, note_drafts=note_drafts or [], balances=[])
+        result = dict(r, statements=0, before=before, after=before, backup="")
+        if r.get("changes", r["added"]) == 0:
+            return result
+        b, n = sqlite3.connect(base), sqlite3.connect(new)
+        try:
+            stmts = cashew_diff.statements(b, n)
+        finally:
+            b.close()
+            n.close()
+        if not stmts:
+            return result
+        bdir = backups or backup_dir()
+        bdir.mkdir(parents=True, exist_ok=True)
+        bfile = bdir / (time.strftime("%Y%m%d-%H%M%S") + "-live.sqlite")
+        shutil.copyfile(base, bfile)
+        for f in sorted(bdir.glob("*.sqlite"))[:-KEEP_BACKUPS]:
+            f.unlink(missing_ok=True)
+        after = live_run(ch, stmts)
+        if after != before + r["added"]:
+            raise ValueError(f"row count {after} is not {before} + {r['added']}; backup in {bfile}")
+        result.update(statements=len(stmts), after=after, backup=str(bfile))
+        return result
+
+
+LIVE_STATE = STATE / "cashew-chromium-live.json"
+
+
+def _notify(text: str):
+    try:
+        subprocess.Popen(["notify-send", "-a", "Cashew", "Cashew", text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+def live_loop(ch: Chromium, log=print, every: float = 20.0):
+    """While the window is open: when the widget DB changed, apply the ready rows inside the page."""
+    from . import cashew, cli
+    db_path = Path(cli.DB_PATH)
+    seen = None
+    while ch.proc.poll() is None:
+        try:
+            stamp = (db_path.stat().st_mtime, cashew.default_state_path().stat().st_mtime
+                     if cashew.default_state_path().exists() else 0)
+        except OSError:
+            stamp = None
+        if stamp != seen:
+            seen = stamp
+            try:
+                conn = cashew.open_readonly(db_path)
+                ready, waiting, every_rows, _, _ = cli.cashew_ready(conn, cashew.load_state())
+                conn.close()
+                r = live_push(ch, ready, note_drafts=every_rows)
+                info = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "added": r["added"], "notes": r.get("notesUpdated", 0),
+                        "statements": r["statements"], "rows": r["after"], "waitingCategory": len(waiting),
+                        "backup": r["backup"], "error": ""}
+                if r["statements"]:
+                    log(f"Cashew: {r['added']} rows, {r.get('notesUpdated', 0)} notes added")
+                    _notify(f"{r['added']} rows and {r.get('notesUpdated', 0)} notes added. Pull down in Cashew to sync.")
+            except (ValueError, RuntimeError, TimeoutError, OSError, sqlite3.Error) as e:
+                if ch.proc.poll() is not None:
+                    break
+                info = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "error": str(e)}
+                log(f"Cashew live update failed: {e}")
+            try:
+                LIVE_STATE.parent.mkdir(parents=True, exist_ok=True)
+                LIVE_STATE.write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
+            except OSError:
+                pass
+        end = time.time() + every
+        while time.time() < end and ch.proc.poll() is None:
+            time.sleep(1)
