@@ -466,7 +466,7 @@ def main(argv: list[str]) -> int:
                     (memo.get("result", {}).get("path") == "" or out.exists()):
                 r = memo["result"]
             else:
-                r = cashew_file.build(base, out, ready, dry_run="--dry-run" in args, note_drafts=every, balances=balances)
+                r = cashew_file.build(base, out, ready, dry_run="--dry-run" in args, note_drafts=every, balances=[] if chromium else balances)   # the sync button never sends corrections
                 if "--dry-run" not in args:
                     memo_path.parent.mkdir(parents=True, exist_ok=True)
                     memo_path.write_text(json.dumps({"key": key, "result": r}, ensure_ascii=False), encoding="utf-8")

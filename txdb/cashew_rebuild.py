@@ -83,6 +83,9 @@ def rebuild(base: Path, out: Path, conn: sqlite3.Connection, state: dict, answer
             else:
                 continue
             c.execute("DELETE FROM transactions WHERE transaction_pk = ?", (pk,))
+            # a delete log, as Cashew writes one: the sync then removes the row on the other devices too
+            c.execute("INSERT INTO delete_logs (delete_log_pk, entry_pk, type, date_time_modified) VALUES (?, ?, 4, ?)",
+                      (str(__import__("uuid").uuid4()), pk, int(datetime.now().timestamp())))
         c.commit()
         # 1. matched rows: fill a missing / unknown category from the widget
         cats = {r[0]: r[1] for r in c.execute("SELECT category_pk, name FROM categories")}
