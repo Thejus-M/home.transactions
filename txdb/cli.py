@@ -346,7 +346,18 @@ def main(argv: list[str]) -> int:
             memo_path = Path(os.environ.get("TXDB_CASHEW_SYNC_MEMO") or
                              (Path.home() / ".local" / "state" / "omarchy" / "transactions-cashew-sync.json"))
             import hashlib
-            key = [sorted(str(d.get("id")) + "|" + str(d.get("category")) + "|" + str(d.get("amount")) + "|"
+            # rows waiting for a category, per account, that Cashew does not have yet (for the balance)
+            from . import cashew_dedupe as _dd
+            _cdb = sqlite3.connect(f"{base.as_uri()}?mode=ro", uri=True)
+            _w = [dict(d, include=True) for d in waiting]
+            _dd.mark(_w, _cdb)
+            _cdb.close()
+            for b in balances:
+                mine = [d for d in _w if not d.get("inCashew") and d.get("account") == b["account"] and str(d.get("date")) <= b["date"]]
+                b["waitingPaise"] = sum(round(float(d.get("amount") or 0) * 100) for d in mine)
+                b["waitingRows"] = len(mine)
+            BUILD_VERSION = 3                      # part of the memo key: a code change makes the file again
+            key = [BUILD_VERSION, sorted(str(d.get("id")) + "|" + str(d.get("category")) + "|" + str(d.get("amount")) + "|"
                           + str(d.get("notes")) + "|" + str(d.get("title")) for d in ready),
                    hashlib.sha1("".join(sorted(str(d["id"]) + str(d.get("notes")) for d in every)).encode()).hexdigest(),
                    balances,

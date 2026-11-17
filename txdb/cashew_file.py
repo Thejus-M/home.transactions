@@ -158,11 +158,15 @@ def build(base: Path | str, out: Path | str, drafts: list[dict], dry_run: bool =
             cashew_dedupe.mark(probe, conn)
             for d in probe:
                 pk, have, want = d.get("cashewPk"), (d.get("cashewNote") or ""), d["notes"].strip()
-                first = want.split("\n")[0].strip()
-                if not pk or not first or first in have or d.get("id") in ids:
+                if not pk or d.get("id") in ids:
+                    continue
+                # only the lines Cashew's note does not have yet (a bill already there is not added twice)
+                there = {ln.strip() for ln in have.split("\n") if ln.strip()}
+                new = [ln for ln in want.split("\n") if ln.strip() and ln.strip() not in there]
+                if not new:
                     continue
                 conn.execute("UPDATE transactions SET note = ?, date_time_modified = ? WHERE transaction_pk = ?",
-                             (want if not have.strip() else have.rstrip() + "\n" + want, now, pk))
+                             ("\n".join(new) if not have.strip() else have.rstrip() + "\n" + "\n".join(new), now, pk))
                 notes_updated += 1
 
         # balances: one Balance Correction per account for what is left between Cashew and the bank
@@ -174,7 +178,10 @@ def build(base: Path | str, out: Path | str, drafts: list[dict], dry_run: bool =
             end = _midnight(b["date"]) + 86400
             have = conn.execute("SELECT coalesce(sum(amount), 0) FROM transactions WHERE wallet_fk = ? AND paid = 1 "
                                 "AND date_created < ?", (w, end)).fetchone()[0]
-            diff = round(b["paise"] / 100 - float(have), 2)
+            # rows still waiting for a category are in the bank's balance but not yet in Cashew: leave room for
+            # them, or each later categorisation would need a second, opposite correction
+            waiting = (b.get("waitingPaise") or 0) / 100
+            diff = round(b["paise"] / 100 - float(have) - waiting, 2)
             if abs(diff) < 0.01:
                 continue
             insert(transaction_pk=str(uuid.uuid4()), paired_transaction_fk=None, name="Balance correction",
@@ -183,7 +190,8 @@ def build(base: Path | str, out: Path | str, drafts: list[dict], dry_run: bool =
                    category_fk=BALANCE_PK, sub_category_fk=None, wallet_fk=w, date_created=end - 1,
                    income=1 if diff > 0 else 0, method_added=None)
             corrections.append({"account": b["account"], "date": b["date"], "bank": b["paise"] / 100,
-                                "cashew": round(float(have), 2), "diff": diff})
+                                "cashew": round(float(have), 2), "diff": diff, "waiting": round(waiting, 2),
+                                "waitingRows": b.get("waitingRows", 0)})
         conn.commit()
         if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise ValueError("the new database failed its integrity check; nothing was written")

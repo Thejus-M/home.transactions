@@ -126,7 +126,8 @@ class CashewFile(unittest.TestCase):
                                 balances=[{"account": "HDFC", "date": "2026-11-15", "paise": 50000},
                                           {"account": "Nowhere", "date": "2026-11-15", "paise": 1}])
         self.assertEqual((got["added"], got["notesUpdated"], got["changes"]), (0, 1, 2))
-        self.assertEqual(got["corrections"], [{"account": "HDFC", "date": "2026-11-15", "bank": 500.0, "cashew": -10.0, "diff": 510.0}])
+        self.assertEqual(got["corrections"], [{"account": "HDFC", "date": "2026-11-15", "bank": 500.0, "cashew": -10.0,
+                                               "diff": 510.0, "waiting": 0.0, "waitingRows": 0}])
         c = sqlite3.connect(self.out)
         self.assertEqual(c.execute("SELECT note FROM transactions WHERE transaction_pk = 't0'").fetchone()[0], "my own\nBATMINTON")
         fix = c.execute("SELECT amount, category_fk, income, date_created FROM transactions WHERE name = 'Balance correction'").fetchone()
@@ -136,6 +137,21 @@ class CashewFile(unittest.TestCase):
         again = cashew_file.build(self.out, Path(str(self.out) + "2"), [], note_drafts=[old],
                                   balances=[{"account": "HDFC", "date": "2026-11-15", "paise": 50000}])
         self.assertEqual(again["changes"], 0)                                           # nothing left to do
+
+    def test_a_bill_already_in_the_note_is_not_added_twice_and_waiting_rows_get_room(self):
+        c = sqlite3.connect(self.base)
+        c.execute("UPDATE transactions SET note = ? WHERE transaction_pk = 't0'", ("• 1 × Tea — ₹10\nTotal ₹10",))
+        c.commit()
+        c.close()
+        old = d("old", "-10.00", date="2026-11-01", notes="BATMINTON\n• 1 × Tea — ₹10\nTotal ₹10")
+        got = cashew_file.build(self.base, self.out, [], note_drafts=[old],
+                                balances=[{"account": "HDFC", "date": "2026-11-15", "paise": 50000, "waitingPaise": 2000, "waitingRows": 1}])
+        c = sqlite3.connect(self.out)
+        self.assertEqual(c.execute("SELECT note FROM transactions WHERE transaction_pk = 't0'").fetchone()[0],
+                         "• 1 × Tea — ₹10\nTotal ₹10\nBATMINTON")
+        self.assertEqual(got["corrections"][0]["diff"], 490.0)                 # 500 - (-10) - 20 waiting
+        nothing = cashew_file.build(self.out, Path(str(self.out) + "2"), [], note_drafts=[old])
+        self.assertEqual(nothing["notesUpdated"], 0)
 
     def test_dry_run_and_nothing_to_add_write_no_file(self):
         got = cashew_file.build(self.base, self.out, [d("a", "-75.00")], dry_run=True)
