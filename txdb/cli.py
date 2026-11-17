@@ -484,7 +484,8 @@ def main(argv: list[str]) -> int:
             return 1
         print(json.dumps({"pending": r.get("changes", r["added"]), "rows": r["added"], "transfers": r["transfers"],
                           "notes": r.get("notesUpdated", 0), "corrections": r.get("corrections", []),
-                          "waitingCategory": len(waiting), "inCashewIds": [i for i in in_cashew if i not in tracked_ids],
+                          "waitingCategory": sum(1 for d in _w if not d.get("inCashew")),   # only rows Cashew lacks
+                          "inCashewIds": [i for i in in_cashew if i not in tracked_ids],
                           "path": r["path"], "base": r["base"], "skipped": r["skipped"],
                           "autoTrack": auto_track, "directOn": direct}, ensure_ascii=False))
         return 0
