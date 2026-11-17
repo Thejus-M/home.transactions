@@ -335,6 +335,22 @@ class SelectLook(unittest.TestCase):
         self.assertEqual(self.js("cashewFileResult(input.o, '').message", o='{"error": "no copy"}'), "No file: no copy.")
         self.assertEqual(self.js("cashewFileResult('', 'boom').message"), "boom")
 
+    def test_recurring_texts(self):
+        st = lambda **x: self.js("recurringStateText(input.s)", s=x)
+        self.assertEqual(st(state="paid", paidOn="2026-11-14"), {"text": "paid 14-Nov", "tone": "credit"})
+        self.assertEqual(st(state="due", inDays=3)["text"], "in 3 days")
+        self.assertEqual(st(state="due", inDays=1)["text"], "tomorrow")
+        self.assertEqual(st(state="due", inDays=0)["text"], "due today")
+        self.assertEqual(st(state="late", lateDays=6), {"text": "not seen in bank", "tone": "pending"})
+        self.assertEqual(st(state="ended", lastPaid="2026-04-18")["text"], "ended · last 18-Apr")
+        self.assertEqual(self.js("recurringEvery({every: 3, unit: 'month'})"), "every 3 months")
+        self.assertEqual(self.js("recurringEvery({every: 1, unit: 'month'})"), "every month")
+        sm = self.js("recurringSummary(input.l)", l=[{"active": True, "amount": "-1000.00", "every": 1, "unit": "month"},
+                                                      {"active": True, "amount": "-899.00", "every": 3, "unit": "month"},
+                                                      {"active": False, "amount": "-50.00", "every": 1, "unit": "month"}])
+        self.assertEqual((sm["active"], sm["ended"], sm["perMonth"]), (2, 1, 1299.67))
+        self.assertTrue(sm["text"].startswith("2 ACTIVE"))
+
 
 if __name__ == "__main__":
     unittest.main()

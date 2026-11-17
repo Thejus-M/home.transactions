@@ -124,6 +124,9 @@ Panel {
   readonly property var receiptList: Model.receiptsSorted(store.receipts)
   // The RECEIPTS list folded away (its header and count stay).
   property bool receiptsCollapsed: false
+  property bool recurringCollapsed: true       // the RECURRING section (Cashew's recurring series) starts folded
+  property bool recurringShowEnded: false
+  readonly property var recurringSummary: Model.recurringSummary(store.recurring)
   readonly property int receiptsToLink: receiptList.filter(function (r) { return r.state === "unmatched" }).length
   readonly property var linkedTransactionIds: {
     var ids = {}
@@ -1637,6 +1640,7 @@ Panel {
     property var billOverrides: ({})   // map: last4 -> { markedPaid, notifiedDate }
     property var accountNameOverrides: ({})   // map: last4 -> user-set display name
     property var txnNotes: ({})                  // map: transaction id -> the user's own note
+    property var recurring: []                   // Cashew's recurring series with their state (snapshot)
     property var transactionNameOverrides: ({})   // map: groupKey -> user-set merchant name
     // The investments half (txdb/portfolio.py). Additive keys, so a
     // snapshot written before they existed simply leaves these empty and
@@ -1678,6 +1682,7 @@ Panel {
       accountNameOverrides = snap.accountNames || {}
       transactionNameOverrides = snap.merchantNames || {}
       txnNotes = snap.txnNotes || {}
+      recurring = snap.recurring || []
       portfolio = snap.portfolio || ({})
       holdings = snap.holdings || []
       allocation = snap.allocation || []
@@ -3405,6 +3410,119 @@ Panel {
         }
 
         PanelSeparator { visible: root.tab === "bank" && root.cardOverviewList.length > 0; foreground: root.foreground }
+
+        // RECURRING: the recurring transactions set in Cashew (read only, txdb/cashew_recurring.py), each with
+        // its state this cycle: paid (a bank row within 4 days of the due date), due, or not seen in the bank.
+        Item {
+          visible: root.tab === "bank" && store.recurring.length > 0
+          width: parent.width
+          height: Math.max(recurringHeader.implicitHeight, Style.space(24))
+          PanelActionButton {
+            id: recurringFold
+            size: Style.space(22)
+            anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.rowPaddingX
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.recurringCollapsed ? "▸" : "▾"
+            tooltipText: root.recurringCollapsed ? "Show the recurring payments from Cashew" : "Fold them away"
+            foreground: Qt.darker(root.foreground, 1.4)
+            hoverColor: Color.accent
+            focusable: true
+            onClicked: root.recurringCollapsed = !root.recurringCollapsed
+          }
+          PanelSectionHeader {
+            id: recurringHeader
+            anchors.left: recurringFold.right
+            anchors.leftMargin: Style.space(2)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "RECURRING  ·  " + root.recurringSummary.text
+            foreground: root.foreground
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.recurringCollapsed = !root.recurringCollapsed
+            }
+          }
+        }
+        Column {
+          visible: root.tab === "bank" && store.recurring.length > 0 && !root.recurringCollapsed
+          width: parent.width
+          spacing: Style.space(2)
+          Repeater {
+            model: store.recurring.filter(function (s) { return s.active || root.recurringShowEnded })
+            delegate: Item {
+              id: recRow
+              required property var modelData
+              readonly property var st: Model.recurringStateText(recRow.modelData)
+              width: parent.width
+              height: Style.space(40)
+              opacity: recRow.modelData.active ? 1 : 0.55
+              Column {
+                anchors { left: parent.left; right: recRight.left; leftMargin: Style.spacing.rowPaddingX + Style.space(24); rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
+                spacing: Style.space(1)
+                Text {
+                  width: parent.width
+                  elide: Text.ElideRight
+                  textFormat: Text.PlainText
+                  text: recRow.modelData.title
+                  color: root.foreground
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Text {
+                  width: parent.width
+                  elide: Text.ElideRight
+                  textFormat: Text.PlainText
+                  text: recRow.modelData.account + "  ·  " + Model.recurringEvery(recRow.modelData)
+                    + (recRow.modelData.active ? "  ·  next " + Model.formatDate(recRow.modelData.next) : "")
+                  color: Qt.darker(root.foreground, 1.4)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
+              Column {
+                id: recRight
+                anchors { right: parent.right; rightMargin: Style.spacing.rowPaddingX; verticalCenter: parent.verticalCenter }
+                spacing: Style.space(1)
+                Text {
+                  anchors.right: parent.right
+                  textFormat: Text.PlainText
+                  text: Model.formatAmount({ amount: Number(recRow.modelData.amount), currency: "INR" })
+                  color: Number(recRow.modelData.amount) < 0 ? root.foreground : root.creditColor
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Text {
+                  anchors.right: parent.right
+                  textFormat: Text.PlainText
+                  text: recRow.st.text
+                  color: recRow.st.tone === "credit" ? root.creditColor : (recRow.st.tone === "pending" ? root.pendingColor : Qt.darker(root.foreground, 1.4))
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+          }
+          Text {
+            visible: root.recurringSummary.ended > 0
+            x: Style.spacing.rowPaddingX + Style.space(24)
+            height: Style.space(24)
+            verticalAlignment: Text.AlignVCenter
+            textFormat: Text.PlainText
+            text: root.recurringShowEnded ? "Hide the ended ones" : "Ended (" + root.recurringSummary.ended + ")"
+            color: recEndedMouse.containsMouse ? Color.accent : Qt.darker(root.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            MouseArea {
+              id: recEndedMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.recurringShowEnded = !root.recurringShowEnded
+            }
+          }
+        }
+        PanelSeparator { visible: root.tab === "bank" && store.recurring.length > 0; foreground: root.foreground }
 
         // RECEIPTS: photographed bills, stitched to the transaction that
         // paid for them. Unmatched ones are the action queue (BILLS is what
@@ -12104,7 +12222,8 @@ Panel {
           width: parent.width
           spacing: Style.space(6)
           Text {
-            width: Math.min(implicitWidth, parent.width - (noteIconSlot.visible ? noteIconSlot.width + parent.spacing : 0) - (refundSlot.visible ? refundSlot.width + parent.spacing : 0))
+            width: Math.min(implicitWidth, parent.width - (noteIconSlot.visible ? noteIconSlot.width + parent.spacing : 0) - (refundSlot.visible ? refundSlot.width + parent.spacing : 0)
+              - (inCashewSlot.visible ? inCashewSlot.width + parent.spacing : 0))
             textFormat: Text.PlainText
             text: card.displayMerchant
             color: root.foreground
@@ -12112,6 +12231,26 @@ Panel {
             font.bold: true
             font.pixelSize: Style.font.subtitle
             elide: Text.ElideRight
+          }
+          // Cashew already has this payment (same amount and account, the date up to 4 days off)
+          Item {
+            id: inCashewSlot
+            visible: card.txn.inCashew === true
+            width: Style.space(16)
+            height: Style.space(20)
+            anchors.verticalCenter: parent.verticalCenter
+            Text {
+              anchors.centerIn: parent
+              textFormat: Text.PlainText
+              text: "󰸞"
+              color: Util.alpha(root.creditColor, inCashewHover.hovered ? 1 : 0.7)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            HoverHandler { id: inCashewHover }
+            ToolTip.visible: inCashewHover.hovered
+            ToolTip.text: card.txn.inCashewDays ? "In Cashew (" + card.txn.inCashewDays + (card.txn.inCashewDays === 1 ? " day" : " days") + " off)" : "In Cashew"
+            ToolTip.delay: 300
           }
           Item {
             id: noteIconSlot

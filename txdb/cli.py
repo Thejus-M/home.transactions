@@ -195,6 +195,27 @@ def _cashew(cmd: str, args: list[str]) -> int:
     return 0
 
 
+def _recurring() -> dict:
+    """{series: [...], error} for the snapshot and the command. Never raises."""
+    try:
+        from . import cashew, cashew_recurring, cashew_twins
+        base = cashew_twins.find_browser_copy()
+        if base is None:
+            return {"series": [], "error": "the browser keeps no copy of the Cashew web app"}
+        cdb = sqlite3.connect(f"{base.as_uri()}?mode=ro", uri=True)
+        items = cashew_recurring.series(cdb)
+        cdb.close()
+        state = cashew.load_state()
+        over = state.get("accounts") or {}
+        conn = cashew.open_readonly(DB_PATH)
+        since = (datetime.now() - __import__("datetime").timedelta(days=60)).strftime("%Y-%m-%d")
+        bank = [{"date": r[0], "amount": r[1] / 100, "account": over.get(r[2]) or cashew.ACCOUNT_MAP.get(r[2], "")}
+                for r in conn.execute("SELECT date, amount_paise, account_id FROM transactions WHERE date >= ?", (since,))]
+        return {"series": cashew_recurring.status(items, bank), "error": ""}
+    except Exception as e:                      # noqa: BLE001 - the snapshot must never fail on this
+        return {"series": [], "error": str(e)}
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         print(__doc__)
@@ -205,6 +226,11 @@ def main(argv: list[str]) -> int:
         return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
+    if cmd == "cashew-recurring":
+        # cashew-recurring: the recurring transactions set in Cashew and their state this cycle (paid / due /
+        # late, matched to the bank rows within 4 days). JSON. (txdb/cashew_recurring.py)
+        print(json.dumps(_recurring(), ensure_ascii=False))
+        return 0
     if cmd == "cashew-recat":
         # cashew-recat --plan | --apply CSV | --report: fix the categories of rows already in Cashew
         # (txdb/cashew_recat.py). --plan writes the review list (CSV + Markdown); --apply builds the import file
@@ -356,7 +382,7 @@ def main(argv: list[str]) -> int:
                 mine = [d for d in _w if not d.get("inCashew") and d.get("account") == b["account"] and str(d.get("date")) <= b["date"]]
                 b["waitingPaise"] = sum(round(float(d.get("amount") or 0) * 100) for d in mine)
                 b["waitingRows"] = len(mine)
-            BUILD_VERSION = 3                      # part of the memo key: a code change makes the file again
+            BUILD_VERSION = 4                      # part of the memo key: a code change makes the file again
             key = [BUILD_VERSION, sorted(str(d.get("id")) + "|" + str(d.get("category")) + "|" + str(d.get("amount")) + "|"
                           + str(d.get("notes")) + "|" + str(d.get("title")) for d in ready),
                    hashlib.sha1("".join(sorted(str(d["id"]) + str(d.get("notes")) for d in every)).encode()).hexdigest(),

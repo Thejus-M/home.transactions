@@ -1158,6 +1158,43 @@ function receiptSubtitle(r) {
   return parts.join(" · ")
 }
 
+// ---- recurring transactions set in Cashew (snapshot.recurring, txdb/cashew_recurring.py)
+
+// The state text of one series and its tone: { text, tone: "credit" | "pending" | "muted" | "" }.
+function recurringStateText(s) {
+  if (!s) return { text: "", tone: "" }
+  if (s.state === "paid") return { text: "paid " + formatDate(s.paidOn), tone: "credit" }
+  if (s.state === "late") return { text: "not seen in bank", tone: "pending" }
+  if (s.state === "due") {
+    var n = Number(s.inDays) || 0
+    return { text: n <= 0 ? "due today" : (n === 1 ? "tomorrow" : "in " + n + " days"), tone: "" }
+  }
+  if (s.state === "ended") return { text: s.lastPaid ? "ended · last " + formatDate(s.lastPaid) : "ended", tone: "muted" }
+  return { text: "", tone: "" }
+}
+
+// "every month" / "every 3 months" / "every week" ...
+function recurringEvery(s) {
+  var n = Number(s && s.every) || 1, unit = (s && s.unit) || "month"
+  if (unit === "custom") return "custom"
+  return n === 1 ? "every " + unit : "every " + n + " " + unit + "s"
+}
+
+// { active, ended, perMonth (rupees, money out per month of the active series, positive), text }
+function recurringSummary(list) {
+  var active = 0, ended = 0, perMonth = 0
+  ;(list || []).forEach(function (s) {
+    if (!s.active) { ended++; return }
+    active++
+    var a = -Number(s.amount) || 0, n = Number(s.every) || 1
+    var f = { day: 30.44, week: 4.345, month: 1, year: 1 / 12 }[s.unit] || 1
+    perMonth += a * f / n
+  })
+  perMonth = Math.round(perMonth * 100) / 100
+  return { active: active, ended: ended, perMonth: perMonth,
+           text: active + " ACTIVE" + (perMonth > 0 ? "  ·  ₹" + formatGrouped(Math.round(perMonth)) + " / MONTH" : "") }
+}
+
 // The caption of the note card: "NOTE" for a note written in the widget, "REMARK" when the UPI remark stands in.
 function peekNoteLabel(userNote, remark) {
   return String(userNote || "").trim() !== "" ? "NOTE" : (String(remark || "").trim() !== "" ? "REMARK" : "NOTE")

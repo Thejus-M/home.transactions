@@ -739,3 +739,24 @@ class DedupeTests(unittest.TestCase):
         self.assertNotIn("inCashew", drafts[3])
         self.assertEqual((drafts[0]["cashewPk"], drafts[0]["cashewNote"]), ("pk0", ""))   # which Cashew row it is
 
+    def test_a_few_days_off_is_the_same_payment_one_to_one(self):
+        from txdb import cashew_dedupe
+        db = self.cashew_db([("2026-11-10 00:00", -500.0, "w-h", "rent"),            # 3 days before the bank
+                             ("2026-11-01 00:00", -77.0, "w-h", "far"),              # 5 days: too far
+                             ("2026-11-02 00:00", -1000.0, "w-h", "sip a"), ("2026-11-04 00:00", -1000.0, "w-h", "sip b"),
+                             ("2026-11-06 00:00", -1000.0, "w-h", "sip c")])
+        drafts = [{"id": "r", "date": "2026-11-13", "amount": "-500.00", "account": "HDFC"},
+                  {"id": "f", "date": "2026-11-06", "amount": "-77.00", "account": "HDFC"},
+                  {"id": "s1", "date": "2026-11-03", "amount": "-1000.00", "account": "HDFC"},
+                  {"id": "s2", "date": "2026-11-05", "amount": "-1000.00", "account": "HDFC"},
+                  {"id": "s3", "date": "2026-11-07", "amount": "-1000.00", "account": "HDFC"}]
+        got = cashew_dedupe.mark(drafts, db)
+        by = {d["id"]: d for d in drafts}
+        self.assertEqual(got["found"], 4)
+        self.assertEqual((by["r"]["inCashew"], by["r"]["inCashewDays"]), (True, 3))
+        self.assertNotIn("inCashew", by["f"])
+        pks = [by[k]["cashewPk"] for k in ("s1", "s2", "s3")]
+        self.assertEqual(len(set(pks)), 3)                                          # each SIP its own Cashew row
+        self.assertEqual([by[k]["inCashewDays"] for k in ("s1", "s2", "s3")], [1, 1, 1])
+        self.assertEqual(cashew_dedupe.mark([dict(by["f"], include=True)], db, tolerance=0)["found"], 0)
+

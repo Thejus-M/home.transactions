@@ -35,12 +35,31 @@ def cashew_counts(conn: sqlite3.Connection) -> tuple[Counter, set[str]]:
     return Counter({k: len(v) for k, v in rows.items()}), names
 
 
-def mark(drafts: list[dict], conn: sqlite3.Connection) -> dict:
-    """Mark the drafts Cashew already has: inCashew = True, include = False. Oldest first, one Cashew row
-    per draft. Returns {"ok": True, "found": n, "unknownAccounts": [...]}: a draft whose account name Cashew
-    does not know cannot be checked (and is listed)."""
+DAY_TOLERANCE = 4          # a bank date can be 2 to 4 days before or after the date in Cashew
+
+
+def _days(a: str, b: str) -> int:
+    return abs((datetime.strptime(a, "%Y-%m-%d") - datetime.strptime(b, "%Y-%m-%d")).days)
+
+
+def mark(drafts: list[dict], conn: sqlite3.Connection, tolerance: int = DAY_TOLERANCE) -> dict:
+    """Mark the drafts Cashew already has: inCashew = True, include = False, cashewPk, cashewNote and
+    inCashewDays (0 = same day). One Cashew row per draft.
+    Pass 1: same day, same amount, same account. Pass 2, for the rest: same amount and account, a Cashew date
+    up to `tolerance` days away, the nearest first (the earlier one on a tie). Returns {"ok": True, "found": n,
+    "unknownAccounts": [...]}: a draft whose account name Cashew does not know cannot be checked."""
     rows, names = cashew_rows(conn)
-    found, unknown = 0, set()
+    found, unknown, rest = 0, set(), []
+
+    def hit(d, pk, note, days):
+        nonlocal found
+        d["inCashew"] = True
+        d["cashewPk"] = pk                         # which Cashew row (for the note)
+        d["cashewNote"] = note
+        d["inCashewDays"] = days
+        d["include"] = False
+        found += 1
+
     for d in sorted(drafts, key=lambda x: (str(x.get("date") or ""), str(x.get("id") or ""))):
         acct = str(d.get("account") or "")
         try:
@@ -53,9 +72,20 @@ def mark(drafts: list[dict], conn: sqlite3.Connection) -> dict:
             continue
         if rows.get(key):
             pk, note = rows[key].pop(0)
-            d["inCashew"] = True
-            d["cashewPk"] = pk                     # which Cashew row (for the note)
-            d["cashewNote"] = note
-            d["include"] = False
-            found += 1
+            hit(d, pk, note, 0)
+        else:
+            rest.append((d, key))
+    if tolerance > 0 and rest:
+        # what pass 1 left in Cashew, by (amount, account): [(day, pk, note)]
+        left: dict = {}
+        for (day, paise, acct), entries in rows.items():
+            for pk, note in entries:
+                left.setdefault((paise, acct), []).append([day, pk, note])
+        for d, (day, paise, acct) in rest:
+            cands = [c for c in left.get((paise, acct), []) if _days(c[0], day) <= tolerance]
+            if not cands:
+                continue
+            best = min(cands, key=lambda c: (_days(c[0], day), c[0]))
+            left[(paise, acct)].remove(best)
+            hit(d, best[1], best[2], _days(best[0], day))
     return {"ok": True, "found": found, "unknownAccounts": sorted(unknown)}

@@ -16,6 +16,33 @@ def _paid_since(conn: sqlite3.Connection, account_id: str, since: str) -> dict:
     return {"paidSinceBill": from_paise(sum(p for _d, p in paid)), "paidSinceDate": max((d for d, _p in paid), default="")}
 
 
+def _cashew_side(transactions: list[dict], picks: dict) -> tuple[list[dict], str]:
+    """Read only, from the copy of Cashew the browser keeps: marks each transaction Cashew already has
+    (inCashew, inCashewDays when the dates differ; up to 4 days, txdb/cashew_dedupe.py) and returns Cashew's
+    recurring series with their state this cycle (txdb/cashew_recurring.py). Never fails the snapshot."""
+    try:
+        from . import cashew_dedupe, cashew_recurring, cashew_twins
+        base = cashew_twins.find_browser_copy()
+        if base is None:
+            return [], "the browser keeps no copy of the Cashew web app"
+        cdb = sqlite3.connect(f"{base.as_uri()}?mode=ro", uri=True)
+        try:
+            probe = [dict(picks[t["id"]], include=True) for t in transactions if t["id"] in picks]
+            cashew_dedupe.mark(probe, cdb)
+            hits = {p["id"]: p.get("inCashewDays", 0) for p in probe if p.get("inCashew")}
+            for t in transactions:
+                if t["id"] in hits:
+                    t["inCashew"] = True
+                    if hits[t["id"]]:
+                        t["inCashewDays"] = hits[t["id"]]
+            bank = [{"date": p["date"], "amount": p["amount"], "account": p["account"]} for p in picks.values()]
+            return cashew_recurring.status(cashew_recurring.series(cdb), bank), ""
+        finally:
+            cdb.close()
+    except Exception as e:                      # noqa: BLE001
+        return [], str(e)
+
+
 def snapshot(conn: sqlite3.Connection) -> dict:
     transactions = [{
         "id": r["id"], "date": r["date"], "merchant": r["merchant"], "amount": from_paise(r["amount_paise"]),
@@ -50,6 +77,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         # note matched no rule, so the AI reads it when the Cashew window opens.
         t["categoryBy"] = (d.get("categoryBy") or "") if ok else ""
         t["askAi"] = bool(d and d.get("askAi"))
+    recurring, recurring_error = _cashew_side(transactions, picks)
     # Pair the two sides of a movement between your own accounts (txdb/transfers.py).
     split = {r[0] for r in conn.execute("SELECT txn_id FROM transfer_splits")}
     tx_rows = [{"id": t["id"], "date": t["date"], "merchant": t["merchant"], "amount_paise": round(t["amount"] * 100),
@@ -139,6 +167,8 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "accountNames": {r["last4"]: r["display_name"] for r in conn.execute(
             "SELECT last4, display_name FROM accounts WHERE display_name IS NOT NULL")},
         "txnNotes": {r["transaction_id"]: r["note"] for r in conn.execute("SELECT * FROM txn_notes")},
+        "recurring": recurring,
+        "recurringError": recurring_error,
         "merchantNames": {r["group_key"]: r["name"] for r in conn.execute("SELECT * FROM merchant_names")},
         # The investments half: portfolio, holdings, allocation,
         # portfolioActivity, portfolioHistory. Additive, so a widget that
