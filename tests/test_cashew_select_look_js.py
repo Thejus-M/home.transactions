@@ -323,6 +323,18 @@ class SelectLook(unittest.TestCase):
         self.assertEqual(self.js("cashewShownIndexes(input.d, true, {i: true}, {o: true})", d=ds), [1])   # closed stays out
         self.assertEqual(self.js("cashewShownIndexes(input.d, false, null, {})", d=ds), [0, 1, 2, 3])
 
+    def test_cashew_file_result(self):
+        out = json.dumps({"path": "/x/f.sqlite", "base": 3044, "added": 13, "transfers": 6, "already": 134,
+                          "skipped": [{"id": "s", "title": "Odd", "reason": "r"}], "ids": ["a"], "dryRun": False})
+        r = self.js("cashewFileResult(input.o, '')", o=out)
+        self.assertEqual((r["path"], r["added"], r["ids"]), ("/x/f.sqlite", 13, ["a"]))
+        self.assertTrue(r["message"].startswith("13 rows (6 transfers) in the file. 134 already in Cashew, left out. 1 skipped"))
+        self.assertIn("Import it in Cashew now", r["message"])
+        none = self.js("cashewFileResult(input.o, '')", o=json.dumps({"path": "", "added": 0, "already": 5, "skipped": []}))
+        self.assertTrue(none["message"].startswith("Nothing to add"))
+        self.assertEqual(self.js("cashewFileResult(input.o, '').message", o='{"error": "no copy"}'), "No file: no copy.")
+        self.assertEqual(self.js("cashewFileResult('', 'boom').message"), "boom")
+
 
 if __name__ == "__main__":
     unittest.main()

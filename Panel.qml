@@ -399,23 +399,84 @@ Panel {
   property bool cashewFixing: false
   property string cashewFixPath: ""
   property string cashewFixMessage: ""
+  // "Create the Cashew file" (txdb cashew-file): the ticked, shown rows written straight into a copy of the
+  // Cashew database, for Cashew's own import. No browser window. After the file is made the widget waits (up
+  // to 30 min) for the import: when Cashew has the new rows, they are marked "already in Cashew" (and tracked
+  // when that option is on). The links stay as they are.
+  property string cashewFixInput: ""
+  property var cashewFileIds: []
+  property int cashewFileAdded: 0
+  property bool cashewImportWaiting: false
   function cashewFixStart() {
-    if (root.cashewFixing || cashewFixProc.running || !root.cashewVerifyGate()) return
+    if (root.cashewFixing || cashewFixProc.running || root.cashewSending || !root.cashewVerifyGate()) return
+    var keep = ({})
+    root.cashewShown.forEach(function (i) { keep[i] = true })
+    var chosen = root.cashewDrafts.filter(function (d, i) { return keep[i] && d.include !== false && d.inCashew !== true })
     root.cashewFixing = true
     root.cashewFixPath = ""
     root.cashewFixMessage = ""
+    cashewImportWaitProc.running = false
+    root.cashewImportWaiting = false
+    root.cashewFixInput = JSON.stringify({ drafts: chosen }) + "\n"
     cashewFixProc.running = true
   }
   Process {
     id: cashewFixProc
-    command: ["python3", root.txdbBin, "cashew-fix"]
+    command: ["python3", root.txdbBin, "cashew-file", "-"]
+    stdinEnabled: true
     stdout: StdioCollector { id: cashewFixOut }
     stderr: StdioCollector { id: cashewFixErr }
+    onRunningChanged: if (cashewFixProc.running && root.cashewFixInput !== "") {
+      cashewFixProc.write(root.cashewFixInput)
+      root.cashewFixInput = ""
+    }
     onExited: function (exitCode) {
-      var r = Model.cashewFixResult(cashewFixOut.text, cashewFixErr.text)
+      var r = Model.cashewFileResult(cashewFixOut.text, cashewFixErr.text)
       root.cashewFixPath = r.path
       root.cashewFixMessage = r.message
       root.cashewFixing = false
+      root.cashewFileIds = r.ids
+      root.cashewFileAdded = r.added
+      if (r.path !== "" && r.added > 0) {
+        root.cashewImportWaiting = true
+        cashewImportWaitProc.command = ["python3", root.txdbBin, "cashew-wait", String(r.added), "--timeout", "1800"]
+        cashewImportWaitProc.running = true
+        root.cashewGuessNotify("Cashew file ready", r.message + "\n" + r.path)
+      }
+    }
+  }
+  // Confirms the import: Cashew's row count rises by the rows of the file.
+  Process {
+    id: cashewImportWaitProc
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function (line) {
+        var m
+        try { m = JSON.parse(line) } catch (e) { return }
+        if (m.added !== undefined && root.cashewImportWaiting)
+          root.cashewFixMessage = "Waiting for the import in Cashew: " + Math.max(0, m.added) + " of " + root.cashewFileAdded + " rows there."
+      }
+    }
+    onExited: function (exitCode) {
+      if (!root.cashewImportWaiting) return
+      root.cashewImportWaiting = false
+      if (exitCode !== 0) {
+        root.cashewFixMessage = "The import was not seen in 30 minutes. Import the file, then press Create the Cashew file again: rows already in Cashew are left out."
+        return
+      }
+      var done = ({})
+      root.cashewFileIds.forEach(function (id) { done[id] = true })
+      root.cashewDrafts = root.cashewDrafts.map(function (d) {
+        return done[d.id] ? Object.assign({}, d, { inCashew: true, include: false }) : d
+      })
+      root.cashewRebuildLinks()
+      var tracked = root.cashewAutoTrack
+      if (tracked) {
+        store.setTrackedMany(root.cashewFileIds.map(function (id) { return { id: id } }), true)
+        cashewSendReloadTimer.restart()
+      }
+      root.cashewFixMessage = "Imported: Cashew has the " + root.cashewFileAdded + " new rows" + (tracked ? " (marked as tracked)." : ".")
+      root.cashewGuessNotify("Cashew: import confirmed", root.cashewFixMessage)
     }
   }
   property string cashewLinksError: ""
@@ -8822,15 +8883,15 @@ Panel {
               }
             }
 
-            // Rows added by file: the widget makes the file with one click.
+            // Straight into Cashew: the ticked rows written into a copy of the Cashew database (txdb cashew-file).
             Column {
-              visible: root.cashewFileRows > 0 || root.cashewFixMessage !== ""
+              visible: root.cashewLinks.length + root.cashewTransfers.length > 0 || root.cashewFixMessage !== ""
               width: parent.width
               spacing: Style.space(6)
               Text {
                 width: parent.width
                 textFormat: Text.PlainText
-                text: "Added by file · " + root.cashewFileRows
+                text: "SAVE STRAIGHT INTO CASHEW"
                 color: cashewWin.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
@@ -8840,7 +8901,7 @@ Panel {
                 width: parent.width
                 wrapMode: Text.Wrap
                 textFormat: Text.PlainText
-                text: "A link cannot store these rows with the right type. The button makes a file. Import it in Cashew: Settings, then import a backup."
+                text: "No browser window: the ticked rows (transfers as real linked transfers) go into a copy of your Cashew database. Import it in Cashew: Settings, Backup, Import. Import right away, in the only open Cashew tab."
                 color: cashewWin.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption

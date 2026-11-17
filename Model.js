@@ -2728,6 +2728,25 @@ function cashewFileRows(drafts, shown) {
   return n
 }
 
+// What `txdb cashew-file` printed: { path, added, transfers, base, ids, message }. path "" = no file.
+function cashewFileResult(stdout, stderr) {
+  var r
+  try { r = JSON.parse(String(stdout || "").trim().split("\n").pop()) } catch (e) { r = null }
+  if (!r) {
+    var err = String(stderr || "").trim().split("\n").pop()
+    return { path: "", added: 0, transfers: 0, base: 0, ids: [], message: err ? err : "No file was made." }
+  }
+  if (r.error) return { path: "", added: 0, transfers: 0, base: 0, ids: [], message: "No file: " + r.error + "." }
+  var skipped = (r.skipped || []).length
+  var parts = []
+  if (r.added > 0) parts.push(r.added + (r.added === 1 ? " row" : " rows") + (r.transfers > 0 ? " (" + r.transfers + (r.transfers === 1 ? " transfer" : " transfers") + ")" : "") + " in the file.")
+  else parts.push("Nothing to add: Cashew has all the ticked rows.")
+  if (r.already > 0) parts.push(r.already + " already in Cashew, left out.")
+  if (skipped > 0) parts.push(skipped + " skipped (Cashew has no such category or account): " + r.skipped.slice(0, 3).map(function (s) { return s.title }).join(", ") + ".")
+  if (r.added > 0) parts.push("Import it in Cashew now: Settings, Backup, Import. Use the only open Cashew tab and change nothing before.")
+  return { path: r.path || "", added: r.added || 0, transfers: r.transfers || 0, base: r.base || 0, ids: r.ids || [], message: parts.join(" ") }
+}
+
 // What the Create-file button printed: { path, message }. `path` is "" when no file was written.
 function cashewFixResult(stdout, stderr) {
   var text = String(stdout || "")

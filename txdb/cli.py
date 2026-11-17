@@ -204,6 +204,33 @@ def main(argv: list[str]) -> int:
         return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
+    if cmd == "cashew-file":
+        # cashew-file [- | --all] [--dry-run] [--out FILE]: write the selected rows into a copy of the Cashew web
+        # database for Cashew's own import (txdb/cashew_file.py). "-" reads {"drafts": [...]} from stdin (the
+        # window's ticks); --all takes every untracked row. Prints JSON.
+        from . import cashew, cashew_file, cashew_twins
+        try:
+            base = cashew_twins.find_browser_copy()
+            if base is None:
+                raise ValueError("the browser keeps no copy of the Cashew web app")
+            if "-" in args:
+                # one JSON line: the widget writes it and keeps the pipe open
+                drafts = json.loads(sys.stdin.readline() or "{}").get("drafts") or []
+            else:
+                conn = cashew.open_readonly(DB_PATH)
+                drafts = cashew.drafts(conn, cashew.load_state())
+            if "--out" in args:
+                out = Path(args[args.index("--out") + 1])
+            else:
+                folder = cashew_file.default_dir()
+                folder.mkdir(parents=True, exist_ok=True)
+                out = folder / f"cashew-import-{datetime.now().strftime('%Y%m%d-%H%M%S')}.sqlite"
+            result = cashew_file.build(base, out, drafts, dry_run="--dry-run" in args)
+        except (ValueError, OSError, sqlite3.Error) as e:
+            print(json.dumps({"error": str(e)}))
+            return 1
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
     if cmd == "cashew-tabs":
         # cashew-tabs: the open Cashew web tabs in Zen's saved session (txdb/zen_tabs.py), as JSON.
         from . import zen_tabs
