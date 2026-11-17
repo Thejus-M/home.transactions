@@ -195,23 +195,29 @@ def apply(storage: Path, drafts: list[dict], backup_root: Path, dry_run: bool = 
     blob, size = current(storage)
     if blob.stat().st_size != size:
         raise ValueError("the record's size does not match its blob: unknown layout, nothing written")
-    stamp = _t.strftime("%Y%m%d-%H%M%S")
-    work = backup_root / stamp
-    work.mkdir(parents=True, exist_ok=True)
-    base = work / ("db-" + blob.name + ".sqlite")
-    _sh.copyfile(blob, base)
-    new = work / "new.sqlite"
-    r = cashew_file.build(base, new, drafts, dry_run=dry_run)
-    result = {"written": 0 if dry_run else r["added"], "would": r["added"], "transfers": r["transfers"],
-              "already": r["already"], "skipped": r["skipped"], "ids": r["ids"], "base": r["base"], "backup": str(work)}
-    if dry_run or r["added"] == 0:
-        new.unlink(missing_ok=True)
-        if r["added"] == 0:
-            result["written"] = 0
-        return result
-    for f in (index, index.with_name(index.name + "-wal")):
-        if f.exists():
-            _sh.copyfile(f, work / f.name)
+    import tempfile as _tf
+    with _tf.TemporaryDirectory(prefix="cashew-direct-") as tmp:
+        base = Path(tmp) / "base.sqlite"
+        _sh.copyfile(blob, base)
+        new = Path(tmp) / "new.sqlite"
+        r = cashew_file.build(base, new, drafts, dry_run=dry_run)
+        result = {"written": 0, "would": r["added"], "transfers": r["transfers"], "already": r["already"],
+                  "skipped": r["skipped"], "ids": r["ids"], "base": r["base"], "backup": ""}
+        if dry_run or r["added"] == 0:
+            return result                             # nothing to write: no backup, nothing kept
+        # a backup only right before a real write: the index, its WAL and the database in use
+        work = backup_root / _t.strftime("%Y%m%d-%H%M%S")
+        work.mkdir(parents=True, exist_ok=True)
+        _sh.copyfile(blob, work / ("db-" + blob.name + ".sqlite"))
+        for f in (index, index.with_name(index.name + "-wal")):
+            if f.exists():
+                _sh.copyfile(f, work / f.name)
+        result["backup"] = str(work)
+        result["written"] = r["added"]
+        return _finish(storage, new, blob, work, result)
+
+
+def _finish(storage: Path, new: Path, blob: Path, work: Path, result: dict) -> dict:
     if in_use(storage):                                      # Zen started meanwhile: do not touch it
         raise ValueError("Zen started while the file was made: nothing written")
     new_blob = write(storage, new)
@@ -219,6 +225,5 @@ def apply(storage: Path, drafts: list[dict], backup_root: Path, dry_run: bool = 
     if check_blob != new_blob or check_size != new_blob.stat().st_size:
         raise ValueError("the write could not be checked; restore from " + str(work))
     blob.unlink(missing_ok=True)                             # the old database is in the backup
-    new.unlink(missing_ok=True)
     return result
 

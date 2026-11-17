@@ -669,6 +669,37 @@ class TxnCategoryBillTests(Base):
                                                          "accounts": {}, "txn": {"t-1": {"category": "Shopping", "subcategory": "Others"}}}), [])
 
 
+class SyncCliTests(Base):
+    """txdb cashew-sync end to end: a fake Zen home with a fake Cashew database, run twice."""
+
+    def test_sync_writes_the_file_once_and_reports_the_options(self):
+        sys.path.insert(0, str(ROOT / "tests"))
+        from test_cashew_file import fake_cashew
+        self.add(self.hdfc, row(1, "2026-10-02", -250.0, "SWIGGY ORDER 123"))
+        home = Path(self.dir.name) / "home"
+        blobdir = home / ".config" / "zen" / "p" / "storage" / "default" / "https+++budget-track.web.app" / "idb" / "x.files"
+        blobdir.mkdir(parents=True)
+        fake_cashew(blobdir / "1")
+        out = Path(self.dir.name) / "import"
+        self.state_path.write_text(json.dumps({"version": 1, "categories": {}, "accounts": {}, "autoTrack": False}))
+        env = {**os.environ, "TXDB_DB": str(self.path), "TXDB_CASHEW_STATE": str(self.state_path),
+               "TXDB_BROWSER_HOME": str(home), "TXDB_CASHEW_IMPORT_DIR": str(out),
+               "TXDB_CASHEW_SYNC_MEMO": str(Path(self.dir.name) / "memo.json")}
+        env.pop("TXDB_NO_BROWSER_COPY", None)
+        run = lambda: subprocess.run([sys.executable, str(ROOT / "bin/txdb"), "cashew-sync"], env=env,
+                                     capture_output=True, text=True)
+        p = run()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        r = json.loads(p.stdout)
+        self.assertEqual((r["pending"], r["autoTrack"], r["directOn"]), (1, False, False))
+        made = out / "cashew-sync.sql"
+        self.assertTrue(made.exists())
+        first = made.stat().st_mtime_ns
+        again = json.loads(run().stdout)
+        self.assertEqual(again["pending"], 1)
+        self.assertEqual(made.stat().st_mtime_ns, first)          # nothing changed: the file is not made again
+
+
 class DedupeTests(unittest.TestCase):
     """txdb/cashew_dedupe.py: a draft Cashew already has is not sent again."""
 

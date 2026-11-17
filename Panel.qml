@@ -9027,21 +9027,15 @@ Panel {
               }
               Row {
                 spacing: Style.space(6)
+                // the same file as the automatic sync (cashew-sync.sql), never a second one
                 CashewBtn {
-                  label: root.cashewVerifyArmed ? "Unverified AI · click again" : (root.cashewFixing ? "Making the file…" : "Create the Cashew file")
-                  primary: true
-                  enabled: !root.cashewFixing
-                  onClicked: root.cashewFixStart()
+                  label: root.cashewSyncLabel
+                  primary: root.cashewSync.pending > 0
+                  onClicked: root.cashewSyncClick()
                 }
                 CashewBtn {
-                  visible: root.cashewFixPath !== ""
-                  label: "Copy path"
-                  onClicked: Quickshell.execDetached(["wl-copy", root.cashewFixPath])
-                }
-                CashewBtn {
-                  visible: root.cashewFixPath !== ""
-                  label: "Open Cashew"
-                  onClicked: Quickshell.execDetached(["xdg-open", "https://budget-track.web.app/"])
+                  label: "Check now"
+                  onClicked: root.cashewSyncNow()
                 }
               }
               Text {

@@ -71,6 +71,12 @@ class Direct(unittest.TestCase):
         self.assertEqual(db.execute("SELECT count(*) FROM transactions").fetchone()[0], 2)
         again = cashew_direct.apply(self.storage, [d("a", "-75.00")], self.root / "backup")
         self.assertEqual(again["written"], 0)                     # Cashew has it now: nothing written twice
+        self.assertEqual(len(list((self.root / "backup").iterdir())), 1)   # and no backup for a run with nothing to do
+
+    def test_nothing_to_write_leaves_no_backup(self):
+        r = cashew_direct.apply(self.storage, [], self.root / "backup")
+        self.assertEqual((r["written"], r["backup"]), (0, ""))
+        self.assertFalse((self.root / "backup").exists())
 
     def test_a_running_zen_blocks_the_write(self):
         profile = self.storage.parent.parent.parent

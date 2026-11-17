@@ -85,6 +85,7 @@ no quoting."""
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from datetime import datetime
@@ -243,7 +244,26 @@ def main(argv: list[str]) -> int:
                                       "writtenIds": d["ids"] if d["written"] else [], "autoTrack": auto_track},
                                      ensure_ascii=False))
                     return 0
-            r = cashew_file.build(base, out, ready, dry_run="--dry-run" in args)
+            # skip the rewrite when the ready rows and Cashew's size did not change since the last file
+            memo_path = Path(os.environ.get("TXDB_CASHEW_SYNC_MEMO") or
+                             (Path.home() / ".local" / "state" / "omarchy" / "transactions-cashew-sync.json"))
+            key = [sorted(str(d.get("id")) + "|" + str(d.get("category")) + "|" + str(d.get("amount")) + "|"
+                          + str(d.get("notes")) + "|" + str(d.get("title")) for d in ready),
+                   base.stat().st_size, sqlite3.connect(f"{base.as_uri()}?mode=ro", uri=True).execute(
+                       "SELECT count(*), max(date_time_modified) FROM transactions").fetchone()]
+            memo = {}
+            try:
+                memo = json.loads(memo_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
+            if "--dry-run" not in args and memo.get("key") == json.loads(json.dumps(key)) and \
+                    (memo.get("result", {}).get("path") == "" or out.exists()):
+                r = memo["result"]
+            else:
+                r = cashew_file.build(base, out, ready, dry_run="--dry-run" in args)
+                if "--dry-run" not in args:
+                    memo_path.parent.mkdir(parents=True, exist_ok=True)
+                    memo_path.write_text(json.dumps({"key": key, "result": r}, ensure_ascii=False), encoding="utf-8")
             if r["added"] == 0 and out.exists() and "--dry-run" not in args:
                 out.unlink()                      # nothing waits: no stale file to import by mistake
             # which untracked rows Cashew already has
