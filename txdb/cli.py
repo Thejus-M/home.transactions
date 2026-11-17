@@ -216,7 +216,11 @@ def main(argv: list[str]) -> int:
             if base is None:
                 raise ValueError("the browser keeps no copy of the Cashew web app")
             conn = cashew.open_readonly(DB_PATH)
-            items = cashew.drafts(conn, cashew.load_state())
+            state = cashew.load_state()
+            auto_track = state.get("autoTrack") is not False
+            # the option "write straight into Cashew while Zen is closed" (off by default), or --direct
+            direct = "--direct" in args or state.get("directSync") is True
+            items = cashew.drafts(conn, state)
             waiting = [d for d in items if d.get("include", True) and (d.get("askAi")
                        or (d.get("kind") != "transfer" and d.get("category") in (None, "", cashew.UNCATEGORIZED[0])
                            and d.get("subcategory") != "Miscellaneous") or d.get("warn"))]
@@ -224,6 +228,21 @@ def main(argv: list[str]) -> int:
             folder = cashew_file.default_dir()
             folder.mkdir(parents=True, exist_ok=True)
             out = folder / "cashew-sync.sql"
+            if direct:
+                # EXPERIMENTAL (txdb/cashew_direct.py): straight into Zen's storage, only while Zen is closed.
+                from . import cashew_direct
+                spots = cashew_direct.storages()
+                if len(spots) == 1 and not cashew_direct.in_use(spots[0]):
+                    d = cashew_direct.apply(spots[0], ready, folder.parent / "cashew-direct", dry_run="--dry-run" in args)
+                    if out.exists() and "--dry-run" not in args:
+                        out.unlink()              # written straight in: no import file needed
+                    print(json.dumps({"direct": True, "pending": d["would"] if "--dry-run" in args else 0,
+                                      "written": d["written"], "transfers": d["transfers"],
+                                      "waitingCategory": len(waiting), "inCashewIds": [], "path": "",
+                                      "backup": d["backup"], "base": d["base"], "skipped": d["skipped"],
+                                      "writtenIds": d["ids"] if d["written"] else [], "autoTrack": auto_track},
+                                     ensure_ascii=False))
+                    return 0
             r = cashew_file.build(base, out, ready, dry_run="--dry-run" in args)
             if r["added"] == 0 and out.exists() and "--dry-run" not in args:
                 out.unlink()                      # nothing waits: no stale file to import by mistake
@@ -238,8 +257,8 @@ def main(argv: list[str]) -> int:
             print(json.dumps({"error": str(e)}))
             return 1
         print(json.dumps({"pending": r["added"], "transfers": r["transfers"], "waitingCategory": len(waiting),
-                          "inCashewIds": in_cashew, "path": r["path"], "base": r["base"], "skipped": r["skipped"]},
-                         ensure_ascii=False))
+                          "inCashewIds": in_cashew, "path": r["path"], "base": r["base"], "skipped": r["skipped"],
+                          "autoTrack": auto_track, "directOn": direct}, ensure_ascii=False))
         return 0
     if cmd == "cashew-file":
         # cashew-file [- | --all] [--dry-run] [--out FILE]: write the selected rows into a copy of the Cashew web

@@ -434,8 +434,14 @@ Panel {
       var before = root.cashewSync.pending
       root.cashewSync = r.error ? Object.assign({}, root.cashewSync, { error: String(r.error).slice(0, 60) })
         : { pending: r.pending, transfers: r.transfers, waitingCategory: r.waitingCategory, inCashewIds: r.inCashewIds || [], path: r.path || "", error: "" }
-      if (!r.error && root.cashewAutoTrack && (r.inCashewIds || []).length > 0)
-        store.setTrackedMany(r.inCashewIds.map(function (id) { return { id: id } }), true)
+      // the options come from the state file through the script: this runs even when the Cashew window
+      // never opened (then root.cashewState is not loaded)
+      var done = (r.inCashewIds || []).concat(r.writtenIds || [])
+      if (!r.error && r.autoTrack === true && done.length > 0)
+        store.setTrackedMany(done.map(function (id) { return { id: id } }), true)
+      if (!r.error && r.direct && r.written > 0)
+        root.cashewGuessNotify("Cashew: " + r.written + (r.written === 1 ? " row" : " rows") + " written straight in",
+          "Zen was closed, so the rows went straight into Cashew's storage. Backup: " + r.backup)
       if (!r.error && r.pending > 0 && r.pending !== before)
         root.cashewGuessNotify("Cashew: " + r.pending + (r.pending === 1 ? " row waits" : " rows wait"),
           "The sync file is ready: click the sync badge next to Cashew, then import it in Cashew.")
@@ -8797,6 +8803,16 @@ Panel {
             label: root.cashewAutoTrack ? "After adding: mark as tracked" : "After adding: keep untracked"
             active: root.cashewAutoTrack
             onClicked: root.cashewSetState(Object.assign({}, root.cashewState, { autoTrack: !root.cashewAutoTrack }))
+          }
+          CashewBtn {
+            // EXPERIMENTAL: txdb cashew-sync writes straight into Zen's storage while Zen is closed (backup first)
+            label: root.cashewState.directSync === true ? "Write into Cashew while Zen is closed: on" : "Write into Cashew while Zen is closed: off"
+            active: root.cashewState.directSync === true
+            onClicked: {
+              root.cashewSetState(Object.assign({}, root.cashewState, { directSync: root.cashewState.directSync !== true }))
+              root.flushCashewSave()
+              cashewSyncTimer.restart()
+            }
           }
           CashewBtn {
             label: root.cashewAutoGuess ? "AI for remarks: on" : "AI for remarks: off"
