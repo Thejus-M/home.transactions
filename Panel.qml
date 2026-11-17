@@ -405,7 +405,8 @@ Panel {
   // Cashew chip shows how many wait; a click copies the file path and opens Cashew for the import. Rows Cashew
   // already has are marked as tracked when "After adding: mark as tracked" is on.
   property var cashewSync: ({ pending: -1, transfers: 0, waitingCategory: 0, inCashewIds: [], path: "", error: "" })
-  readonly property string cashewSyncLabel: root.cashewSync.error ? "Sync: " + root.cashewSync.error
+  readonly property string cashewSyncLabel: root.cashewSync.recatWaiting ? "Import the recategorise file first"
+    : root.cashewSync.error ? "Sync: " + root.cashewSync.error
     : root.cashewSync.pending < 0 ? "Sync: checking…"
     : root.cashewSync.pending === 0 ? "Cashew is up to date"
     : "Import " + root.cashewSync.pending + (root.cashewSync.pending === 1 ? " row" : " rows") + " into Cashew"
@@ -438,6 +439,13 @@ Panel {
   function cashewSyncAfterClick() {
     root.cashewSyncClicked = false
     if (root.cashewSync.error) return
+    if (root.cashewSync.recatWaiting) {
+      Quickshell.execDetached(["wl-copy", root.cashewSync.recatWaiting])
+      Quickshell.execDetached(["xdg-open", "https://budget-track.web.app/"])
+      root.cashewGuessNotify("Cashew: import the recategorise file", "Path copied: " + root.cashewSync.recatWaiting
+        + "\nIn Cashew: Settings, Backup, Import. The sync waits until it is imported.")
+      return
+    }
     if (root.cashewSync.pending > 0 && root.cashewSync.path) {
       Quickshell.execDetached(["wl-copy", root.cashewSync.path])
       Quickshell.execDetached(["xdg-open", "https://budget-track.web.app/"])
@@ -460,7 +468,8 @@ Panel {
       try { r = JSON.parse((cashewSyncOut.text || "").trim().split("\n").pop()) } catch (e) { r = { error: "no result" } }
       var before = root.cashewSync.pending
       root.cashewSync = r.error ? Object.assign({}, root.cashewSync, { error: String(r.error).slice(0, 60) })
-        : { pending: r.pending, transfers: r.transfers, waitingCategory: r.waitingCategory, inCashewIds: r.inCashewIds || [], path: r.path || "", error: "" }
+        : { pending: r.pending, transfers: r.transfers, waitingCategory: r.waitingCategory, inCashewIds: r.inCashewIds || [], path: r.path || "",
+            recatWaiting: r.recatWaiting || "", error: "" }
       // the options come from the state file through the script: this runs even when the Cashew window
       // never opened (then root.cashewState is not loaded)
       var done = (r.inCashewIds || []).concat(r.writtenIds || [])
@@ -3548,7 +3557,7 @@ Panel {
               height: Style.space(24)
               width: syncRow.implicitWidth + Style.space(14)
               radius: Style.space(8)
-              readonly property bool waiting: root.cashewSync.pending > 0
+              readonly property bool waiting: root.cashewSync.pending > 0 || !!root.cashewSync.recatWaiting
               color: syncMouse.containsMouse ? Util.alpha(root.foreground, 0.12) : Util.alpha(waiting ? root.pendingColor : root.foreground, waiting ? 0.16 : 0.06)
               Row {
                 id: syncRow
@@ -3572,7 +3581,7 @@ Panel {
                   visible: cashewSyncBadge.waiting
                   anchors.verticalCenter: parent.verticalCenter
                   textFormat: Text.PlainText
-                  text: String(root.cashewSync.pending)
+                  text: root.cashewSync.recatWaiting ? "fix" : String(root.cashewSync.pending)
                   color: root.pendingColor
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -3587,7 +3596,8 @@ Panel {
                 onClicked: root.cashewSyncClick()
               }
               ToolTip.visible: syncMouse.containsMouse
-              ToolTip.text: root.cashewSync.error ? "Sync: " + root.cashewSync.error
+              ToolTip.text: root.cashewSync.recatWaiting ? "The category fix waits for its import: click to copy its path and open Cashew. New rows sync after it."
+                : root.cashewSync.error ? "Sync: " + root.cashewSync.error
                 : cashewSyncBadge.waiting ? root.cashewSync.pending + " rows wait in the sync file" + (root.cashewSync.transfers > 0 ? " (" + root.cashewSync.transfers + " transfers)" : "")
                   + ". Click: copy its path and open Cashew to import it." + (root.cashewSync.waitingCategory > 0 ? "\n" + root.cashewSync.waitingCategory + " more need a category first." : "")
                 : root.cashewSync.pending === 0 ? "Cashew is up to date" + (root.cashewSync.waitingCategory > 0 ? " (" + root.cashewSync.waitingCategory + " rows need a category)" : "") + ". Click to check again."

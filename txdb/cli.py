@@ -205,6 +205,50 @@ def main(argv: list[str]) -> int:
         return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
+    if cmd == "cashew-recat":
+        # cashew-recat --plan | --apply CSV | --report: fix the categories of rows already in Cashew
+        # (txdb/cashew_recat.py). --plan writes the review list (CSV + Markdown); --apply builds the import file
+        # from the reviewed CSV and makes the automatic sync wait for its import; --report: money per category.
+        from . import cashew_file, cashew_recat, cashew_twins
+        base = cashew_twins.find_browser_copy()
+        if base is None:
+            print("cashew-recat: the browser keeps no copy of the Cashew web app", file=sys.stderr)
+            return 3
+        conn = sqlite3.connect(f"{base.as_uri()}?mode=ro", uri=True)
+        if "--report" in args:
+            for name, n, money in cashew_recat.report(conn):
+                print(f"{name:<22} {n:>5} rows   ₹{money:>12,.2f} out")
+            return 0
+        if "--apply" in args:
+            src = Path(args[args.index("--apply") + 1])
+            folder = cashew_file.default_dir()
+            folder.mkdir(parents=True, exist_ok=True)
+            out = folder / f"cashew-recategorise-{datetime.now().strftime('%Y%m%d-%H%M%S')}.sql"
+            r = cashew_recat.apply(base, src, out)
+            mk = cashew_recat.marker_path()
+            mk.parent.mkdir(parents=True, exist_ok=True)
+            mk.write_text(json.dumps({"path": r["path"], "probe": r["probe"]}), encoding="utf-8")
+            (folder / "cashew-sync.sql").unlink(missing_ok=True)   # an older sync file would undo the import
+            print(json.dumps({k: v for k, v in r.items() if k != "probe"}, ensure_ascii=False))
+            return 0
+        notes = Path(os.environ.get("TXDB_NOTES_DIR") or "/run/media/pc/MY Drive/Docs/Notes")
+        if not notes.is_dir():
+            print(f"cashew-recat: {notes} is not there (is the drive mounted?)", file=sys.stderr)
+            return 1
+        moves = cashew_recat.plan(conn)
+        stem = f"cashew-recategorise-{datetime.now():%Y-%m-%d}"
+        cashew_recat.write_plan(moves, notes / (stem + ".csv"), notes / (stem + ".md"))
+        groups: dict = {}
+        for m in moves:
+            k = "needs your answer" if m["confidence"] == "ask" else f"{m['from']} -> {m['to']}"
+            g = groups.setdefault(k, [0, 0.0, 0])
+            g[0] += 1
+            g[1] += float(m["amount"])
+            g[2] += m["confidence"] == "guess"
+        for k, (n, money, guess) in sorted(groups.items(), key=lambda x: -x[1][0]):
+            print(f"{n:>4}  {money:>12,.2f}  {k}" + (f"   ({guess} guesses)" if guess else ""))
+        print(f"review: {notes / (stem + '.md')}\nedit:   {notes / (stem + '.csv')}", file=sys.stderr)
+        return 0
     if cmd == "cashew-stamp":
         # cashew-stamp: one line that changes whenever Cashew's storage in Zen changes (the modification times
         # and sizes of the IndexedDB files). Cheap: the widget runs it every few seconds and runs cashew-sync
@@ -233,6 +277,24 @@ def main(argv: list[str]) -> int:
             base = cashew_twins.find_browser_copy()
             if base is None:
                 raise ValueError("the browser keeps no copy of the Cashew web app")
+            # A recategorise file waits for its import: it replaces the whole database, so nothing may be built
+            # on the old one meanwhile. The wait ends when Cashew holds the file's moves (or the file is gone).
+            from . import cashew_recat
+            mk = cashew_recat.marker_path()
+            if mk.exists():
+                try:
+                    m = json.loads(mk.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    m = {}
+                cdb = sqlite3.connect(f"{base.as_uri()}?mode=ro", uri=True)
+                done = not m.get("path") or not Path(m["path"]).exists() or cashew_recat.imported(cdb, m.get("probe") or [])
+                cdb.close()
+                if done:
+                    mk.unlink(missing_ok=True)
+                else:
+                    print(json.dumps({"pending": 0, "transfers": 0, "waitingCategory": 0, "inCashewIds": [], "path": "",
+                                      "recatWaiting": m["path"], "autoTrack": False}))
+                    return 0
             conn = cashew.open_readonly(DB_PATH)
             state = cashew.load_state()
             auto_track = state.get("autoTrack") is not False
