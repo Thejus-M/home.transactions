@@ -311,6 +311,16 @@ def transfer_title(own: str, peer: str, negative: bool) -> str:
     return f"Transfer from {src}" if src else "Transfer in"
 
 
+_PERSON_UPI = {"SBI": re.compile(r"UPI/(DR|CR)/\d+/", re.I), "AXIS": re.compile(r"^UPI/P2A/", re.I)}
+
+
+def _person_upi(bank: str, merchant: str | None) -> bool:
+    """A UPI payment to or from a person on SBI or Axis savings (P2A), the way every HDFC savings row is
+    treated when nothing else knows it: Friend Settlement. Card bills and shops are caught by rules first."""
+    rx = _PERSON_UPI.get(bank)
+    return bool(rx and rx.search(merchant or ""))
+
+
 def _valid_sub(cat: str, sub: str) -> bool:
     for c in load_categories():
         if c["name"] == cat:
@@ -609,8 +619,8 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
                     ask_ai[r["id"]] = note             # no rule knows the note: the AI reads it
             # HDFC savings (not a card, not another bank), no bill, nothing else to go on: Friend Settlement.
             # That is a guess, not a match: the row is marked `defaulted`.
-            if (cat, sub, warn) == (*UNCATEGORIZED, "") and r["bank"] == "HDFC" \
-                    and r["account_type"] == "checking" and r["id"] not in linked:
+            if (cat, sub, warn) == (*UNCATEGORIZED, "") and r["account_type"] == "checking" and r["id"] not in linked \
+                    and (r["bank"] == "HDFC" or _person_upi(r["bank"], r["merchant"])):
                 cat, sub = FRIEND, FRIEND_SUB
                 defaulted.add(r["id"])
         return kind, cat, sub, warn, from_bill, title, leg

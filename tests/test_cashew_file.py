@@ -24,10 +24,14 @@ def ts(day):
 
 def fake_cashew(path):
     c = sqlite3.connect(path)
-    c.execute("CREATE TABLE categories (category_pk TEXT PRIMARY KEY, name TEXT, income INTEGER, main_category_pk TEXT)")
-    c.executemany("INSERT INTO categories VALUES (?,?,?,?)", [
-        ("0", "Balance Correction", 0, None), ("c-food", "Food Out", 0, None), ("s-lunch", "Lunch", 0, "c-food"),
-        ("c-shop", "Shopping", 0, None)])
+    # the real column layout of Cashew's categories table
+    c.execute('CREATE TABLE categories (category_pk TEXT PRIMARY KEY, name TEXT, colour TEXT, icon_name TEXT, '
+              'emoji_icon_name TEXT, date_created INTEGER, date_time_modified INTEGER, "order" INTEGER, income INTEGER, '
+              'method_added INTEGER, main_category_pk TEXT, archived INTEGER)')
+    c.executemany("INSERT INTO categories (category_pk, name, colour, icon_name, \"order\", income, main_category_pk, archived) "
+                  "VALUES (?, ?, '0xff607d8b', 'charts.png', ?, ?, ?, 0)", [
+        ("0", "Balance Correction", 0, 0, None), ("c-food", "Food Out", 1, 0, None), ("s-lunch", "Lunch", 90, 0, "c-food"),
+        ("c-shop", "Shopping", 2, 0, None)])
     c.execute("CREATE TABLE wallets (wallet_pk TEXT PRIMARY KEY, name TEXT)")
     c.executemany("INSERT INTO wallets VALUES (?,?)", [("0", "HDFC"), ("w-sbi", "SBI")])
     c.execute(f"CREATE TABLE transactions ({', '.join(COLS)})")
@@ -99,6 +103,18 @@ class CashewFile(unittest.TestCase):
         self.assertEqual(a["date_created"], ts("2026-11-15"))
         r = dict(rows.execute("SELECT * FROM transactions WHERE name = 'refund'").fetchone())
         self.assertEqual((r["income"], r["sub_category_fk"]), (1, None))
+
+    def test_a_new_subcategory_is_added_to_cashew_not_skipped(self):
+        got = cashew_file.build(self.base, self.out, [d("a", "-75.00", category="Fitness", subcategory="Sports"),
+                                                      d("b", "-9.00", category="Groceries", subcategory="Dairy & Bakery"),
+                                                      d("c", "-1.00", category="Not In The List", subcategory="")])
+        self.assertEqual(got["added"], 2)
+        self.assertEqual([s["title"] for s in got["skipped"]], ["T c"])
+        self.assertEqual(sorted(got["addedCategories"]), ["Dairy & Bakery", "Fitness", "Groceries", "Sports"])
+        c = sqlite3.connect(self.out)
+        sub = c.execute("SELECT t.sub_category_fk, s.name, s.main_category_pk = t.category_fk FROM transactions t "
+                        "JOIN categories s ON s.category_pk = t.sub_category_fk WHERE t.name = 'T a'").fetchone()
+        self.assertEqual(sub[1:], ("Sports", 1))
 
     def test_dry_run_and_nothing_to_add_write_no_file(self):
         got = cashew_file.build(self.base, self.out, [d("a", "-75.00")], dry_run=True)

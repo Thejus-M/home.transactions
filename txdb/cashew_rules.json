@@ -1,5 +1,46 @@
 [
  {
+  "match": "\\b(cred club|cred\\b|cc bill|ccbillpay|billpay\\.|credit card (bill|payment)|card bill)",
+  "category": "Balance Correction",
+  "subcategory": ""
+ },
+ {
+  "match": "\\b(rev\\.? avg bal|reversal of .*charges?)",
+  "category": "Cashback & Rewards",
+  "subcategory": "Refund",
+  "sign": "credit"
+ },
+ {
+  "match": "\\b(iccl|groww)\\b.*\\b(upi auto|autopay|mandate)\\b",
+  "category": "Investments",
+  "subcategory": "Mutual Funds",
+  "sign": "debit"
+ },
+ {
+  "match": "\\bindstocks\\b",
+  "category": "Investments",
+  "subcategory": "US Stocks",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(pmjjby|pmsby|insurance premium)",
+  "category": "Health",
+  "subcategory": "Insurance",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(dental|dentist|dent|teeth)\\b",
+  "category": "Personal Care",
+  "subcategory": "Teeth",
+  "sign": "debit"
+ },
+ {
+  "match": "^dr\\.? |\\bdr\\.? [a-z]",
+  "category": "Health",
+  "subcategory": "Doctor",
+  "sign": "debit"
+ },
+ {
   "match": "\\b(interest (for|on) emi|emi interest)",
   "category": "Loans & EMI",
   "subcategory": "Interest",
@@ -36,7 +77,7 @@
   "sign": "debit"
  },
  {
-  "match": "\\b(average balance|minimum balance|min bal|sms charges|card charges|service charge)",
+  "match": "\\b(average balance|avg\\.? bal|minimum balance|min bal|sms charges|card charges|service charge|chgs)",
   "category": "Bank & Card Fees",
   "subcategory": "Other Charges",
   "sign": "debit"
@@ -54,7 +95,7 @@
   "sign": "debit"
  },
  {
-  "match": "\\b(uber|ola cabs|rapido|taxi|cab|auto|autorickshaw|autorental|royal ?bison)\\b",
+  "match": "\\b(uber|ola cabs|rapido|taxi|cab|autorickshaw|autorental|royal ?bison)\\b|(?<!upi )(?<!upi/)\\bauto\\b",
   "category": "Transport",
   "subcategory": "Cab & Auto",
   "sign": "debit"
@@ -69,6 +110,24 @@
   "match": "\\b(fastag|toll)",
   "category": "Transport",
   "subcategory": "Tolls",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(cake|waffle|bakes|dessert|ice ?cream|sweets?)\\b",
+  "category": "Food Out",
+  "subcategory": "Sweets",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(bigtree|bookmyshow|pvr|inox|cinepolis)\\b",
+  "category": "Entertainment",
+  "subcategory": "Movies",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(daintree|leisures?|play ?aza|timezone|bowling|escape room|trampoline)\\b",
+  "category": "Entertainment",
+  "subcategory": "Activities",
   "sign": "debit"
  },
  {

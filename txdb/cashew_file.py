@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import cashew_dedupe
+from . import cashew, cashew_dedupe
 from .cashew_fix import Index
 
 BALANCE_PK = "0"
@@ -80,6 +80,25 @@ def build(base: Path | str, out: Path | str, drafts: list[dict], dry_run: bool =
             conn.execute(f"INSERT INTO transactions ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
                          [row.get(c) for c in cols])
 
+        widget_names = {c["name"] for c in cashew.load_categories()}
+        added_cats: list[str] = []
+
+        def resolve(cat: str, sub: str):
+            """(category pk, subcategory pk or None). A category or subcategory of the widget's list that Cashew
+            does not have yet is added in Cashew's own form (cashew_recat._ensure), so the row is not skipped."""
+            nonlocal idx
+            got = idx.category(cat, sub)
+            if got is not None and (not sub or got[1]):
+                return got[0], got[1] or None
+            if cat not in widget_names:
+                return None
+            from .cashew_recat import Cats, _ensure
+            before = {r[0] for r in conn.execute("SELECT category_pk FROM categories")}
+            main_pk, sub_pk = _ensure(conn, Cats(conn), cat, sub)
+            added_cats.extend(r[1] for r in conn.execute("SELECT category_pk, name FROM categories") if r[0] not in before)
+            idx = Index(conn)
+            return main_pk, sub_pk
+
         def wallet(d):
             return idx.wallets.get(str(d.get("account") or ""))
 
@@ -110,12 +129,12 @@ def build(base: Path | str, out: Path | str, drafts: list[dict], dry_run: bool =
             if d.get("kind") == "transfer":
                 cat_pk, sub_pk = BALANCE_PK, None
             else:
-                got = idx.category(str(d.get("category") or ""), str(d.get("subcategory") or ""))
+                got = resolve(str(d.get("category") or ""), str(d.get("subcategory") or ""))
                 if got is None:
                     skipped.append({"id": d.get("id"), "title": d.get("title"),
                                     "reason": f"Cashew has no category '{d.get('category')}'"})
                     continue
-                cat_pk, sub_pk = got[0], (got[1] or None)
+                cat_pk, sub_pk = got
             if w is None:
                 skipped.append({"id": d.get("id"), "title": d.get("title"), "reason": f"Cashew has no account '{d.get('account')}'"})
                 continue
@@ -134,7 +153,7 @@ def build(base: Path | str, out: Path | str, drafts: list[dict], dry_run: bool =
         tmp.unlink(missing_ok=True)
         raise
     result = {"path": "" if dry_run else str(out), "base": base_count, "added": rows_added, "transfers": transfers,
-              "already": already, "skipped": skipped, "ids": ids, "dryRun": dry_run}
+              "already": already, "skipped": skipped, "ids": ids, "dryRun": dry_run, "addedCategories": added_cats}
     if dry_run or rows_added == 0:
         tmp.unlink(missing_ok=True)
         result["path"] = ""
