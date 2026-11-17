@@ -123,8 +123,12 @@ Panel {
   // section header's count, the same way untrackedCount drives RECENT's.
   readonly property var receiptList: Model.receiptsSorted(store.receipts)
   // The RECEIPTS list folded away (its header and count stay).
-  property bool receiptsCollapsed: false
-  property bool recurringCollapsed: true       // the RECURRING section (Cashew's recurring series) starts folded
+  // The tab open under the chip line of RECENT: "" | "recurring" | "receipts" (saved in the filter file)
+  property string drawerTab: ""
+  onDrawerTabChanged: if (root.filterRestored) filterSaveTimer.restart()
+  readonly property var recurringChip: Model.recurringChip(store.recurring)
+  readonly property var receiptsChip: Model.receiptsChip(root.receiptList)
+  readonly property var cashewControl: Model.cashewControl(root.cashewSync, cashewSyncProc.running)
   property bool recurringShowEnded: false
   readonly property var recurringSummary: Model.recurringSummary(store.recurring)
   readonly property int receiptsToLink: receiptList.filter(function (r) { return r.state === "unmatched" }).length
@@ -145,7 +149,6 @@ Panel {
   // each transaction's own note icon).
   property bool showFiled: false
   readonly property int receiptsFiledCount: receiptList.filter(function (r) { return r.state !== "unmatched" }).length
-  readonly property bool receiptsSectionShown: receiptList.length > 0 && (receiptsToLink > 0 || showFiled)
   readonly property var visibleReceipts: {
     var pending = receiptList.filter(function (r) { return r.state === "unmatched" })
     var filed = showFiled ? receiptList.filter(function (r) { return r.state !== "unmatched" }) : []
@@ -318,7 +321,7 @@ Panel {
     if (root.transactions.length === 0) return
     root.filterRestored = true
     var restored = Model.restoreFilter(root.filterFileText, root.accountOptions)
-    root.filterSavedJson = Model.serializeFilter(restored)
+    root.filterSavedJson = Model.serializeFilter(restored, root.drawerTab)
     // Keep what the user typed or picked while the file was loading.
     restored.q = root.filter.q
     restored.month = root.filter.month
@@ -349,7 +352,7 @@ Panel {
   function flushFilterSave() {
     filterSaveTimer.stop()
     if (!root.filterRestored) return
-    var json = Model.serializeFilter(root.filter)
+    var json = Model.serializeFilter(root.filter, root.drawerTab)
     if (json === root.filterSavedJson) return
     root.filterSavedJson = json
     filterFile.setText(json + "\n")
@@ -361,6 +364,7 @@ Panel {
     printErrors: false
     onLoaded: {
       root.filterFileText = text() || ""
+      root.drawerTab = Model.drawerRestore(root.filterFileText)
       if (root.filterFileText === "") root.filterRestored = true
       else root.restoreSavedFilter()
     }
@@ -3411,383 +3415,26 @@ Panel {
 
         PanelSeparator { visible: root.tab === "bank" && root.cardOverviewList.length > 0; foreground: root.foreground }
 
-        // RECURRING: the recurring transactions set in Cashew (read only, txdb/cashew_recurring.py), each with
-        // its state this cycle: paid (a bank row within 4 days of the due date), due, or not seen in the bank.
-        Item {
-          visible: root.tab === "bank" && store.recurring.length > 0
-          width: parent.width
-          height: Math.max(recurringHeader.implicitHeight, Style.space(24))
-          PanelActionButton {
-            id: recurringFold
-            size: Style.space(22)
-            anchors.left: parent.left
-            anchors.leftMargin: Style.spacing.rowPaddingX
-            anchors.verticalCenter: parent.verticalCenter
-            iconText: root.recurringCollapsed ? "▸" : "▾"
-            tooltipText: root.recurringCollapsed ? "Show the recurring payments from Cashew" : "Fold them away"
-            foreground: Qt.darker(root.foreground, 1.4)
-            hoverColor: Color.accent
-            focusable: true
-            onClicked: root.recurringCollapsed = !root.recurringCollapsed
-          }
-          PanelSectionHeader {
-            id: recurringHeader
-            anchors.left: recurringFold.right
-            anchors.leftMargin: Style.space(2)
-            anchors.verticalCenter: parent.verticalCenter
-            text: "RECURRING  ·  " + root.recurringSummary.text
-            foreground: root.foreground
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.recurringCollapsed = !root.recurringCollapsed
-            }
-          }
-        }
-        Column {
-          visible: root.tab === "bank" && store.recurring.length > 0 && !root.recurringCollapsed
-          width: parent.width
-          spacing: Style.space(2)
-          Repeater {
-            model: store.recurring.filter(function (s) { return s.active || root.recurringShowEnded })
-            delegate: Item {
-              id: recRow
-              required property var modelData
-              readonly property var st: Model.recurringStateText(recRow.modelData)
-              width: parent.width
-              height: Style.space(40)
-              opacity: recRow.modelData.active ? 1 : 0.55
-              Column {
-                anchors { left: parent.left; right: recRight.left; leftMargin: Style.spacing.rowPaddingX + Style.space(24); rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
-                spacing: Style.space(1)
-                Text {
-                  width: parent.width
-                  elide: Text.ElideRight
-                  textFormat: Text.PlainText
-                  text: recRow.modelData.title
-                  color: root.foreground
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                }
-                Text {
-                  width: parent.width
-                  elide: Text.ElideRight
-                  textFormat: Text.PlainText
-                  text: recRow.modelData.account + "  ·  " + Model.recurringEvery(recRow.modelData)
-                    + (recRow.modelData.active ? "  ·  next " + Model.formatDate(recRow.modelData.next) : "")
-                  color: Qt.darker(root.foreground, 1.4)
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                }
-              }
-              Column {
-                id: recRight
-                anchors { right: parent.right; rightMargin: Style.spacing.rowPaddingX; verticalCenter: parent.verticalCenter }
-                spacing: Style.space(1)
-                Text {
-                  anchors.right: parent.right
-                  textFormat: Text.PlainText
-                  text: Model.formatAmount({ amount: Number(recRow.modelData.amount), currency: "INR" })
-                  color: Number(recRow.modelData.amount) < 0 ? root.foreground : root.creditColor
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                }
-                Text {
-                  anchors.right: parent.right
-                  textFormat: Text.PlainText
-                  text: recRow.st.text
-                  color: recRow.st.tone === "credit" ? root.creditColor : (recRow.st.tone === "pending" ? root.pendingColor : Qt.darker(root.foreground, 1.4))
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                }
-              }
-            }
-          }
-          Text {
-            visible: root.recurringSummary.ended > 0
-            x: Style.spacing.rowPaddingX + Style.space(24)
-            height: Style.space(24)
-            verticalAlignment: Text.AlignVCenter
-            textFormat: Text.PlainText
-            text: root.recurringShowEnded ? "Hide the ended ones" : "Ended (" + root.recurringSummary.ended + ")"
-            color: recEndedMouse.containsMouse ? Color.accent : Qt.darker(root.foreground, 1.4)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            MouseArea {
-              id: recEndedMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.recurringShowEnded = !root.recurringShowEnded
-            }
-          }
-        }
-        PanelSeparator { visible: root.tab === "bank" && store.recurring.length > 0; foreground: root.foreground }
-
-        // RECEIPTS: photographed bills, stitched to the transaction that
-        // paid for them. Unmatched ones are the action queue (BILLS is what
-        // I owe, RECEIPTS is what I bought and haven't filed), so it sits
-        // between BILLS and RECENT's raw ledger. Shares its row with the
-        // import button, the way BILLS shares with its totals.
-        Item {
-          visible: root.tab === "bank" && root.receiptsSectionShown
-          width: parent.width
-          height: Math.max(receiptsHeader.implicitHeight, receiptsTools.implicitHeight)
-
-          // Fold / unfold the whole list: the chevron, or the header text.
-          PanelActionButton {
-            id: receiptsFold
-            size: Style.space(22)
-            anchors.left: parent.left
-            anchors.leftMargin: Style.spacing.rowPaddingX
-            anchors.verticalCenter: parent.verticalCenter
-            iconText: root.receiptsCollapsed ? "▸" : "▾"
-            tooltipText: root.receiptsCollapsed ? "Show the receipts" : "Fold the receipts away"
-            foreground: Qt.darker(root.foreground, 1.4)
-            hoverColor: Color.accent
-            focusable: true
-            Keys.onDownPressed: root.focusNext(receiptsFold, true)
-            Keys.onUpPressed: root.focusNext(receiptsFold, false)
-            onClicked: root.receiptsCollapsed = !root.receiptsCollapsed
-          }
-
-          PanelSectionHeader {
-            id: receiptsHeader
-            anchors.left: receiptsFold.right
-            anchors.leftMargin: Style.space(2)
-            anchors.verticalCenter: parent.verticalCenter
-            text: root.receiptsToLink > 0
-              ? ("RECEIPTS  ·  " + root.receiptsToLink + " TO LINK" + (root.showFiled ? "  ·  " + root.receiptsFiledCount + " LINKED" : ""))
-              : ("LINKED RECEIPTS  ·  " + root.receiptsFiledCount)
-            foreground: root.foreground
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.receiptsCollapsed = !root.receiptsCollapsed
-            }
-          }
-
-          Row {
-            id: receiptsTools
-            anchors.right: parent.right
-            anchors.rightMargin: Style.spacing.rowPaddingX
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(4)
-
-            PanelActionButton {
-              id: filedToggleBtn
-              size: Style.space(24)
-              visible: root.receiptsFiledCount > 0
-              iconText: "󰎞"
-              tooltipText: root.showFiled ? "Hide the linked bills" : "Show the linked bills (" + root.receiptsFiledCount + ")"
-              foreground: root.showFiled ? Color.accent : root.foreground
-              hoverColor: Color.accent
-              focusable: true
-              Keys.onDownPressed: root.focusNext(filedToggleBtn, true)
-              Keys.onUpPressed: root.focusNext(filedToggleBtn, false)
-              onClicked: root.showFiled = !root.showFiled
-            }
-
-            PanelActionButton {
-              id: importReceiptsBtn
-              size: Style.space(24)
-              iconText: receiptImportProc.running ? "…" : "+"
-              tooltipText: "Import new photos from " + root.receiptsDir
-              foreground: root.foreground
-              hoverColor: Color.accent
-              focusable: true
-              enabled: !receiptImportProc.running
-              Keys.onDownPressed: root.focusNext(importReceiptsBtn, true)
-              Keys.onUpPressed: root.focusNext(importReceiptsBtn, false)
-              onClicked: { receiptImportOutput.text = ""; receiptImportProc.running = true }
-            }
-          }
-        }
-
-        // The scan's own progress, live: which photo it's on and the
-        // model's reply as it streams - selectable/copyable, same
-        // reasoning as the per-receipt reparse output below.
-        StreamBox {
-          visible: root.tab === "bank" && (receiptImportProc.running || receiptImportOutput.text.length > 0)
-          width: parent.width - 2 * Style.spacing.rowPaddingX
-          x: Style.spacing.rowPaddingX
-          boxHeight: Style.space(150)
-          text: receiptImportOutput.text
-          closable: !receiptImportProc.running
-          onClosed: receiptImportOutput.text = ""
-        }
-
-        Column {
-          id: receiptsList
-          visible: root.tab === "bank" && root.receiptsSectionShown && (!root.receiptsCollapsed || height > 0)
-          width: parent.width
-          spacing: Style.spacing.xxs
-          clip: true
-          height: root.receiptsCollapsed ? 0 : implicitHeight
-          opacity: root.receiptsCollapsed ? 0 : 1
-          Behavior on height { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
-          Behavior on opacity { NumberAnimation { duration: 150 } }
-
-          Repeater {
-            model: root.visibleReceipts
-            delegate: ReceiptRow {
-              id: receiptRowDelegate
-              required property var modelData
-              width: parent.width
-              receipt: receiptRowDelegate.modelData
-              Keys.onUpPressed: root.focusNext(receiptRowDelegate, false)
-              Keys.onDownPressed: root.focusNext(receiptRowDelegate, true)
-            }
-          }
-        }
-
-        PanelSeparator { visible: root.tab === "bank" && root.receiptsSectionShown; foreground: root.foreground }
-
-        // RECENT's own header shares its row with the action buttons
-        // (right-aligned) instead of sitting on a separate row above it — saves a full row of vertical space,
-        // and a separator between them would've been redundant with the
-        // one above this Item anyway.
+        // RECENT: the title line, then the chip line (the Recurring and Receipts tabs and the Cashew control),
+        // then the drawer of the open tab (one at a time), then the transactions.
         Item {
           visible: root.tab === "bank"
           width: parent.width
-          height: Math.max(recentHeader.implicitHeight, filterRow.implicitHeight, Style.space(24))
-
+          height: Math.max(recentHeader.implicitHeight, Style.space(26))
           PanelSectionHeader {
             id: recentHeader
             anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.rowPaddingX
             anchors.verticalCenter: parent.verticalCenter
             text: root.untrackedCount > 0 ? ("RECENT  ·  " + root.untrackedCount + " TO TRACK") : "RECENT"
             foreground: root.foreground
           }
 
           Row {
-            id: filterRow
             anchors.right: parent.right
             anchors.rightMargin: Style.spacing.rowPaddingX
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(4)
-
-            // The sync badge: how many rows wait in the Cashew sync file (txdb cashew-sync). A click copies the
-            // file path and opens Cashew for the import; with nothing waiting it checks again.
-            Rectangle {
-              id: cashewSyncBadge
-              anchors.verticalCenter: parent.verticalCenter
-              height: Style.space(24)
-              width: syncRow.implicitWidth + Style.space(14)
-              radius: Style.space(8)
-              readonly property bool waiting: root.cashewSync.pending > 0 || !!root.cashewSync.recatWaiting
-              color: syncMouse.containsMouse ? Util.alpha(root.foreground, 0.12) : Util.alpha(waiting ? root.pendingColor : root.foreground, waiting ? 0.16 : 0.06)
-              Row {
-                id: syncRow
-                anchors.centerIn: parent
-                spacing: Style.space(4)
-                Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  textFormat: Text.PlainText
-                  text: root.cashewSync.error ? "!" : (cashewSyncBadge.waiting ? "󰓦" : (root.cashewSync.pending === 0 ? "󰄬" : "󰓦"))
-                  color: root.cashewSync.error ? root.debitColor : (cashewSyncBadge.waiting ? root.pendingColor : root.creditColor)
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                  width: Style.space(16)
-                  height: Style.space(16)
-                  horizontalAlignment: Text.AlignHCenter
-                  verticalAlignment: Text.AlignVCenter
-                  // spins while a check runs and always finishes its turn, so the icon is never left tilted
-                  RotationAnimation on rotation { running: cashewSyncProc.running; from: 0; to: 360; duration: 900; loops: Animation.Infinite; alwaysRunToEnd: true }
-                }
-                Text {
-                  visible: cashewSyncBadge.waiting
-                  anchors.verticalCenter: parent.verticalCenter
-                  textFormat: Text.PlainText
-                  text: root.cashewSync.recatWaiting ? "fix" : String(root.cashewSync.pending)
-                  color: root.pendingColor
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                }
-              }
-              MouseArea {
-                id: syncMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.cashewSyncClick()
-              }
-              ToolTip.visible: syncMouse.containsMouse
-              ToolTip.text: root.cashewSync.recatWaiting ? "The category fix waits for its import: click to copy its path and open Cashew. New rows sync after it."
-                : root.cashewSync.error ? "Sync: " + root.cashewSync.error
-                : cashewSyncBadge.waiting ? "The sync file holds " + (root.cashewSync.rows || 0) + " new rows"
-                  + (root.cashewSync.transfers > 0 ? " (" + root.cashewSync.transfers + " transfers)" : "")
-                  + ", " + (root.cashewSync.notes || 0) + " notes for rows Cashew has, "
-                  + (root.cashewSync.corrections || []).length + " balance corrections"
-                  + ". Click: copy its path and open Cashew to import it." + (root.cashewSync.waitingCategory > 0 ? "\n" + root.cashewSync.waitingCategory + " more need a category first." : "")
-                : root.cashewSync.pending === 0 ? "Cashew is up to date" + (root.cashewSync.waitingCategory > 0 ? " (" + root.cashewSync.waitingCategory + " rows need a category)" : "") + ". Click to check again."
-                : "Checking…"
-              ToolTip.delay: 300
-            }
-
-            // Opens the Cashew verify window. Stays visible (just dimmed, with an
-            // explanatory tooltip) even once nothing is untracked, instead of
-            // vanishing outright — a count of 0 used to mean the whole AI
-            // categorisation / link-copy feature disappeared from the bar with
-            // no way back in (audit: "invisible-entry-point problem").
-            BorderSurface {
-              id: cashewBtn
-              anchors.verticalCenter: parent.verticalCenter
-              height: Style.space(24)
-              width: cashewBtnText.implicitWidth + Style.space(18)
-              radius: Style.space(8)
-              readonly property bool _hot: cashewBtnMouse.containsMouse || cashewBtn.activeFocus
-              opacity: cashewBtnMouse.pressed ? 0.7 : (root.cashewCount > 0 ? 1 : 0.55)
-              color: Util.alpha(Color.accent, cashewBtn._hot ? 0.26 : (root.cashewCount > 0 ? 0.16 : 0.08))
-              borderSpec: cashewBtn.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
-
-              activeFocusOnTab: cashewBtn.visible
-              Keys.onReturnPressed: root.cashewOpen = true
-              Keys.onEnterPressed: root.cashewOpen = true
-              Keys.onSpacePressed: root.cashewOpen = true
-              Keys.onDownPressed: root.focusNext(cashewBtn, true)
-              Keys.onUpPressed: root.focusNext(cashewBtn, false)
-
-              Text {
-                id: cashewBtnText
-                anchors.centerIn: parent
-                textFormat: Text.PlainText
-                text: "Cashew"
-                color: Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75))
-                font.family: Style.font.family
-                font.pixelSize: Style.font.caption
-                font.bold: true
-              }
-              MouseArea {
-                id: cashewBtnMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.cashewOpen = true
-              }
-              ToolTip.visible: cashewBtnMouse.containsMouse
-              ToolTip.text: root.cashewCount > 0 ? "Send " + root.cashewCount + " transactions to Cashew" : "All caught up. Open to review categories, AI guesses, or past links."
-              ToolTip.delay: 400
-            }
-
-            // The linked bills live out of sight; this brings them up. It shows here only
-            // while there is no RECEIPTS section: that section has the same button.
-            PanelActionButton {
-              id: filedToggleRecentBtn
-              size: Style.space(24)
-              visible: root.receiptsFiledCount > 0 && !root.receiptsSectionShown
-              iconText: "󰎞"
-              tooltipText: root.showFiled ? "Hide the linked bills" : "Linked bills (" + root.receiptsFiledCount + ")"
-              foreground: root.showFiled ? Color.accent : root.foreground
-              hoverColor: Color.accent
-              focusable: true
-              Keys.onDownPressed: root.focusNext(filedToggleRecentBtn, true)
-              Keys.onUpPressed: root.focusNext(filedToggleRecentBtn, false)
-              onClicked: root.showFiled = !root.showFiled
-            }
-
             PanelActionButton {
               id: selectToggleBtn
               size: Style.space(24)
@@ -3809,6 +3456,388 @@ Panel {
             }
           }
         }
+
+        // The chip line: [Recurring n •] [Receipts n]   ...   [sync │ Cashew]
+        Item {
+          id: chipLine
+          visible: root.tab === "bank"
+          width: parent.width
+          height: Style.space(28)
+          Row {
+            id: drawerChips
+            anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.rowPaddingX
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(6)
+            Repeater {
+              model: [
+                { tab: "recurring", chip: root.recurringChip },
+                { tab: "receipts", chip: root.receiptsChip }
+              ]
+              delegate: BorderSurface {
+                id: tabChip2
+                required property var modelData
+                readonly property bool open: root.drawerTab === tabChip2.modelData.tab
+                readonly property bool _hot: tabChipMouse.containsMouse || tabChip2.activeFocus
+                height: Style.space(24)
+                width: tabChipRow.implicitWidth + Style.space(16)
+                radius: Style.space(8)
+                opacity: tabChipMouse.pressed ? 0.7 : (tabChip2.modelData.chip.dim && !tabChip2.open ? 0.55 : 1)
+                color: tabChip2.open ? Util.alpha(Color.accent, 0.26) : Util.alpha(root.foreground, tabChip2._hot ? 0.12 : 0.06)
+                borderSpec: tabChip2.activeFocus || tabChip2.open ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+                activeFocusOnTab: tabChip2.visible
+                function press() { root.drawerTab = Model.drawerToggle(root.drawerTab, tabChip2.modelData.tab) }
+                Keys.onReturnPressed: tabChip2.press()
+                Keys.onEnterPressed: tabChip2.press()
+                Keys.onSpacePressed: tabChip2.press()
+                Keys.onDownPressed: root.focusNext(tabChip2, true)
+                Keys.onUpPressed: root.focusNext(tabChip2, false)
+                Row {
+                  id: tabChipRow
+                  anchors.centerIn: parent
+                  spacing: Style.space(5)
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
+                    text: tabChip2.modelData.chip.label
+                    color: tabChip2.open ? root.foreground : Qt.darker(root.foreground, 1.15)
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+                  Text {
+                    visible: tabChip2.modelData.chip.count > 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
+                    text: String(tabChip2.modelData.chip.count)
+                    color: Qt.darker(root.foreground, 1.4)
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                  Rectangle {
+                    visible: !!tabChip2.modelData.chip.late
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(6)
+                    height: width
+                    radius: width / 2
+                    color: root.pendingColor
+                  }
+                }
+                MouseArea {
+                  id: tabChipMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: tabChip2.press()
+                }
+                ToolTip.visible: tabChipMouse.containsMouse
+                ToolTip.text: tabChip2.modelData.chip.tooltip
+                ToolTip.delay: 400
+              }
+            }
+          }
+
+          // The Cashew control: the sync state (left part) and "Cashew" (right part) in one chip.
+          BorderSurface {
+            id: cashewCtl
+            anchors.right: parent.right
+            anchors.rightMargin: Style.spacing.rowPaddingX
+            anchors.verticalCenter: parent.verticalCenter
+            height: Style.space(24)
+            width: cashewCtlRow.implicitWidth
+            radius: Style.space(8)
+            readonly property var st: root.cashewControl
+            readonly property color toneColor: st.tone === "error" ? root.debitColor
+              : st.tone === "pending" ? root.pendingColor : (st.tone === "ok" ? root.creditColor : root.foreground)
+            color: Util.alpha(st.tone === "pending" ? root.pendingColor : Color.accent, st.tone === "pending" ? 0.16 : 0.12)
+            borderSpec: cashewSyncSeg.activeFocus || cashewOpenSeg.activeFocus ? Border.controlSpec("focus", root.foreground, Color.accent) : Border.none()
+            Row {
+              id: cashewCtlRow
+              height: parent.height
+              Item {
+                id: cashewSyncSeg
+                width: cashewSyncRow.implicitWidth + Style.space(14)
+                height: parent.height
+                activeFocusOnTab: cashewCtl.visible
+                Keys.onReturnPressed: root.cashewSyncClick()
+                Keys.onEnterPressed: root.cashewSyncClick()
+                Keys.onSpacePressed: root.cashewSyncClick()
+                Keys.onDownPressed: root.focusNext(cashewSyncSeg, true)
+                Keys.onUpPressed: root.focusNext(cashewSyncSeg, false)
+                Rectangle { anchors.fill: parent; radius: Style.space(8); color: Util.alpha(root.foreground, cashewSyncMouse.containsMouse ? 0.10 : 0) }
+                Row {
+                  id: cashewSyncRow
+                  anchors.centerIn: parent
+                  spacing: Style.space(4)
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(14)
+                    height: Style.space(14)
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    textFormat: Text.PlainText
+                    text: cashewCtl.st.glyph
+                    color: cashewCtl.toneColor
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                    RotationAnimation on rotation { running: cashewCtl.st.spin; from: 0; to: 360; duration: 900; loops: Animation.Infinite; alwaysRunToEnd: true }
+                  }
+                  Text {
+                    visible: cashewCtl.st.badge !== ""
+                    anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
+                    text: cashewCtl.st.badge
+                    color: cashewCtl.toneColor
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+                }
+                MouseArea {
+                  id: cashewSyncMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.cashewSyncClick()
+                }
+                ToolTip.visible: cashewSyncMouse.containsMouse
+                ToolTip.text: cashewCtl.st.tooltip
+                ToolTip.delay: 300
+              }
+              Rectangle {
+                anchors.verticalCenter: parent.verticalCenter
+                width: 1
+                height: Style.space(14)
+                color: Util.alpha(root.foreground, 0.18)
+              }
+              Item {
+                id: cashewOpenSeg
+                width: cashewBtnText.implicitWidth + Style.space(18)
+                height: parent.height
+                activeFocusOnTab: cashewCtl.visible
+                Keys.onReturnPressed: root.cashewOpen = true
+                Keys.onEnterPressed: root.cashewOpen = true
+                Keys.onSpacePressed: root.cashewOpen = true
+                Keys.onDownPressed: root.focusNext(cashewOpenSeg, true)
+                Keys.onUpPressed: root.focusNext(cashewOpenSeg, false)
+                Rectangle { anchors.fill: parent; radius: Style.space(8); color: Util.alpha(root.foreground, cashewBtnMouse.containsMouse ? 0.10 : 0) }
+                Text {
+                  id: cashewBtnText
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: "Cashew"
+                  color: Qt.tint(Color.accent, Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.75))
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+                MouseArea {
+                  id: cashewBtnMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.cashewOpen = true
+                }
+                ToolTip.visible: cashewBtnMouse.containsMouse
+                ToolTip.text: Model.cashewOpenTooltip(root.cashewCount)
+                ToolTip.delay: 400
+              }
+            }
+          }
+        }
+
+        // The drawer: the open tab's tools, its empty text and its rows.
+        Column {
+          id: drawer
+          visible: root.tab === "bank" && root.drawerTab !== ""
+          width: parent.width
+          spacing: Style.spacing.xxs
+          Item {
+            id: drawerTools
+            width: parent.width
+            height: Style.space(26)
+            Text {
+              anchors.left: parent.left
+              anchors.leftMargin: Style.spacing.rowPaddingX
+              anchors.right: drawerToolRow.left
+              anchors.rightMargin: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              elide: Text.ElideRight
+              textFormat: Text.PlainText
+              text: root.drawerTab === "recurring" ? root.recurringSummary.text
+                : (root.receiptsToLink + " TO LINK" + (root.receiptsFiledCount > 0 ? "  ·  " + root.receiptsFiledCount + " LINKED" : ""))
+              color: Qt.darker(root.foreground, 1.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 0.6
+            }
+            Row {
+              id: drawerToolRow
+              anchors.right: parent.right
+              anchors.rightMargin: Style.spacing.rowPaddingX
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(4)
+              Row {
+                visible: root.drawerTab === "receipts"
+                spacing: Style.space(4)
+                PanelActionButton {
+                  id: filedToggleBtn
+                  size: Style.space(24)
+                  visible: root.receiptsFiledCount > 0
+                  iconText: "󰎞"
+                  tooltipText: root.showFiled ? "Hide the linked bills" : "Show the linked bills (" + root.receiptsFiledCount + ")"
+                  foreground: root.showFiled ? Color.accent : root.foreground
+                  hoverColor: Color.accent
+                  focusable: true
+                  Keys.onDownPressed: root.focusNext(filedToggleBtn, true)
+                  Keys.onUpPressed: root.focusNext(filedToggleBtn, false)
+                  onClicked: root.showFiled = !root.showFiled
+                }
+
+                PanelActionButton {
+                  id: importReceiptsBtn
+                  size: Style.space(24)
+                  iconText: receiptImportProc.running ? "…" : "+"
+                  tooltipText: "Import new photos from " + root.receiptsDir
+                  foreground: root.foreground
+                  hoverColor: Color.accent
+                  focusable: true
+                  enabled: !receiptImportProc.running
+                  Keys.onDownPressed: root.focusNext(importReceiptsBtn, true)
+                  Keys.onUpPressed: root.focusNext(importReceiptsBtn, false)
+                  onClicked: { receiptImportOutput.text = ""; receiptImportProc.running = true }
+                }
+              }
+              Text {
+                id: recEndedLink
+                visible: root.drawerTab === "recurring" && root.recurringSummary.ended > 0
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: root.recurringShowEnded ? "Hide ended" : "Ended (" + root.recurringSummary.ended + ")"
+                color: recEndedMouse.containsMouse || recEndedLink.activeFocus ? Color.accent : Qt.darker(root.foreground, 1.4)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                activeFocusOnTab: visible
+                Keys.onReturnPressed: root.recurringShowEnded = !root.recurringShowEnded
+                Keys.onSpacePressed: root.recurringShowEnded = !root.recurringShowEnded
+                Keys.onDownPressed: root.focusNext(recEndedLink, true)
+                Keys.onUpPressed: root.focusNext(recEndedLink, false)
+                MouseArea {
+                  id: recEndedMouse
+                  anchors.fill: parent
+                  anchors.margins: -Style.space(4)
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.recurringShowEnded = !root.recurringShowEnded
+                }
+              }
+            }
+          }
+          StreamBox {
+            visible: (root.drawerTab === "receipts" || receiptImportProc.running) && (receiptImportProc.running || receiptImportOutput.text.length > 0)
+            width: parent.width - 2 * Style.spacing.rowPaddingX
+            x: Style.spacing.rowPaddingX
+            boxHeight: Style.space(150)
+            text: receiptImportOutput.text
+            closable: !receiptImportProc.running
+            onClosed: receiptImportOutput.text = ""
+          }
+          Text {
+            readonly property string msg: Model.drawerEmptyText(root.drawerTab, {
+              toLink: root.receiptsToLink, filed: root.receiptsFiledCount, showFiled: root.showFiled,
+              series: store.recurring.length, active: root.recurringChip.count, showEnded: root.recurringShowEnded })
+            visible: msg !== ""
+            x: Style.spacing.rowPaddingX
+            width: parent.width - 2 * Style.spacing.rowPaddingX
+            height: Style.space(32)
+            verticalAlignment: Text.AlignVCenter
+            textFormat: Text.PlainText
+            text: msg
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+          // RECURRING rows: the recurring transactions set in Cashew (read only, txdb/cashew_recurring.py)
+          Column {
+            id: recurringList
+            visible: root.drawerTab === "recurring"
+            width: parent.width
+            spacing: Style.spacing.xxs
+            Repeater {
+              model: store.recurring.filter(function (s) { return s.active || root.recurringShowEnded })
+              delegate: Item {
+                id: recRow
+                required property var modelData
+                readonly property var st: Model.recurringStateText(recRow.modelData)
+                width: parent.width
+                height: Style.space(40)
+                opacity: recRow.modelData.active ? 1 : 0.55
+                Column {
+                  anchors { left: parent.left; right: recRight.left; leftMargin: Style.spacing.rowPaddingX + Style.space(24); rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
+                  spacing: Style.space(1)
+                  Text {
+                    width: parent.width
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: recRow.modelData.title
+                    color: root.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                  }
+                  Text {
+                    width: parent.width
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: recRow.modelData.account + "  ·  " + Model.recurringEvery(recRow.modelData)
+                      + (recRow.modelData.active ? "  ·  next " + Model.formatDate(recRow.modelData.next) : "")
+                    color: Qt.darker(root.foreground, 1.4)
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+                Column {
+                  id: recRight
+                  anchors { right: parent.right; rightMargin: Style.spacing.rowPaddingX; verticalCenter: parent.verticalCenter }
+                  spacing: Style.space(1)
+                  Text {
+                    anchors.right: parent.right
+                    textFormat: Text.PlainText
+                    text: Model.formatAmount({ amount: Number(recRow.modelData.amount), currency: "INR" })
+                    color: Number(recRow.modelData.amount) < 0 ? root.foreground : root.creditColor
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                  }
+                  Text {
+                    anchors.right: parent.right
+                    textFormat: Text.PlainText
+                    text: recRow.st.text
+                    color: recRow.st.tone === "credit" ? root.creditColor : (recRow.st.tone === "pending" ? root.pendingColor : Qt.darker(root.foreground, 1.4))
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+              }
+            }
+          }
+          // RECEIPTS rows: photographed bills, stitched to the transaction that paid for them
+          Column {
+            id: receiptsList
+            visible: root.drawerTab === "receipts"
+            width: parent.width
+            spacing: Style.spacing.xxs
+            Repeater {
+              model: root.visibleReceipts
+              delegate: ReceiptRow {
+                id: receiptRowDelegate
+                required property var modelData
+                width: parent.width
+                receipt: receiptRowDelegate.modelData
+              }
+            }
+          }
+        }
+        PanelSeparator { visible: drawer.visible; foreground: root.foreground }
 
         // Selection controls get their own line under RECENT's header, so a
         // long label wraps instead of running into the section title.

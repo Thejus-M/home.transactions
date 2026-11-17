@@ -1195,6 +1195,82 @@ function recurringSummary(list) {
            text: active + " ACTIVE" + (perMonth > 0 ? "  ·  ₹" + formatGrouped(Math.round(perMonth)) + " / MONTH" : "") }
 }
 
+// ---- the chip line of RECENT: Recurring / Receipts tabs and the Cashew control
+
+// The tab after a press: the pressed one, or "" (closed) when it was already open.
+function drawerToggle(current, pressed) {
+  if (pressed !== "recurring" && pressed !== "receipts") return ""
+  return pressed === current ? "" : pressed
+}
+
+// The saved tab from the filter file's text: "recurring" | "receipts" | "".
+function drawerRestore(json) {
+  var d
+  try { d = JSON.parse(json) } catch (e) { return "" }
+  var v = d && typeof d === "object" ? d.drawer : ""
+  return v === "recurring" || v === "receipts" ? v : ""
+}
+
+// The Recurring chip: { label, count (active series), late (an active one not seen in the bank), dim, tooltip }.
+function recurringChip(list) {
+  var active = (list || []).filter(function (s) { return s.active })
+  var late = active.filter(function (s) { return s.state === "late" }).length
+  var sum = recurringSummary(list)
+  var tip = active.length === 0 ? "No recurring payments in Cashew" : sum.text.replace(/  ·  /g, " · ").toLowerCase()
+  if (late > 0) tip += " · " + late + " not seen in bank"
+  return { label: "Recurring", count: active.length, late: late > 0, lateCount: late, dim: active.length === 0, tooltip: tip }
+}
+
+// The Receipts chip: { label, count (to link), filed, dim, tooltip }.
+function receiptsChip(receipts) {
+  var toLink = 0, filed = 0
+  ;(receipts || []).forEach(function (r) { if (r.state === "unmatched") toLink++; else filed++ })
+  return { label: "Receipts", count: toLink, filed: filed, dim: toLink === 0,
+           tooltip: toLink + " to link" + (filed > 0 ? " · " + filed + " linked" : "") }
+}
+
+// The sync part of the Cashew control: { glyph, tone: "error"|"pending"|"ok"|"busy", badge, spin, tooltip }.
+// The tooltip texts are the ones the old sync badge had.
+function cashewControl(sync, running) {
+  var s = sync || {}
+  var corr = (s.corrections || []).length, wc = s.waitingCategory || 0
+  var r = { glyph: "\u{F04E6}", tone: "busy", badge: "", spin: !!running, tooltip: "Checking…" }
+  if (s.recatWaiting) {
+    r.tone = "pending"; r.badge = "fix"
+    r.tooltip = "The category fix waits for its import: click to copy its path and open Cashew. New rows sync after it."
+  } else if (s.error) {
+    r.glyph = "!"; r.tone = "error"; r.tooltip = "Sync: " + s.error
+  } else if (s.pending > 0) {
+    r.tone = "pending"; r.badge = String(s.pending)
+    r.tooltip = "The sync file holds " + (s.rows || 0) + " new rows"
+      + (s.transfers > 0 ? " (" + s.transfers + " transfers)" : "")
+      + ", " + (s.notes || 0) + " notes for rows Cashew has, " + corr + " balance corrections"
+      + ". Click: copy its path and open Cashew to import it." + (wc > 0 ? "\n" + wc + " more need a category first." : "")
+  } else if (s.pending === 0) {
+    r.glyph = "\u{F012C}"; r.tone = "ok"
+    r.tooltip = "Cashew is up to date" + (wc > 0 ? " (" + wc + " rows need a category)" : "") + ". Click to check again."
+  }
+  return r
+}
+
+function cashewOpenTooltip(count) {
+  return count > 0 ? "Send " + count + " transactions to Cashew" : "All caught up. Open to review categories, AI guesses, or past links."
+}
+
+// The text of an empty drawer, or "". counts: { toLink, filed, showFiled, series, active, showEnded }.
+function drawerEmptyText(tab, c) {
+  var k = c || {}
+  if (tab === "receipts") {
+    if ((k.toLink || 0) > 0 || (k.showFiled && (k.filed || 0) > 0)) return ""
+    return "No receipts to link" + ((k.filed || 0) > 0 && !k.showFiled ? " · " + k.filed + " linked hidden" : "")
+  }
+  if (tab === "recurring") {
+    if (!(k.series > 0)) return "No recurring payments in Cashew"
+    if (!(k.active > 0) && !k.showEnded) return "No active recurring payments"
+  }
+  return ""
+}
+
 // The caption of the note card: "NOTE" for a note written in the widget, "REMARK" when the UPI remark stands in.
 function peekNoteLabel(userNote, remark) {
   return String(userNote || "").trim() !== "" ? "NOTE" : (String(remark || "").trim() !== "" ? "REMARK" : "NOTE")
@@ -2245,11 +2321,13 @@ function parseAmountInput(s) {
 }
 
 // What is saved between restarts: never the search text or the month.
-function serializeFilter(f) {
-  return JSON.stringify({
+function serializeFilter(f, drawer) {
+  var o = {
     accounts: f.accounts.slice().sort(), dir: f.dir, tracked: f.tracked,
     transfers: f.transfers, bill: f.bill, refund: f.refund, min: f.min, max: f.max
-  })
+  }
+  if (drawer === "recurring" || drawer === "receipts") o.drawer = drawer   // the open tab under the chips
+  return JSON.stringify(o)
 }
 
 function restoreFilter(json, options) {
