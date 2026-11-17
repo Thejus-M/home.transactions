@@ -1,5 +1,11 @@
 [
  {
+  "match": "^ust\\b|\\bust global\\b|-ust-|/ust/|\\bneft\\b.*\\bust\\b",
+  "category": "Salary",
+  "subcategory": "Monthly",
+  "sign": "credit"
+ },
+ {
   "match": "\\b(cred club|cred\\b|cc bill|ccbillpay|billpay\\.|credit card (bill|payment)|card bill)",
   "category": "Balance Correction",
   "subcategory": ""
