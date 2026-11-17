@@ -324,7 +324,7 @@ class CliTests(Base):
         self.state_path.write_text("{ not json")                       # corrupt state = empty state
         out = json.loads(self.cli("cashew-draft").stdout)
         self.assertEqual(set(out), {"categories", "accountNames", "drafts", "state", "dedupe"})
-        self.assertEqual(len(out["categories"]), 24)
+        self.assertEqual(len(out["categories"]), 26)
         self.assertEqual(out["state"], {"version": 1, "categories": {}, "accounts": {}})
         self.assertIn("HDFC ₹", out["accountNames"])
         self.assertEqual(set(out["drafts"][0]), {
@@ -433,16 +433,21 @@ class NoteTests(Base):
                          "for cc bills")                                                       # the remark again: once
 
     def test_the_hdfc_default_is_marked_so_the_ai_can_read_the_remark(self):
-        self.add(self.hdfc, row(1, "2026-11-16", -75.0, "UPI-ASHWIN K MURUKESH-*****SH-1@OKSBI-SBIN0070031-142148279983-BATMINTON"),
+        self.add(self.hdfc, row(1, "2026-11-16", -75.0, "UPI-ASHWIN K MURUKESH-*****SH-1@OKSBI-SBIN0070031-142148279983-LANTERN"),
                  row(2, "2026-11-16", -40.0, "UPI-SWIGGY-swiggy@icici-ICIC0000001-1-NA"))
         got = {x["merchant"][:12]: x for x in self.drafts()}
         bat = got["UPI-ASHWIN K"]
         self.assertEqual((bat["category"], bat["subcategory"]), ("Friend Settlement", "Split Paid"))
         self.assertEqual((bat.get("defaulted"), bat.get("askAi"), bat.get("remark"), bat["notes"]),
-                         (True, True, "BATMINTON", "BATMINTON"))
+                         (True, True, "LANTERN", "LANTERN"))
         sw = got["UPI-SWIGGY-s"]
         self.assertNotIn("defaulted", sw)                       # a rule matched: not a default
         self.assertNotIn("askAi", sw)                           # "NA" is no note
+
+    def test_a_sports_remark_is_its_own_category(self):
+        self.add(self.hdfc, row(1, "2026-11-16", -75.0, "UPI-ASHWIN K MURUKESH-*****SH-1@OKSBI-SBIN0070031-142148279983-BATMINTON"))
+        d = self.drafts()[0]
+        self.assertEqual((d["category"], d["subcategory"], d.get("categoryBy")), ("Fitness", "Sports", "note"))
 
     def test_a_note_decides_before_the_payee(self):
         merchant = "UPI-ASHWIN K MURUKESH-*****SH-1@OKSBI-SBIN0070031-142148279983-biryani"       # a Food Out rule word

@@ -73,12 +73,16 @@
   "name": "Housing",
   "type": "expense",
   "subcategories": [
-   "Rent"
+   "Rent",
+   "Repairs & Maintenance",
+   "Furnishing"
   ],
   "icon": "󰚡",
   "color": "#3F6B2D",
   "subIcons": {
-   "Rent": "󰷖"
+   "Rent": "󰷖",
+   "Repairs & Maintenance": "󰖷",
+   "Furnishing": "󰆐"
   }
  },
  {
@@ -86,13 +90,19 @@
   "type": "expense",
   "subcategories": [
    "Electricity",
-   "Mobile"
+   "Mobile",
+   "Internet",
+   "Gas",
+   "Water"
   ],
   "icon": "󱐌",
   "color": "#3D5A80",
   "subIcons": {
    "Electricity": "󱐌",
-   "Mobile": "󰷰"
+   "Mobile": "󰷰",
+   "Internet": "󰖩",
+   "Gas": "󰈸",
+   "Water": "󰖌"
   }
  },
  {
@@ -115,12 +125,22 @@
   "name": "Groceries",
   "type": "expense",
   "subcategories": [
-   "Provisions"
+   "Provisions",
+   "Vegetables & Fruits",
+   "Meat & Fish",
+   "Dairy & Bakery",
+   "Snacks & Drinks",
+   "Household Supplies"
   ],
   "icon": "󰄑",
   "color": "#2E6B34",
   "subIcons": {
-   "Provisions": "󱆁"
+   "Provisions": "󱆁",
+   "Vegetables & Fruits": "󰉛",
+   "Meat & Fish": "󰈺",
+   "Dairy & Bakery": "󰆅",
+   "Snacks & Drinks": "󰅶",
+   "Household Supplies": "󰃢"
   }
  },
  {
@@ -129,14 +149,20 @@
   "subcategories": [
    "Parking",
    "Petrol",
-   "Transit"
+   "Transit",
+   "Cab & Auto",
+   "Bus/Metro/Train",
+   "Tolls"
   ],
   "icon": "󰃧",
   "color": "#2F6A38",
   "subIcons": {
    "Parking": "󰰚",
    "Petrol": "󰺸",
-   "Transit": "󰔬"
+   "Transit": "󰔬",
+   "Cab & Auto": "󰄋",
+   "Bus/Metro/Train": "󰔬",
+   "Tolls": "󰎇"
   }
  },
  {
@@ -162,13 +188,17 @@
   "type": "expense",
   "subcategories": [
    "Doctor",
-   "Medicine"
+   "Medicine",
+   "Lab Tests",
+   "Insurance"
   ],
   "icon": "󰓙",
   "color": "#2A6B4A",
   "subIcons": {
    "Doctor": "󰿷",
-   "Medicine": "󰐂"
+   "Medicine": "󰐂",
+   "Lab Tests": "󰤑",
+   "Insurance": "󰒃"
   }
  },
  {
@@ -217,12 +247,14 @@
   "name": "Fitness",
   "type": "expense",
   "subcategories": [
-   "Gym"
+   "Gym",
+   "Sports"
   ],
   "icon": "󰇦",
   "color": "#3F6B2D",
   "subIcons": {
-   "Gym": "󰇦"
+   "Gym": "󰇦",
+   "Sports": "󰒸"
   }
  },
  {
@@ -232,7 +264,9 @@
    "Clothing",
    "Footwear",
    "Luxury",
-   "Others"
+   "Others",
+   "Electronics",
+   "Home & Kitchen"
   ],
   "icon": "󱇕",
   "color": "#A3154F",
@@ -240,7 +274,9 @@
    "Clothing": "󰔿",
    "Footwear": "󱗈",
    "Luxury": "󰮋",
-   "Others": "󰇘"
+   "Others": "󰇘",
+   "Electronics": "󰟀",
+   "Home & Kitchen": "󰛊"
   }
  },
  {
@@ -327,6 +363,42 @@
    "FD": "󰺀",
    "Mutual Funds": "󱕎",
    "Dividend": "󱢐"
+  }
+ },
+ {
+  "name": "Bank & Card Fees",
+  "type": "expense",
+  "subcategories": [
+   "Annual Fee",
+   "Interest & Late Fee",
+   "GST on Fees",
+   "Fuel Surcharge",
+   "Other Charges"
+  ],
+  "icon": "󰁰",
+  "color": "#7A3E48",
+  "subIcons": {
+   "Annual Fee": "󰃭",
+   "Interest & Late Fee": "󰏗",
+   "GST on Fees": "󰋽",
+   "Fuel Surcharge": "󰺸",
+   "Other Charges": "󰁰"
+  }
+ },
+ {
+  "name": "Loans & EMI",
+  "type": "expense",
+  "subcategories": [
+   "Principal",
+   "Interest",
+   "Fees & GST"
+  ],
+  "icon": "󰆦",
+  "color": "#6A4C93",
+  "subIcons": {
+   "Principal": "󰆦",
+   "Interest": "󰏗",
+   "Fees & GST": "󰋽"
   }
  },
  {

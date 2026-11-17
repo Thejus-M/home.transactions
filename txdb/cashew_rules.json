@@ -1,13 +1,121 @@
 [
  {
+  "match": "\\b(interest (for|on) emi|emi interest)",
+  "category": "Loans & EMI",
+  "subcategory": "Interest",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(emi|principal|principle for)\\b",
+  "category": "Loans & EMI",
+  "subcategory": "Principal",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(annual fee|membership fee|renewal fee)",
+  "category": "Bank & Card Fees",
+  "subcategory": "Annual Fee",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(debit interest|finance charge|late (payment )?fee|overdue)",
+  "category": "Bank & Card Fees",
+  "subcategory": "Interest & Late Fee",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(igst|cgst|sgst|gst on|gst for)",
+  "category": "Bank & Card Fees",
+  "subcategory": "GST on Fees",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(fuel surcharge|petro surcharge|surcharge)",
+  "category": "Bank & Card Fees",
+  "subcategory": "Fuel Surcharge",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(average balance|minimum balance|min bal|sms charges|card charges|service charge)",
+  "category": "Bank & Card Fees",
+  "subcategory": "Other Charges",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(badminton|batminton|turf|shuttle|playo|cricket|football)",
+  "category": "Fitness",
+  "subcategory": "Sports",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(act fibernet|fibernet|broadband|wifi|xstream|jiofiber|airtel fiber|ftth)",
+  "category": "Bills & Utilities",
+  "subcategory": "Internet",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(uber|ola cabs|rapido|taxi|cab|auto|autorickshaw|autorental|royal ?bison)\\b",
+  "category": "Transport",
+  "subcategory": "Cab & Auto",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(irctc|uts|indian railways|southern railway|train|ksrtc|kerala state road|metro|bus fare|redbus|\\bbus\\b)",
+  "category": "Transport",
+  "subcategory": "Bus/Metro/Train",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(fastag|toll)",
+  "category": "Transport",
+  "subcategory": "Tolls",
+  "sign": "debit"
+ },
+ {
   "match": "\\b(swiggy|zomato|eatsure|dominos|domino's|kfc|mcdonald|pizza hut|burger king)\\b",
   "category": "Food Out",
   "subcategory": "Delivery"
  },
  {
-  "match": "\\b(restaura|cafe|coffee|bakery|biryani|kitchen|barbecue|ice crea|eatery|tea (stall|wills)|juice|chai|cuppa|khana|mandi|cater|catring)",
+  "match": "\\b(restaura|cafe|coffee|bakery|biri?yani|kitchen|barbecue|ice crea|eatery|tea (stall|wills)|juice|chai|cuppa|khana|mandi|cater|catring)",
   "category": "Food Out",
   "subcategory": "Others",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(milk|curd|ghee|paneer|butter|milma|yogurt)",
+  "category": "Groceries",
+  "subcategory": "Dairy & Bakery",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(veg|vegetables?|veggies|fruits?|banana|coconut|onion|tomato|potato|apple|orange)",
+  "category": "Groceries",
+  "subcategory": "Vegetables & Fruits",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(chicken|mutton|beef|fish|meat|eggs?)\\b",
+  "category": "Groceries",
+  "subcategory": "Meat & Fish",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(chocolate|biscuits?|chips|snacks?|soft drinks?|cola)",
+  "category": "Groceries",
+  "subcategory": "Snacks & Drinks",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(detergent|soap|tooth ?paste|paste|salt|bed ?sheets?|blankets?|tiffin|cleaner|tissue|broom)",
+  "category": "Groceries",
+  "subcategory": "Household Supplies",
+  "sign": "debit"
+ },
+ {
+  "match": "\\b(phone|laptop|charger|earphones?|headphones?|cable|mouse|keyboard|ssd|pendrive)\\b",
+  "category": "Shopping",
+  "subcategory": "Electronics",
   "sign": "debit"
  },
  {
@@ -147,5 +255,11 @@
   "category": "Cashback & Rewards",
   "subcategory": "Refund",
   "sign": "credit"
+ },
+ {
+  "match": "\\b(margin ?free|kunnil|lulu|ramachandran|smart ?point|qmart|flow ?mart|fiow mart|shopprix|reliance|malabar produce|supermart|mini market)",
+  "category": "Groceries",
+  "subcategory": "Provisions",
+  "sign": "debit"
  }
 ]
