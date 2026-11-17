@@ -714,9 +714,10 @@ class DedupeTests(unittest.TestCase):
         db = sqlite3.connect(":memory:")
         db.execute("CREATE TABLE wallets (wallet_pk TEXT, name TEXT)")
         db.executemany("INSERT INTO wallets VALUES (?, ?)", [("w-h", "HDFC"), ("w-s", "SBI ₹")])
-        db.execute("CREATE TABLE transactions (date_created INTEGER, amount REAL, wallet_fk TEXT, name TEXT)")
-        db.executemany("INSERT INTO transactions VALUES (?, ?, ?, ?)",
-                       [(int(datetime.strptime(d, "%Y-%m-%d %H:%M").timestamp()), a, w, n) for d, a, w, n in rows])
+        db.execute("CREATE TABLE transactions (transaction_pk TEXT, date_created INTEGER, amount REAL, wallet_fk TEXT, name TEXT, note TEXT)")
+        db.executemany("INSERT INTO transactions VALUES (?, ?, ?, ?, ?, '')",
+                       [(f"pk{i}", int(datetime.strptime(d, "%Y-%m-%d %H:%M").timestamp()), a, w, n)
+                        for i, (d, a, w, n) in enumerate(rows)])
         return db
 
     def test_same_day_amount_and_account_one_to_one(self):
@@ -736,4 +737,5 @@ class DedupeTests(unittest.TestCase):
         self.assertEqual([d["id"] for d in drafts if d.get("inCashew")], ["a", "b1", "b2", "c"])
         self.assertTrue(all(d["include"] is False for d in drafts if d.get("inCashew")))
         self.assertNotIn("inCashew", drafts[3])
+        self.assertEqual((drafts[0]["cashewPk"], drafts[0]["cashewNote"]), ("pk0", ""))   # which Cashew row it is
 

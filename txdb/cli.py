@@ -300,11 +300,30 @@ def main(argv: list[str]) -> int:
             auto_track = state.get("autoTrack") is not False
             # the option "write straight into Cashew while Zen is closed" (off by default), or --direct
             direct = "--direct" in args or state.get("directSync") is True
-            items = cashew.drafts(conn, state)
+            every = cashew.drafts(conn, state, all_rows=True)      # tracked rows too: for notes and the catch-up
+            tracked_ids = {r[0] for r in conn.execute("SELECT transaction_id FROM tracked")}
+            items = [d for d in every if d["id"] not in tracked_ids]
+            # one-time catch-up: tracked rows that never reached Cashew (cashew-catchup; chosen 2026-11-17)
+            catch_path = Path(os.environ.get("TXDB_CASHEW_CATCHUP") or
+                              (Path.home() / ".local" / "state" / "omarchy" / "transactions-cashew-catchup.json"))
+            try:
+                catch_ids = set(json.loads(catch_path.read_text(encoding="utf-8")).get("ids") or [])
+            except (OSError, ValueError):
+                catch_ids = set()
+            items += [dict(d, include=True) for d in every if d["id"] in catch_ids and d["id"] in tracked_ids]
             waiting = [d for d in items if d.get("include", True) and (d.get("askAi")
                        or (d.get("kind") != "transfer" and d.get("category") in (None, "", cashew.UNCATEGORIZED[0])
                            and d.get("subcategory") != "Miscellaneous") or d.get("warn"))]
             ready = [d for d in items if d.get("include", True) and d not in waiting]
+            # the bank's last statement balance per savings account (worked-out balances are not used)
+            over = state.get("accounts") or {}
+            balances = []
+            for aid, in conn.execute("SELECT id FROM accounts WHERE closed_at IS NULL AND account_type = 'checking'"):
+                b = conn.execute("SELECT date, balance_paise FROM transactions WHERE account_id = ? AND balance_paise IS NOT NULL "
+                                 "AND NOT balance_derived ORDER BY date DESC, seq DESC LIMIT 1", (aid,)).fetchone()
+                name = over.get(aid) or cashew.ACCOUNT_MAP.get(aid, "")
+                if b and name:
+                    balances.append({"account": name, "date": b[0], "paise": int(b[1])})
             folder = cashew_file.default_dir()
             folder.mkdir(parents=True, exist_ok=True)
             out = folder / "cashew-sync.sql"
@@ -326,8 +345,11 @@ def main(argv: list[str]) -> int:
             # skip the rewrite when the ready rows and Cashew's size did not change since the last file
             memo_path = Path(os.environ.get("TXDB_CASHEW_SYNC_MEMO") or
                              (Path.home() / ".local" / "state" / "omarchy" / "transactions-cashew-sync.json"))
+            import hashlib
             key = [sorted(str(d.get("id")) + "|" + str(d.get("category")) + "|" + str(d.get("amount")) + "|"
                           + str(d.get("notes")) + "|" + str(d.get("title")) for d in ready),
+                   hashlib.sha1("".join(sorted(str(d["id"]) + str(d.get("notes")) for d in every)).encode()).hexdigest(),
+                   balances,
                    base.stat().st_size, sqlite3.connect(f"{base.as_uri()}?mode=ro", uri=True).execute(
                        "SELECT count(*), max(date_time_modified) FROM transactions").fetchone()]
             memo = {}
@@ -339,11 +361,11 @@ def main(argv: list[str]) -> int:
                     (memo.get("result", {}).get("path") == "" or out.exists()):
                 r = memo["result"]
             else:
-                r = cashew_file.build(base, out, ready, dry_run="--dry-run" in args)
+                r = cashew_file.build(base, out, ready, dry_run="--dry-run" in args, note_drafts=every, balances=balances)
                 if "--dry-run" not in args:
                     memo_path.parent.mkdir(parents=True, exist_ok=True)
                     memo_path.write_text(json.dumps({"key": key, "result": r}, ensure_ascii=False), encoding="utf-8")
-            if r["added"] == 0 and out.exists() and "--dry-run" not in args:
+            if r.get("changes", r["added"]) == 0 and out.exists() and "--dry-run" not in args:
                 out.unlink()                      # nothing waits: no stale file to import by mistake
             # which untracked rows Cashew already has
             from . import cashew_dedupe
@@ -355,8 +377,10 @@ def main(argv: list[str]) -> int:
         except (ValueError, OSError, sqlite3.Error) as e:
             print(json.dumps({"error": str(e)}))
             return 1
-        print(json.dumps({"pending": r["added"], "transfers": r["transfers"], "waitingCategory": len(waiting),
-                          "inCashewIds": in_cashew, "path": r["path"], "base": r["base"], "skipped": r["skipped"],
+        print(json.dumps({"pending": r.get("changes", r["added"]), "rows": r["added"], "transfers": r["transfers"],
+                          "notes": r.get("notesUpdated", 0), "corrections": r.get("corrections", []),
+                          "waitingCategory": len(waiting), "inCashewIds": [i for i in in_cashew if i not in tracked_ids],
+                          "path": r["path"], "base": r["base"], "skipped": r["skipped"],
                           "autoTrack": auto_track, "directOn": direct}, ensure_ascii=False))
         return 0
     if cmd == "cashew-file":

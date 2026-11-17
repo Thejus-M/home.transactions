@@ -116,6 +116,27 @@ class CashewFile(unittest.TestCase):
                         "JOIN categories s ON s.category_pk = t.sub_category_fk WHERE t.name = 'T a'").fetchone()
         self.assertEqual(sub[1:], ("Sports", 1))
 
+    def test_notes_go_onto_existing_rows_and_the_balance_is_closed(self):
+        c = sqlite3.connect(self.base)
+        c.execute("UPDATE transactions SET note = 'my own' WHERE transaction_pk = 't0'")
+        c.commit()
+        c.close()
+        old = d("old", "-10.00", date="2026-11-01", notes="BATMINTON")                 # Cashew has it (t0)
+        got = cashew_file.build(self.base, self.out, [], note_drafts=[old, d("x", "-1.00", notes="")],
+                                balances=[{"account": "HDFC", "date": "2026-11-15", "paise": 50000},
+                                          {"account": "Nowhere", "date": "2026-11-15", "paise": 1}])
+        self.assertEqual((got["added"], got["notesUpdated"], got["changes"]), (0, 1, 2))
+        self.assertEqual(got["corrections"], [{"account": "HDFC", "date": "2026-11-15", "bank": 500.0, "cashew": -10.0, "diff": 510.0}])
+        c = sqlite3.connect(self.out)
+        self.assertEqual(c.execute("SELECT note FROM transactions WHERE transaction_pk = 't0'").fetchone()[0], "my own\nBATMINTON")
+        fix = c.execute("SELECT amount, category_fk, income, date_created FROM transactions WHERE name = 'Balance correction'").fetchone()
+        self.assertEqual(fix[:3], (510.0, "0", 1))
+        self.assertEqual(fix[3], ts("2026-11-16") - 1)                                   # end of the bank's day
+        self.assertEqual(c.execute("SELECT sum(amount) FROM transactions WHERE wallet_fk = '0' AND paid = 1").fetchone()[0], 500.0)
+        again = cashew_file.build(self.out, Path(str(self.out) + "2"), [], note_drafts=[old],
+                                  balances=[{"account": "HDFC", "date": "2026-11-15", "paise": 50000}])
+        self.assertEqual(again["changes"], 0)                                           # nothing left to do
+
     def test_dry_run_and_nothing_to_add_write_no_file(self):
         got = cashew_file.build(self.base, self.out, [d("a", "-75.00")], dry_run=True)
         self.assertEqual((got["added"], got["path"], got["dryRun"]), (1, "", True))

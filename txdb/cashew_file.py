@@ -48,9 +48,14 @@ def _pairs(drafts: list[dict]) -> tuple[list[tuple[dict, dict]], list[dict]]:
     return pairs, [d for d in drafts if id(d) not in used]
 
 
-def build(base: Path | str, out: Path | str, drafts: list[dict], dry_run: bool = False) -> dict:
+def build(base: Path | str, out: Path | str, drafts: list[dict], dry_run: bool = False,
+          note_drafts: list[dict] | None = None, balances: list[dict] | None = None) -> dict:
     """Copy `base` to `out` and add the selected drafts Cashew does not have yet.
-    Returns {path, base, added, rows, transfers, already, skipped: [{id, title, reason}], ids, dryRun}."""
+    note_drafts: widget rows whose note goes onto the matching Cashew row when that row lacks it (into an empty
+    note, or on a new line below the row's own note; nothing else of the row changes).
+    balances: [{account, date, paise}] the bank's last statement balance per account; after the rows, a
+    Balance Correction row (end of that day) closes any difference, so Cashew's balance equals the bank's.
+    Returns {path, base, added, transfers, already, skipped, ids, notesUpdated, corrections, changes, dryRun}."""
     out = Path(out)
     tmp = out.with_name(out.name + ".tmp")
     shutil.copyfile(base, tmp)
@@ -145,6 +150,40 @@ def build(base: Path | str, out: Path | str, drafts: list[dict], dry_run: bool =
             rows_added += 1
             ids.append(d.get("id"))
         skipped = [s for s in skipped if s["reason"]]
+
+        # notes: the widget's note onto Cashew rows that lack it (matched like the duplicate check)
+        notes_updated = 0
+        if note_drafts:
+            probe = [dict(d) for d in note_drafts if (d.get("notes") or "").strip()]
+            cashew_dedupe.mark(probe, conn)
+            for d in probe:
+                pk, have, want = d.get("cashewPk"), (d.get("cashewNote") or ""), d["notes"].strip()
+                first = want.split("\n")[0].strip()
+                if not pk or not first or first in have or d.get("id") in ids:
+                    continue
+                conn.execute("UPDATE transactions SET note = ?, date_time_modified = ? WHERE transaction_pk = ?",
+                             (want if not have.strip() else have.rstrip() + "\n" + want, now, pk))
+                notes_updated += 1
+
+        # balances: one Balance Correction per account for what is left between Cashew and the bank
+        corrections = []
+        for b in balances or []:
+            w = idx.wallets.get(b["account"])
+            if w is None:
+                continue
+            end = _midnight(b["date"]) + 86400
+            have = conn.execute("SELECT coalesce(sum(amount), 0) FROM transactions WHERE wallet_fk = ? AND paid = 1 "
+                                "AND date_created < ?", (w, end)).fetchone()[0]
+            diff = round(b["paise"] / 100 - float(have), 2)
+            if abs(diff) < 0.01:
+                continue
+            insert(transaction_pk=str(uuid.uuid4()), paired_transaction_fk=None, name="Balance correction",
+                   amount=diff, note=f"So the balance matches the bank: ₹{b['paise'] / 100:,.2f} on {b['date']} "
+                                     f"(Cashew had ₹{float(have):,.2f})",
+                   category_fk=BALANCE_PK, sub_category_fk=None, wallet_fk=w, date_created=end - 1,
+                   income=1 if diff > 0 else 0, method_added=None)
+            corrections.append({"account": b["account"], "date": b["date"], "bank": b["paise"] / 100,
+                                "cashew": round(float(have), 2), "diff": diff})
         conn.commit()
         if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise ValueError("the new database failed its integrity check; nothing was written")
@@ -152,9 +191,11 @@ def build(base: Path | str, out: Path | str, drafts: list[dict], dry_run: bool =
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
+    changes = rows_added + notes_updated + len(corrections)
     result = {"path": "" if dry_run else str(out), "base": base_count, "added": rows_added, "transfers": transfers,
-              "already": already, "skipped": skipped, "ids": ids, "dryRun": dry_run, "addedCategories": added_cats}
-    if dry_run or rows_added == 0:
+              "already": already, "skipped": skipped, "ids": ids, "dryRun": dry_run, "addedCategories": added_cats,
+              "notesUpdated": notes_updated, "corrections": corrections, "changes": changes}
+    if dry_run or changes == 0:
         tmp.unlink(missing_ok=True)
         result["path"] = ""
         return result

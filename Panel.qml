@@ -409,7 +409,7 @@ Panel {
     : root.cashewSync.error ? "Sync: " + root.cashewSync.error
     : root.cashewSync.pending < 0 ? "Sync: checking…"
     : root.cashewSync.pending === 0 ? "Cashew is up to date"
-    : "Import " + root.cashewSync.pending + (root.cashewSync.pending === 1 ? " row" : " rows") + " into Cashew"
+    : "Import " + root.cashewSync.pending + (root.cashewSync.pending === 1 ? " change" : " changes") + " into Cashew"
   function cashewSyncNow() {
     if (cashewSyncProc.running) { cashewSyncTimer.interval = 1500; cashewSyncTimer.restart(); return }
     cashewSyncProc.running = true
@@ -468,7 +468,8 @@ Panel {
       try { r = JSON.parse((cashewSyncOut.text || "").trim().split("\n").pop()) } catch (e) { r = { error: "no result" } }
       var before = root.cashewSync.pending
       root.cashewSync = r.error ? Object.assign({}, root.cashewSync, { error: String(r.error).slice(0, 60) })
-        : { pending: r.pending, transfers: r.transfers, waitingCategory: r.waitingCategory, inCashewIds: r.inCashewIds || [], path: r.path || "",
+        : { pending: r.pending, rows: r.rows || 0, notes: r.notes || 0, corrections: r.corrections || [],
+            transfers: r.transfers, waitingCategory: r.waitingCategory, inCashewIds: r.inCashewIds || [], path: r.path || "",
             recatWaiting: r.recatWaiting || "", error: "" }
       // the options come from the state file through the script: this runs even when the Cashew window
       // never opened (then root.cashewState is not loaded)
@@ -3598,7 +3599,10 @@ Panel {
               ToolTip.visible: syncMouse.containsMouse
               ToolTip.text: root.cashewSync.recatWaiting ? "The category fix waits for its import: click to copy its path and open Cashew. New rows sync after it."
                 : root.cashewSync.error ? "Sync: " + root.cashewSync.error
-                : cashewSyncBadge.waiting ? root.cashewSync.pending + " rows wait in the sync file" + (root.cashewSync.transfers > 0 ? " (" + root.cashewSync.transfers + " transfers)" : "")
+                : cashewSyncBadge.waiting ? "The sync file holds " + (root.cashewSync.rows || 0) + " new rows"
+                  + (root.cashewSync.transfers > 0 ? " (" + root.cashewSync.transfers + " transfers)" : "")
+                  + ", " + (root.cashewSync.notes || 0) + " notes for rows Cashew has, "
+                  + (root.cashewSync.corrections || []).length + " balance corrections"
                   + ". Click: copy its path and open Cashew to import it." + (root.cashewSync.waitingCategory > 0 ? "\n" + root.cashewSync.waitingCategory + " more need a category first." : "")
                 : root.cashewSync.pending === 0 ? "Cashew is up to date" + (root.cashewSync.waitingCategory > 0 ? " (" + root.cashewSync.waitingCategory + " rows need a category)" : "") + ". Click to check again."
                 : "Checking…"

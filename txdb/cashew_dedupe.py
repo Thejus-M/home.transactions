@@ -16,23 +16,30 @@ def _key(day: str, amount, account: str) -> tuple[str, int, str]:
     return day, round(float(amount) * 100), account
 
 
-def cashew_counts(conn: sqlite3.Connection) -> tuple[Counter, set[str]]:
-    """(Counter of (day, paise, account name), the account names) of a Cashew database."""
+def cashew_rows(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
+    """({(day, paise, account name): [(transaction pk, note), ...]} oldest first, the account names)."""
     wallets = {r[0]: r[1] for r in conn.execute("SELECT wallet_pk, name FROM wallets")}
-    counts: Counter = Counter()
-    for created, amount, wallet in conn.execute("SELECT date_created, amount, wallet_fk FROM transactions"):
+    rows: dict = {}
+    for pk, created, amount, wallet, note in conn.execute(
+            "SELECT transaction_pk, date_created, amount, wallet_fk, note FROM transactions ORDER BY date_created, transaction_pk"):
         if created is None or amount is None:
             continue
         day = datetime.fromtimestamp(int(created)).strftime("%Y-%m-%d")
-        counts[_key(day, amount, wallets.get(wallet, ""))] += 1
-    return counts, set(wallets.values())
+        rows.setdefault(_key(day, amount, wallets.get(wallet, "")), []).append((pk, note or ""))
+    return rows, set(wallets.values())
+
+
+def cashew_counts(conn: sqlite3.Connection) -> tuple[Counter, set[str]]:
+    """(Counter of (day, paise, account name), the account names) of a Cashew database."""
+    rows, names = cashew_rows(conn)
+    return Counter({k: len(v) for k, v in rows.items()}), names
 
 
 def mark(drafts: list[dict], conn: sqlite3.Connection) -> dict:
     """Mark the drafts Cashew already has: inCashew = True, include = False. Oldest first, one Cashew row
     per draft. Returns {"ok": True, "found": n, "unknownAccounts": [...]}: a draft whose account name Cashew
     does not know cannot be checked (and is listed)."""
-    counts, names = cashew_counts(conn)
+    rows, names = cashew_rows(conn)
     found, unknown = 0, set()
     for d in sorted(drafts, key=lambda x: (str(x.get("date") or ""), str(x.get("id") or ""))):
         acct = str(d.get("account") or "")
@@ -44,9 +51,11 @@ def mark(drafts: list[dict], conn: sqlite3.Connection) -> dict:
             if d.get("include", True):
                 unknown.add(acct or "(no account)")
             continue
-        if counts[key] > 0:
-            counts[key] -= 1
+        if rows.get(key):
+            pk, note = rows[key].pop(0)
             d["inCashew"] = True
+            d["cashewPk"] = pk                     # which Cashew row (for the note)
+            d["cashewNote"] = note
             d["include"] = False
             found += 1
     return {"ok": True, "found": found, "unknownAccounts": sorted(unknown)}
