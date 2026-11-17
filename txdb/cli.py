@@ -266,8 +266,21 @@ def main(argv: list[str]) -> int:
                 cashew_chromium.pull()
             elif sub == "open":
                 cashew_chromium.open_window()
+            elif sub == "add-test" and len(args) > 1:
+                # cashew-chromium add-test AMOUNT: one test row (HDFC, today, -AMOUNT) written while the window is
+                # closed, no browser window; Cashew syncs it at the next login + pull down
+                from . import cashew
+                conn = cashew.open_readonly(DB_PATH)
+                src = [d for d in cashew.drafts(conn, cashew.load_state(), all_rows=True) if d.get("account") == "HDFC"
+                       and d.get("kind") != "transfer" and d.get("category") not in (None, "", cashew.UNCATEGORIZED[0])][0]
+                amt = float(args[1])
+                row = dict(src, id=f"txdb-closed-test-{amt}", date=datetime.now().strftime("%Y-%m-%d"), amount=f"-{amt:.2f}",
+                           title="TXDB TEST", notes="test row from the widget, delete me", include=True)
+                r = cashew_chromium.push([row], open_after=False)
+                print(json.dumps({k: r[k] for k in ("added", "written", "before", "after", "backup")}))
+                return 0
             elif sub == "login":
-                return cashew_chromium.login_window(log=lambda m: print(m, file=sys.stderr, flush=True), test_row="--test-row" in args)
+                return cashew_chromium.login_window(log=lambda m: print(m, file=sys.stderr, flush=True), test_row=next((x.split("=", 1)[1] for x in args if x.startswith("--test-row=")), "1" if "--test-row" in args else ""))
             elif sub != "status":
                 print("usage: txdb cashew-chromium status | pull | open", file=sys.stderr)
                 return 2

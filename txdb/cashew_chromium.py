@@ -383,13 +383,8 @@ def _tap(ch: Chromium, label: str, wait: float = 20.0) -> bool:
     return False
 
 
-def login_window(profile: Path = PROFILE, log=print, test_row: bool = False) -> int:
-    """Open the visible Cashew window and sign in: More > Login > the first Google account. Stays until the
-    window is closed (it holds the debug pipe). Returns 0, or 1 when the login could not be done."""
-    if in_use(profile):
-        log("the Cashew window is already open")
-        return 0
-    ch = Chromium(profile, block_app=False, visible=True)
+def _login(ch: Chromium, log=print) -> bool:
+    """Load Cashew (with the sql.js hook) and sign in: More > Login > the first account. True when signed in."""
     ok = False
     try:
         ch.call("Page.enable", {}, ch.sid)
@@ -440,6 +435,17 @@ def login_window(profile: Path = PROFILE, log=print, test_row: bool = False) -> 
             log("the automatic login did not finish: log in by hand")
     except (RuntimeError, TimeoutError) as e:
         log(f"automatic login failed: {e}: log in by hand")
+    return ok
+
+
+def login_window(profile: Path = PROFILE, log=print, test_row: str = "") -> int:
+    """Open the visible Cashew window and sign in: More > Login > the first Google account. Stays until the
+    window is closed (it holds the debug pipe). Returns 0, or 1 when the login could not be done."""
+    if in_use(profile):
+        log("the Cashew window is already open")
+        return 0
+    ch = Chromium(profile, block_app=False, visible=True)
+    ok = _login(ch, log)
     try:
         if ok:
             live_loop(ch, log, test_row=test_row)   # signed in: now the edits, inside the page, until the window closes
@@ -536,7 +542,7 @@ def _notify(text: str):
         pass
 
 
-def live_loop(ch: Chromium, log=print, every: float = 20.0, test_row: bool = False):
+def live_loop(ch: Chromium, log=print, every: float = 20.0, test_row: str = ""):
     """While the window is open: when the widget DB changed, apply the ready rows inside the page."""
     from . import cashew, cli
     db_path = Path(cli.DB_PATH)
@@ -553,10 +559,10 @@ def live_loop(ch: Chromium, log=print, every: float = 20.0, test_row: bool = Fal
                 conn = cashew.open_readonly(db_path)
                 ready, waiting, every_rows, _, _ = cli.cashew_ready(conn, cashew.load_state())
                 conn.close()
-                if test_row:                   # only one ₹1 HDFC row, once; nothing else is sent
+                if test_row:                   # only one test row (₹test_row, HDFC), once; nothing else is sent
                     src = [d for d in every_rows if d.get("account") == "HDFC" and d.get("kind") != "transfer"
                            and d.get("category") not in (None, "", cashew.UNCATEGORIZED[0])][0]
-                    ready = [dict(src, id="txdb-live-test", date=time.strftime("%Y-%m-%d"), amount="-1.00",
+                    ready = [dict(src, id="txdb-live-test-" + test_row, date=time.strftime("%Y-%m-%d"), amount=f"-{float(test_row):.2f}",
                                   title="TXDB TEST", notes="test row from the widget, delete me", include=True)]
                     every_rows = []
                     every = 10 ** 9
@@ -580,3 +586,4 @@ def live_loop(ch: Chromium, log=print, every: float = 20.0, test_row: bool = Fal
         end = time.time() + every
         while time.time() < end and ch.proc.poll() is None:
             time.sleep(1)
+
