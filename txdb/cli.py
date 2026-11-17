@@ -279,6 +279,11 @@ def main(argv: list[str]) -> int:
                 r = cashew_chromium.push([row], open_after=False)
                 print(json.dumps({k: r[k] for k in ("added", "written", "before", "after", "backup")}))
                 return 0
+            elif sub == "sync":
+                # cashew-chromium sync: open, log in, send the waiting rows, pull down to sync, close
+                r = cashew_chromium.sync_window(log=lambda m: print(m, file=sys.stderr, flush=True),
+                                                keep_open="--keep-open" in args, hidden="--show" not in args)
+                return 0 if r["driveCalls"] else 1
             elif sub == "login":
                 return cashew_chromium.login_window(log=lambda m: print(m, file=sys.stderr, flush=True), test_row=next((x.split("=", 1)[1] for x in args if x.startswith("--test-row=")), "1" if "--test-row" in args else ""))
             elif sub != "status":

@@ -1,5 +1,9 @@
 #!/bin/sh
-# Open Cashew in its own Chromium profile and sign in (More > Login > the first account).
-# After the login, the waiting bank rows go straight into the open page; pull down in Cashew to sync.
+# Sync Cashew with no visible window: a Chromium window pushed off the screen edge logs in, sends the
+# waiting rows inside the page, pulls down to sync, and closes. The terminal shows each step.
+#   cashew-chromium          sync only (no rows sent yet: TXDB_CASHEW_SYNC_ONLY=1)
+#   cashew-chromium --send   also send the waiting bank rows
+#   cashew-chromium --show   use a visible window
 here="$(dirname "$(readlink -f "$0")")"
-exec python3 "$here/txdb" cashew-chromium login
+case " $* " in *" --send "*) ;; *) export TXDB_CASHEW_SYNC_ONLY=1 ;; esac
+exec python3 "$here/txdb" cashew-chromium sync "$@"

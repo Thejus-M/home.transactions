@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 
 ORIGIN = "https://budget-track.web.app/"
+HIDDEN_CLASS = "cashew-edge"
 PROFILE = Path(os.environ.get("TXDB_CASHEW_CHROMIUM_PROFILE") or Path.home() / ".local" / "share" / "cashew-chromium")
 STATE = Path.home() / ".local" / "state" / "omarchy"
 MIRROR = STATE / "cashew-chromium.sqlite"        # the last database read from / written to Chromium
@@ -61,14 +62,27 @@ _WRITE_JS = r"""(async (b64) => {
 class Chromium:
     """A headless Chromium on `profile`, driven over --remote-debugging-pipe (fd 3 in, fd 4 out)."""
 
-    def __init__(self, profile: Path, block_app: bool = True, visible: bool = False):
+    def __init__(self, profile: Path, block_app: bool = True, visible: bool = False, hidden: bool = False):
         r1, w1 = os.pipe()
         r2, w2 = os.pipe()
 
         def child():
             os.dup2(r1, 3)
             os.dup2(w2, 4)
-        mode = ["--disable-popup-blocking"] if visible else ["--headless=new"]
+        mode = ["--disable-popup-blocking"] if visible or hidden else ["--headless=new"]
+        if hidden:
+            # a normal window, out of sight: Hyprland puts this class on a special workspace, silently
+            # out of sight but still "visible" to the page (a hidden workspace or a tiny window stops Flutter's
+            # frames): full size, pushed off the bottom-right edge (4 px left on screen), almost fully
+            # transparent, pinned, never focused. The Google popup has the same class, so it goes there too.
+            subprocess.run(["hyprctl", "eval", 'hl.window_rule({ match = { class = "%s" }, float = true, pin = true, '
+                            'size = { 580, 900 }, move = { "(monitor_w-4)", "(monitor_h-4)" }, '
+                            'opacity = "0.01 override 0.01 override", no_focus = true, no_initial_focus = true, '
+                            'no_anim = true, no_shadow = true, no_border = true, border_size = 0 })'
+                            % HIDDEN_CLASS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            mode += [f"--class={HIDDEN_CLASS}", "--disable-backgrounding-occluded-windows",
+                     "--disable-renderer-backgrounding", "--disable-background-timer-throttling"]   # draw although unseen
+            visible = True
         self.proc = subprocess.Popen(
             ["chromium", *mode, f"--user-data-dir={profile}", "--remote-debugging-pipe", "--no-first-run",
              "--no-default-browser-check", "about:blank"],
@@ -390,13 +404,16 @@ def _login(ch: Chromium, log=print) -> bool:
         ch.call("Page.enable", {}, ch.sid)
         ch.call("Page.addScriptToEvaluateOnNewDocument", {"source": HOOK}, ch.sid)   # before Cashew loads
         ch.call("Page.navigate", {"url": ORIGIN}, ch.sid)
+        log("loading Cashew…")
         if not _tap(ch, "More", wait=40):
             raise RuntimeError("Cashew did not load")
         time.sleep(1.5)
         names = [b[0].lower() for b in _buttons(ch)]
+        log("Cashew loaded")
         if "logout" in names or "login" not in names:
             ok = True                          # already signed in
         elif _tap(ch, "Login", wait=10):
+            log("pressed Login, waiting for the Google popup…")
             for _ in range(30):               # the Google account chooser popup
                 time.sleep(1)
                 pops = [t for t in ch.call("Target.getTargets")["targetInfos"]
@@ -407,18 +424,20 @@ def _login(ch: Chromium, log=print) -> bool:
                 raise RuntimeError("the Google login popup did not open")
             sid = ch.call("Target.attachToTarget", {"targetId": pops[0]["targetId"], "flatten": True})["sessionId"]
             ch.call("Page.bringToFront", {}, sid)
+            # the popup window can be small: give its page a fixed size so the buttons fit, whatever the window
+            ch.call("Emulation.setDeviceMetricsOverride", {"width": 600, "height": 800, "deviceScaleFactor": 1, "mobile": False}, sid)
             for _ in range(20):
                 time.sleep(1)
                 try:
                     r = ch.call("Runtime.evaluate", {"returnByValue": True, "expression":
                         "(() => { const e = document.querySelector('[data-identifier]') || [...document.querySelectorAll('button')]"
-                        ".find(b => /^(continue|allow)$/i.test(b.innerText.trim())); if (!e) return ''; const b = e.getBoundingClientRect();"
+                        ".find(b => /^(continue|allow)$/i.test(b.innerText.trim())); if (!e) return ''; e.scrollIntoView({block: 'center', inline: 'center'}); const b = e.getBoundingClientRect();"
                         " return JSON.stringify([b.x + b.width / 2, b.y + b.height / 2]) })()"}, sid, timeout=5)
                 except RuntimeError:
                     ok = True                  # the popup closed: signed in
                     break
                 v = (r.get("result") or {}).get("value")
-                log(f"popup: {'click ' + v if v else 'waiting'}")
+                log(f"Google popup: {'click at ' + v if v else 'waiting'}")
                 if v:
                     x, y = json.loads(v)
                     _click(ch, x, y, sid)
@@ -430,7 +449,7 @@ def _login(ch: Chromium, log=print) -> bool:
             time.sleep(1.5)
             ok = "logout" in [b[0].lower() for b in _buttons(ch)]
         if ok:
-            log("Cashew is open and signed in")
+            log("signed in to Google")
         else:
             log("the automatic login did not finish: log in by hand")
     except (RuntimeError, TimeoutError) as e:
@@ -587,3 +606,85 @@ def live_loop(ch: Chromium, log=print, every: float = 20.0, test_row: str = ""):
         while time.time() < end and ch.proc.poll() is None:
             time.sleep(1)
 
+
+
+def _drive_calls(ch: Chromium) -> list[str]:
+    out = []
+    for m in ch.events:
+        if m.get("method") == "Network.requestWillBeSent":
+            r = m["params"]["request"]
+            if "googleapis.com" in r["url"] and "drive" in r["url"]:
+                out.append(r["method"] + " " + r["url"].split("?")[0][:90])
+    return out
+
+
+def pull_to_refresh(ch: Chromium):
+    """Cashew's sync gesture: on Home, drag down from the top of the list."""
+    _tap(ch, "Home", wait=10)
+    time.sleep(1.5)
+    w, h = json.loads(ch.eval("JSON.stringify([innerWidth, innerHeight])"))
+    x, y0 = w * 0.6, h * 0.2
+    ch.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y0}, ch.sid)
+    ch.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y0, "button": "left", "buttons": 1, "clickCount": 1}, ch.sid)
+    for i in range(1, 26):
+        ch.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y0 + i * h * 0.02, "button": "left", "buttons": 1}, ch.sid)
+        time.sleep(0.03)
+    ch.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y0 + 25 * h * 0.02, "button": "left", "buttons": 1, "clickCount": 1}, ch.sid)
+
+
+def sync_window(profile: Path = PROFILE, log=print, wait: float = 45.0, keep_open: bool = False, hidden: bool = True) -> dict:
+    """Open the window, log in, send the waiting rows inside the page, pull down to sync, wait for Cashew's
+    Drive calls, then close the window. Returns {signedIn, added, driveCalls}."""
+    if in_use(profile):
+        raise ValueError("the Cashew window is already open: pull down in it to sync")
+    log("starting Chromium in a window off the screen edge…" if hidden else "starting Chromium…")
+    ch = Chromium(profile, block_app=False, visible=not hidden, hidden=hidden)
+    if hidden:
+        ch.call("Emulation.setDeviceMetricsOverride", {"width": 580, "height": 900, "deviceScaleFactor": 1, "mobile": False}, ch.sid)
+    out = {"signedIn": False, "added": 0, "driveCalls": []}
+    try:
+        ch.call("Network.enable", {}, ch.sid)
+        if not _login(ch, log):
+            raise ValueError("the login did not work: nothing synced")
+        out["signedIn"] = True
+        from . import cashew, cli
+        conn = cashew.open_readonly(Path(cli.DB_PATH))
+        ready, _, every_rows, _, _ = cli.cashew_ready(conn, cashew.load_state())
+        conn.close()
+        log(f"database: {_count_live(ch)} transactions in Cashew")
+        if os.environ.get("TXDB_CASHEW_SYNC_ONLY") != "1":
+            log(f"{len(ready)} rows are ready to send")
+            r = live_push(ch, ready, note_drafts=every_rows)
+            out["added"] = r["added"]
+            log(f"sent {r['added']} rows and {r.get('notesUpdated', 0)} notes ({r['statements']} statements)"
+                + (f", backup {r['backup']}" if r["backup"] else ""))
+        else:
+            log("only syncing: no rows are sent (TXDB_CASHEW_SYNC_ONLY=1)")
+        time.sleep(2)
+        ch.events.clear()
+        pull_to_refresh(ch)
+        log("pulled down: Cashew syncs")
+        end = time.time() + wait
+        while time.time() < end:
+            try:
+                ch._event(ch._recv(time.time() + 1))
+            except TimeoutError:
+                pass
+        out["driveCalls"] = _drive_calls(ch)
+        calls = [c for c in out["driveCalls"] if not c.startswith("OPTIONS")]
+        ups = sum(1 for c in calls if "/upload/" in c)
+        if calls:
+            log(f"synced with Google Drive: {len(calls)} calls, {ups} uploads")
+        else:
+            log("no Google Drive calls: the sync did not run")
+        if keep_open:
+            ch.proc.wait()
+    finally:
+        if not keep_open:
+            ch.close()
+            log("closed the hidden Cashew window")
+    return out
+
+
+def _count_live(ch: Chromium) -> int:
+    return ch.eval("%s.exec('select count(*) from transactions')[0].values[0][0]" % _LIVE_DB)
