@@ -44,19 +44,55 @@ class Recurring(unittest.TestCase):
         self.assertEqual((sip["account"], sip["category"], sip["subcategory"], sip["every"], sip["unit"], sip["kind"]),
                          ("Axis", "Investments", "Mutual Funds", 1, "month", "subscription"))
 
-    def test_status_paid_due_late_with_four_days(self):
+    def test_status_with_seven_days(self):
         items = cashew_recurring.series(fake(), today="2026-11-08")
-        bank = [{"date": "2026-11-23", "amount": -1000.0, "account": "Axis"},       # 3 days after the due date
+        bank = [{"date": "2026-11-26", "amount": -1000.0, "account": "Axis"},       # 6 days after the due date
                 {"date": "2026-11-11", "amount": -3200.0, "account": "SBI"}]        # other account: not the rent
-        st = {s["title"]: s for s in cashew_recurring.status(items, bank, today="2026-11-17")}
-        self.assertEqual((st["SIP A Growth"]["state"], st["SIP A Growth"]["paidOn"]), ("paid", "2026-11-23"))
-        self.assertEqual((st["Housing › Rent"]["state"], st["Housing › Rent"]["lateDays"]), ("late", 6))
+        st = {s["title"]: s for s in cashew_recurring.status(items, bank, today="2026-11-27")}
+        self.assertEqual((st["SIP A Growth"]["state"], st["SIP A Growth"]["paidOn"]), ("paid", "2026-11-26"))
         self.assertEqual(st["Old SIP"]["state"], "ended")
+        far = cashew_recurring.status(items, [{"date": "2026-11-28", "amount": -1000.0, "account": "Axis"}], today="2026-11-29")
+        self.assertEqual({s["title"]: s["state"] for s in far}["SIP A Growth"], "late")   # 8 days off: not this payment
         due = {s["title"]: s for s in cashew_recurring.status(items, [], today="2026-11-14")}
         self.assertEqual((due["SIP A Growth"]["state"], due["SIP A Growth"]["inDays"]), ("due", 6))
-        self.assertEqual(due["Housing › Rent"]["state"], "due")                     # 3 days late: still inside 4 days
-        far = cashew_recurring.status(items, [{"date": "2026-11-26", "amount": -1000.0, "account": "Axis"}], today="2026-11-27")
-        self.assertEqual({s["title"]: s["state"] for s in far}["SIP A Growth"], "late")   # 6 days off: not this payment
+
+    def test_late_needs_a_week_and_a_fresh_fetch(self):
+        items = cashew_recurring.series(fake(), today="2026-11-08")
+        rent = lambda today, fetched: {s["title"]: s for s in cashew_recurring.status(
+            items, [], today=today, fetched=fetched)}["Housing › Rent"]       # due 2026-11-11
+        six = rent("2026-11-17", {"HDFC": "2026-11-17T09:00:00"})
+        self.assertEqual((six["state"], six.get("waiting")), ("due", True))   # 6 days: wait
+        old = rent("2026-11-18", {"HDFC": "2026-11-10T09:00:00"})
+        self.assertEqual((old["state"], old.get("waiting")), ("due", True))   # 7 days, but no fetch after the due date
+        self.assertEqual(rent("2026-11-18", {})["state"], "due")              # never fetched: wait
+        fresh = rent("2026-11-18", {"HDFC": "2026-11-12T09:00:00"})
+        self.assertEqual((fresh["state"], fresh["lateDays"]), ("late", 7))
+
+
+class Dedupe(unittest.TestCase):
+    def test_a_recurring_payment_matches_up_to_seven_days(self):
+        from txdb import cashew_dedupe
+        db = fake()
+        db.execute("CREATE TABLE t2 AS SELECT rowid AS transaction_pk, * , '' AS note FROM transactions")
+        db.execute("DROP TABLE transactions"); db.execute("ALTER TABLE t2 RENAME TO transactions")
+        d = lambda day, amt: [{"date": day, "amount": amt, "account": "Axis", "id": day}]
+        hit = d("2026-11-23", -1000); cashew_dedupe.mark(hit, db)               # 6 days from 2026-11-17 (paid row)
+        self.assertTrue(hit[0].get("inCashew"))
+        miss = d("2026-11-04", -50); cashew_dedupe.mark(miss, db)               # Coffee is not recurring: 3 days ok,
+        self.assertTrue(miss[0].get("inCashew"))
+        far = d("2026-11-07", -50); cashew_dedupe.mark(far, db)                 # 6 days on a normal row: no
+        self.assertFalse(far[0].get("inCashew", False))
+        eight = d("2026-11-25", -1000)
+        for r in db.execute("SELECT 1"): pass
+        db.execute("DELETE FROM transactions WHERE date_created = ?", (ts("2026-11-20"),))  # leave only the paid rows
+        cashew_dedupe.mark(eight, db)                                            # 8 days from 2026-11-17: no
+        self.assertFalse(eight[0].get("inCashew", False))
+
+    def test_the_sync_never_writes_recurring_rows(self):
+        import re
+        src = "".join(Path(__file__).resolve().parents[1].joinpath("txdb", f).read_text()
+                      for f in ("cashew.py", "cashew_file.py", "cashew_direct.py"))
+        self.assertIsNone(re.search(r"(UPDATE|DELETE FROM)\s+transactions[^;]*type\s+IN", src, re.I))
 
 
 if __name__ == "__main__":

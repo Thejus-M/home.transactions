@@ -6,14 +6,16 @@ so they alone do not mark a recurring row. The next occurrence of an active seri
 and a date ahead; a series without such a row has ended.
 
 status() matches each active series to the bank rows of the widget: same account, same amount, a date up to
-DAY_TOLERANCE days from the due date (the bank date can be 2 to 4 days off).
+RECURRING_TOLERANCE (7) days from the due date. The widget never writes recurring rows. A series is "late"
+only when its due date is 7 or more days ago AND its account was fetched from the bank after the due date;
+before that it stays "due" with waiting = True.
 """
 from __future__ import annotations
 
 import sqlite3
 from datetime import date, datetime, timedelta
 
-from .cashew_dedupe import DAY_TOLERANCE
+from .cashew_dedupe import RECURRING_TOLERANCE
 
 UNITS = {0: "custom", 1: "day", 2: "week", 3: "month", 4: "year"}
 TYPES = {1: "subscription", 2: "repeating"}
@@ -56,10 +58,11 @@ def series(conn: sqlite3.Connection, today: str | None = None) -> list[dict]:
 
 
 def status(items: list[dict], bank_rows: list[dict], today: str | None = None,
-           tolerance: int = DAY_TOLERANCE) -> list[dict]:
+           tolerance: int = RECURRING_TOLERANCE, fetched: dict | None = None) -> list[dict]:
     """Each active series with its state this cycle: paid (a bank row found, `paidOn`), due (`inDays`) or
     late (due + tolerance is past and no bank row). bank_rows: [{date, amount (rupees), account}].
-    One bank row per series (the nearest)."""
+    One bank row per series (the nearest). fetched: {account name: last good fetch "YYYY-MM-DD..."}; None
+    means every account is fresh."""
     today_d = datetime.strptime(today or date.today().isoformat(), "%Y-%m-%d").date()
     used: set[int] = set()
     out = []
@@ -83,8 +86,11 @@ def status(items: list[dict], bank_rows: list[dict], today: str | None = None,
         if best:
             used.add(best[1])
             x.update(state="paid", paidOn=best[2])
-        elif (today_d - due).days > tolerance:
+        elif (today_d - due).days >= tolerance and (
+                fetched is None or str(fetched.get(s["account"]) or "")[:10] > s["next"]):
             x.update(state="late", lateDays=(today_d - due).days)
+        elif today_d > due:
+            x.update(state="due", inDays=(due - today_d).days, waiting=True)   # no bank row yet: wait
         else:
             x.update(state="due", inDays=(due - today_d).days)
         out.append(x)

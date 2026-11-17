@@ -1,0 +1,3 @@
+#!/bin/sh
+# Open Cashew in its own Chromium profile (the one the widget writes into while it is closed).
+exec chromium --user-data-dir="$HOME/.local/share/cashew-chromium" --no-first-run --no-default-browser-check https://budget-track.web.app/ "$@"

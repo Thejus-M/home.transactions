@@ -1167,6 +1167,7 @@ function recurringStateText(s) {
   if (!s) return { text: "", short: "", pill: "", tone: "" }
   if (s.state === "paid") return { text: "paid " + formatDate(s.paidOn), short: "", pill: "PAID", tone: "credit" }
   if (s.state === "late") return { text: "not seen in bank", short: "", pill: "NOT SEEN", tone: "debit" }
+  if (s.state === "due" && s.waiting) return { text: "waiting for bank data", short: "waiting", pill: "", tone: "muted" }
   if (s.state === "due") {
     var n = Number(s.inDays) || 0
     var text = n <= 0 ? "due today" : (n === 1 ? "tomorrow" : "in " + n + " days")

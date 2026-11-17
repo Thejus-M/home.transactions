@@ -36,6 +36,16 @@ def cashew_counts(conn: sqlite3.Connection) -> tuple[Counter, set[str]]:
 
 
 DAY_TOLERANCE = 4          # a bank date can be 2 to 4 days before or after the date in Cashew
+RECURRING_TOLERANCE = 7    # a payment of a recurring series in Cashew can be up to a week off
+
+
+def recurring_keys(conn: sqlite3.Connection) -> set[tuple[int, str]]:
+    """{(paise, account name)} of the recurring rows in Cashew (type 1 subscription, 2 repeating)."""
+    wallets = {r[0]: r[1] for r in conn.execute("SELECT wallet_pk, name FROM wallets")}
+    if "type" not in {r[1] for r in conn.execute("PRAGMA table_info(transactions)")}:
+        return set()
+    return {(round(float(a) * 100), wallets.get(w, "")) for a, w in conn.execute(
+        "SELECT amount, wallet_fk FROM transactions WHERE type IN (1, 2) AND amount IS NOT NULL")}
 
 
 def _days(a: str, b: str) -> int:
@@ -46,7 +56,8 @@ def mark(drafts: list[dict], conn: sqlite3.Connection, tolerance: int = DAY_TOLE
     """Mark the drafts Cashew already has: inCashew = True, include = False, cashewPk, cashewNote and
     inCashewDays (0 = same day). One Cashew row per draft.
     Pass 1: same day, same amount, same account. Pass 2, for the rest: same amount and account, a Cashew date
-    up to `tolerance` days away, the nearest first (the earlier one on a tie). Returns {"ok": True, "found": n,
+    up to `tolerance` days away (RECURRING_TOLERANCE when the amount and account are those of a recurring
+    series in Cashew), the nearest first (the earlier one on a tie). Returns {"ok": True, "found": n,
     "unknownAccounts": [...]}: a draft whose account name Cashew does not know cannot be checked."""
     rows, names = cashew_rows(conn)
     found, unknown, rest = 0, set(), []
@@ -81,8 +92,10 @@ def mark(drafts: list[dict], conn: sqlite3.Connection, tolerance: int = DAY_TOLE
         for (day, paise, acct), entries in rows.items():
             for pk, note in entries:
                 left.setdefault((paise, acct), []).append([day, pk, note])
+        rec = recurring_keys(conn)
         for d, (day, paise, acct) in rest:
-            cands = [c for c in left.get((paise, acct), []) if _days(c[0], day) <= tolerance]
+            tol = max(tolerance, RECURRING_TOLERANCE) if (paise, acct) in rec else tolerance
+            cands = [c for c in left.get((paise, acct), []) if _days(c[0], day) <= tol]
             if not cands:
                 continue
             best = min(cands, key=lambda c: (_days(c[0], day), c[0]))

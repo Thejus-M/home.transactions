@@ -211,7 +211,15 @@ def _recurring() -> dict:
         since = (datetime.now() - __import__("datetime").timedelta(days=60)).strftime("%Y-%m-%d")
         bank = [{"date": r[0], "amount": r[1] / 100, "account": over.get(r[2]) or cashew.ACCOUNT_MAP.get(r[2], "")}
                 for r in conn.execute("SELECT date, amount_paise, account_id FROM transactions WHERE date >= ?", (since,))]
-        return {"series": cashew_recurring.status(items, bank), "error": ""}
+        # the last good fetch of each Cashew account's bank: a series is late only after fresh bank data
+        last = {r[0]: r[1] for r in conn.execute(
+            "SELECT bank, MAX(finished_at) FROM fetch_runs WHERE outcome = 'done' GROUP BY bank")}
+        fetched: dict = {}
+        for aid, bank_name in conn.execute("SELECT id, bank FROM accounts"):
+            name = over.get(aid) or cashew.ACCOUNT_MAP.get(aid, "")
+            if name and last.get(bank_name):
+                fetched[name] = min(fetched.get(name, "9999"), str(last[bank_name]))
+        return {"series": cashew_recurring.status(items, bank, fetched=fetched), "error": ""}
     except Exception as e:                      # noqa: BLE001 - the snapshot must never fail on this
         return {"series": [], "error": str(e)}
 
@@ -226,9 +234,27 @@ def main(argv: list[str]) -> int:
         return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
+    if cmd == "cashew-chromium":
+        # cashew-chromium status | pull | open: Cashew in its own Chromium profile (txdb/cashew_chromium.py).
+        # The writes run in cashew-sync (option chromiumSync, or --chromium).
+        from . import cashew_chromium
+        sub = args[0] if args else "status"
+        try:
+            if sub == "pull":
+                cashew_chromium.pull()
+            elif sub == "open":
+                cashew_chromium.open_window()
+            elif sub != "status":
+                print("usage: txdb cashew-chromium status | pull | open", file=sys.stderr)
+                return 2
+            print(json.dumps(cashew_chromium.status(), ensure_ascii=False))
+            return 0
+        except (ValueError, OSError, RuntimeError, TimeoutError) as e:
+            print(json.dumps({"error": str(e)}))
+            return 1
     if cmd == "cashew-recurring":
         # cashew-recurring: the recurring transactions set in Cashew and their state this cycle (paid / due /
-        # late, matched to the bank rows within 4 days). JSON. (txdb/cashew_recurring.py)
+        # late, matched to the bank rows within 7 days; late only after a fresh fetch). JSON. (txdb/cashew_recurring.py)
         print(json.dumps(_recurring(), ensure_ascii=False))
         return 0
     if cmd == "cashew-recat":
@@ -300,6 +326,15 @@ def main(argv: list[str]) -> int:
         # {pending, transfers, waitingCategory, inCashewIds, path, base, skipped}.
         from . import cashew, cashew_file, cashew_twins
         try:
+            chromium = cashew.load_state().get("chromiumSync") is True or "--chromium" in args
+            chromium_open = None
+            if chromium:
+                # Cashew in its own Chromium profile (txdb/cashew_chromium.py): refresh the copy when the
+                # person used the window since the last read; never while the window is open
+                from . import cashew_chromium
+                chromium_open = cashew_chromium.in_use()
+                if not chromium_open and cashew_chromium.stale():
+                    cashew_chromium.pull()
             base = cashew_twins.find_browser_copy()
             if base is None:
                 raise ValueError("the browser keeps no copy of the Cashew web app")
@@ -353,6 +388,17 @@ def main(argv: list[str]) -> int:
             folder = cashew_file.default_dir()
             folder.mkdir(parents=True, exist_ok=True)
             out = folder / "cashew-sync.sql"
+            if chromium and not chromium_open and "--dry-run" not in args:
+                # write straight into the Chromium profile, then open the Cashew window so it syncs
+                d = cashew_chromium.push(ready, note_drafts=every, open_after="--no-open" not in args)
+                if out.exists() and d["written"]:
+                    out.unlink()
+                print(json.dumps({"chromium": True, "pending": 0, "rows": 0, "written": d["written"],
+                                  "notes": d.get("notesUpdated", 0), "transfers": d["transfers"],
+                                  "waitingCategory": len(waiting), "inCashewIds": [], "path": "",
+                                  "backup": d["backup"], "base": d["base"], "skipped": d["skipped"],
+                                  "opened": d["opened"], "autoTrack": auto_track}, ensure_ascii=False))
+                return 0
             if direct:
                 # EXPERIMENTAL (txdb/cashew_direct.py): straight into Zen's storage, only while Zen is closed.
                 from . import cashew_direct
