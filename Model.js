@@ -2283,7 +2283,10 @@ function filterTransactions(rows, f, ctx) {
     if (f.from && date < f.from) continue               // the period picked in the calendar
     if (f.to && date > f.to) continue
     if (nTok) {
-      var hay = _haystack(t, ctx.nameOverrides)
+      // also the amount (as typed: 3200, 3,200, 3200.00), the category, the user's note and the linked bill
+      var a = Math.abs(Number(t.amount)) || 0
+      var hay = _haystack(t, ctx.nameOverrides) + "\n" + _fold([String(a), a.toFixed(2), formatGrouped(a),
+        t.category || "", t.subcategory || "", (ctx.notes || {})[t.id] || "", (ctx.bills || {})[t.id] || ""].join("\n"))
       var ok = true
       for (var k = 0; k < nTok; k++) if (hay.indexOf(tokens[k]) === -1) { ok = false; break }
       if (!ok) continue

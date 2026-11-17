@@ -311,7 +311,18 @@ Panel {
   readonly property var filterChips: Model.activeFilterChips(root.filter, root.accountOptions)
   readonly property var filterBounds: Model.filterBounds(root.transactions)
   readonly property var filteredTransactions: Model.filterTransactions(root.transactions, root.filter,
-    { nameOverrides: store.transactionNameOverrides, linkedIds: root.linkedTransactionIds, today: root.todayIso })
+    { nameOverrides: store.transactionNameOverrides, linkedIds: root.linkedTransactionIds, today: root.todayIso,
+      notes: store.txnNotes, bills: root.billSearchText })
+  // transaction id -> the linked bill's text (merchant, items), for the search
+  readonly property var billSearchText: {
+    var m = {}
+    for (var i = 0; i < store.receipts.length; i++) {
+      var r = store.receipts[i]
+      if (r.state !== "linked" || !r.transactionId) continue
+      m[r.transactionId] = [r.merchant || "", r.title || "", (r.items || []).map(function (x) { return x.name || x.description || "" }).join(" ")].join(" ")
+    }
+    return m
+  }
 
   // The filter is saved between restarts (never the search text or the
   // month). Restored once, after the accounts are known, so a saved account
