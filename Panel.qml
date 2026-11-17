@@ -128,7 +128,13 @@ Panel {
   onDrawerTabChanged: if (root.filterRestored) filterSaveTimer.restart()
   readonly property var recurringChip: Model.recurringChip(store.recurring)
   readonly property var receiptsChip: Model.receiptsChip(root.receiptList)
-  readonly property var cashewControl: Model.cashewControl(root.cashewSync, cashewSyncProc.running)
+  readonly property var cashewControl: {
+    var c = Model.cashewControl(root.cashewSync, cashewSyncProc.running || cashewChromiumProc.running)
+    if (cashewChromiumProc.running) c = Object.assign({}, c, { tone: "busy", spin: true, glyph: "\u{F04E6}", badge: "",
+      tooltip: "Syncing with Cashew (no window): " + (root.cashewChromiumLine || "starting…") })
+    else if (root.cashewChromiumResult) c = Object.assign({}, c, { tooltip: root.cashewChromiumResult + "\n\n" + c.tooltip })
+    return c
+  }
   property bool recurringShowEnded: false
   readonly property var recurringSummary: Model.recurringSummary(store.recurring)
   readonly property int receiptsToLink: receiptList.filter(function (r) { return r.state === "unmatched" }).length
@@ -439,9 +445,39 @@ Panel {
   }
   // A click checks first; Cashew opens only when rows really still wait (after an import it does not).
   property bool cashewSyncClicked: false
+  // The sync button: a Chromium window off the screen edge logs in to Cashew, puts the waiting rows straight
+  // into the open page, pulls down so Cashew syncs with Google Drive, and closes (txdb cashew-chromium sync).
+  property string cashewChromiumLine: ""
+  property string cashewChromiumResult: ""
   function cashewSyncClick() {
-    root.cashewSyncClicked = true
-    root.cashewSyncNow()
+    if (cashewChromiumProc.running) return
+    root.cashewChromiumLine = ""
+    root.cashewChromiumResult = ""
+    cashewChromiumProc.running = true
+  }
+  Process {
+    id: cashewChromiumProc
+    command: ["python3", root.txdbBin, "cashew-chromium", "sync", "--send", "--json"]
+    stdout: StdioCollector { id: cashewChromiumOut }
+    stderr: SplitParser {
+      splitMarker: "\n"
+      onRead: function (line) { if (line.trim()) root.cashewChromiumLine = line.trim() }
+    }
+    onExited: function (exitCode) {
+      var r
+      try { r = JSON.parse((cashewChromiumOut.text || "").trim().split("\n").pop()) } catch (e) { r = { error: root.cashewChromiumLine || "no result" } }
+      if (r.error || !r.signedIn) {
+        root.cashewChromiumResult = "Last sync failed: " + (r.error || root.cashewChromiumLine)
+        root.cashewGuessNotify("Cashew sync failed", r.error || root.cashewChromiumLine)
+      } else {
+        var calls = (r.driveCalls || []).filter(function (c) { return c.indexOf("OPTIONS") !== 0 }).length
+        root.cashewChromiumResult = "Last sync: " + (r.added || 0) + (r.added === 1 ? " row" : " rows") + " sent"
+          + (calls > 0 ? ", synced with Google Drive" : ", but Cashew made no Drive calls")
+        root.cashewGuessNotify("Cashew synced", root.cashewChromiumResult.replace("Last sync: ", ""))
+      }
+      root.cashewSyncNow()            // the sent rows are in Cashew now: the count goes to 0, auto-track marks them
+      root.refreshData()
+    }
   }
   function cashewSyncAfterClick() {
     root.cashewSyncClicked = false
@@ -468,7 +504,7 @@ Panel {
   onTransactionsChanged: { cashewSyncTimer.interval = 8000; cashewSyncTimer.restart() }
   Process {
     id: cashewSyncProc
-    command: ["python3", root.txdbBin, "cashew-sync"]
+    command: ["python3", root.txdbBin, "cashew-sync", "--chromium"]
     stdout: StdioCollector { id: cashewSyncOut }
     onExited: function (exitCode) {
       var r

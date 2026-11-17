@@ -1298,18 +1298,18 @@ function cashewControl(sync, running) {
   var r = { glyph: "\u{F04E6}", tone: "busy", badge: "", spin: !!running, tooltip: "Checking…" }
   if (s.recatWaiting) {
     r.tone = "pending"; r.badge = "fix"
-    r.tooltip = "The category fix waits for its import: click to copy its path and open Cashew. New rows sync after it."
+    r.tooltip = "A category fix file waits for its import in Cashew. New rows sync after it."
   } else if (s.error) {
     r.glyph = "!"; r.tone = "error"; r.tooltip = "Sync: " + s.error
   } else if (s.pending > 0) {
     r.tone = "pending"; r.badge = String(s.pending)
-    r.tooltip = "The sync file holds " + (s.rows || 0) + " new rows"
+    r.tooltip = (s.rows || 0) + " new rows wait for Cashew"
       + (s.transfers > 0 ? " (" + s.transfers + " transfers)" : "")
       + ", " + (s.notes || 0) + " notes for rows Cashew has, " + corr + " balance corrections"
-      + ". Click: copy its path and open Cashew to import it." + (wc > 0 ? "\n" + wc + " more need a category first." : "")
+      + ". Click: send them to Cashew and sync (no window)." + (wc > 0 ? "\n" + wc + " more need a category first." : "")
   } else if (s.pending === 0) {
     r.glyph = "\u{F012C}"; r.tone = "ok"
-    r.tooltip = "Cashew is up to date" + (wc > 0 ? " (" + wc + " rows need a category)" : "") + ". Click to check again."
+    r.tooltip = "Cashew is up to date" + (wc > 0 ? " (" + wc + " rows need a category)" : "") + ". Click to sync with Cashew."
   }
   return r
 }

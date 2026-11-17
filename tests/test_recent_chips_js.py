@@ -63,10 +63,10 @@ class Chips(unittest.TestCase):
         self.assertEqual((fix["tone"], fix["badge"]), ("pending", "fix"))
         pend = c({"pending": 12, "rows": 10, "notes": 2, "transfers": 1, "corrections": [{}], "waitingCategory": 3})
         self.assertEqual((pend["tone"], pend["badge"]), ("pending", "12"))
-        self.assertEqual(pend["tooltip"], "The sync file holds 10 new rows (1 transfers), 2 notes for rows Cashew has, "
-                                          "1 balance corrections. Click: copy its path and open Cashew to import it.\n3 more need a category first.")
+        self.assertEqual(pend["tooltip"], "10 new rows wait for Cashew (1 transfers), 2 notes for rows Cashew has, "
+                                          "1 balance corrections. Click: send them to Cashew and sync (no window).\n3 more need a category first.")
         ok = c({"pending": 0, "waitingCategory": 0})
-        self.assertEqual((ok["tone"], ok["badge"], ok["tooltip"]), ("ok", "", "Cashew is up to date. Click to check again."))
+        self.assertEqual((ok["tone"], ok["badge"], ok["tooltip"]), ("ok", "", "Cashew is up to date. Click to sync with Cashew."))
         busy = c({"pending": -1}, True)
         self.assertEqual((busy["tone"], busy["spin"], busy["tooltip"]), ("busy", True, "Checking…"))
         self.assertEqual(self.js("cashewOpenTooltip(3)"), "Send 3 transactions to Cashew")
