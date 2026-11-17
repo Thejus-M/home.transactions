@@ -1,5 +1,11 @@
 [
  {
+  "match": "\\bkiran krishnan\\b",
+  "category": "Housing",
+  "subcategory": "Rent",
+  "sign": "debit"
+ },
+ {
   "match": "^ust\\b|\\bust global\\b|-ust-|/ust/|\\bneft\\b.*\\bust\\b",
   "category": "Salary",
   "subcategory": "Monthly",
