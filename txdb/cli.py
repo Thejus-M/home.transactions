@@ -267,7 +267,7 @@ def main(argv: list[str]) -> int:
             elif sub == "open":
                 cashew_chromium.open_window()
             elif sub == "login":
-                return cashew_chromium.login_window(log=lambda m: print(m, file=sys.stderr))
+                return cashew_chromium.login_window(log=lambda m: print(m, file=sys.stderr, flush=True), test_row="--test-row" in args)
             elif sub != "status":
                 print("usage: txdb cashew-chromium status | pull | open", file=sys.stderr)
                 return 2

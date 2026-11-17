@@ -383,7 +383,7 @@ def _tap(ch: Chromium, label: str, wait: float = 20.0) -> bool:
     return False
 
 
-def login_window(profile: Path = PROFILE, log=print) -> int:
+def login_window(profile: Path = PROFILE, log=print, test_row: bool = False) -> int:
     """Open the visible Cashew window and sign in: More > Login > the first Google account. Stays until the
     window is closed (it holds the debug pipe). Returns 0, or 1 when the login could not be done."""
     if in_use(profile):
@@ -423,10 +423,17 @@ def login_window(profile: Path = PROFILE, log=print) -> int:
                     ok = True                  # the popup closed: signed in
                     break
                 v = (r.get("result") or {}).get("value")
+                log(f"popup: {'click ' + v if v else 'waiting'}")
                 if v:
                     x, y = json.loads(v)
                     _click(ch, x, y, sid)
                     time.sleep(2)
+        if not ok:
+            # the popup may close on its own (Google remembers the choice): ask Cashew itself
+            time.sleep(3)
+            _tap(ch, "More", wait=10)
+            time.sleep(1.5)
+            ok = "logout" in [b[0].lower() for b in _buttons(ch)]
         if ok:
             log("Cashew is open and signed in")
         else:
@@ -435,7 +442,7 @@ def login_window(profile: Path = PROFILE, log=print) -> int:
         log(f"automatic login failed: {e}: log in by hand")
     try:
         if ok:
-            live_loop(ch, log)                 # signed in: now the edits, inside the page, until the window closes
+            live_loop(ch, log, test_row=test_row)   # signed in: now the edits, inside the page, until the window closes
         ch.proc.wait()
     finally:
         for fd in (ch._out, ch._in):
@@ -529,7 +536,7 @@ def _notify(text: str):
         pass
 
 
-def live_loop(ch: Chromium, log=print, every: float = 20.0):
+def live_loop(ch: Chromium, log=print, every: float = 20.0, test_row: bool = False):
     """While the window is open: when the widget DB changed, apply the ready rows inside the page."""
     from . import cashew, cli
     db_path = Path(cli.DB_PATH)
@@ -546,6 +553,13 @@ def live_loop(ch: Chromium, log=print, every: float = 20.0):
                 conn = cashew.open_readonly(db_path)
                 ready, waiting, every_rows, _, _ = cli.cashew_ready(conn, cashew.load_state())
                 conn.close()
+                if test_row:                   # only one ₹1 HDFC row, once; nothing else is sent
+                    src = [d for d in every_rows if d.get("account") == "HDFC" and d.get("kind") != "transfer"
+                           and d.get("category") not in (None, "", cashew.UNCATEGORIZED[0])][0]
+                    ready = [dict(src, id="txdb-live-test", date=time.strftime("%Y-%m-%d"), amount="-1.00",
+                                  title="TXDB TEST", notes="test row from the widget, delete me", include=True)]
+                    every_rows = []
+                    every = 10 ** 9
                 r = live_push(ch, ready, note_drafts=every_rows)
                 info = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "added": r["added"], "notes": r.get("notesUpdated", 0),
                         "statements": r["statements"], "rows": r["after"], "waitingCategory": len(waiting),
