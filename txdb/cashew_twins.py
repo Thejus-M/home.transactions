@@ -80,7 +80,12 @@ def find_browser_copy(home: Path | None = None) -> Path | None:
     if home is None and os.environ.get("TXDB_NO_BROWSER_COPY"):
         return None                       # tests and scripts switch the lookup off
     for path in _browser_blobs(home):
-        copy = Path(tempfile.mkdtemp(prefix="cashew-web-")) / "cashew.sqlite"
+        # One temp folder per process, removed when the process ends (each run used to leave a 1.8 MB
+        # copy in /tmp, which is held in memory).
+        folder = tempfile.mkdtemp(prefix="cashew-web-")
+        import atexit
+        atexit.register(shutil.rmtree, folder, True)
+        copy = Path(folder) / "cashew.sqlite"
         try:
             shutil.copyfile(path, copy)
         except OSError:

@@ -205,6 +205,23 @@ def main(argv: list[str]) -> int:
         return cashew_guess.main(args)
     if cmd in ("cashew-draft", "cashew-links"):
         return _cashew(cmd, args)
+    if cmd == "cashew-stamp":
+        # cashew-stamp: one line that changes whenever Cashew's storage in Zen changes (the modification times
+        # and sizes of the IndexedDB files). Cheap: the widget runs it every few seconds and runs cashew-sync
+        # only when the line changes.
+        from . import cashew_twins
+        home = Path(os.environ.get("TXDB_BROWSER_HOME") or Path.home())
+        parts = []
+        for pattern in (".config/*/*/storage/default/https+++budget-track.web.app/idb/*",
+                        ".mozilla/firefox/*/storage/default/https+++budget-track.web.app/idb/*"):
+            for p in sorted(home.glob(pattern)):
+                try:
+                    st = p.stat()
+                    parts.append(f"{p.name}:{st.st_mtime_ns}:{st.st_size}")
+                except OSError:
+                    continue
+        print("|".join(parts))
+        return 0
     if cmd == "cashew-sync":
         # cashew-sync [--dry-run]: the automatic sync. Every untracked row that is ready (ticked, a confirmed
         # category, not waiting for the AI) and not yet in Cashew goes into ONE file, cashew-sync.sql, made

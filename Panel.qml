@@ -410,20 +410,47 @@ Panel {
     : root.cashewSync.pending === 0 ? "Cashew is up to date"
     : "Import " + root.cashewSync.pending + (root.cashewSync.pending === 1 ? " row" : " rows") + " into Cashew"
   function cashewSyncNow() {
-    if (cashewSyncProc.running) { cashewSyncTimer.restart(); return }
+    if (cashewSyncProc.running) { cashewSyncTimer.interval = 1500; cashewSyncTimer.restart(); return }
     cashewSyncProc.running = true
   }
+  // Cashew changed (an import, a row added in Cashew): its storage files change, and the sync runs within
+  // seconds. The check is one cheap command every 5 s; the full sync only when its output changes.
+  property string cashewStamp: ""
+  Timer { interval: 5000; running: true; repeat: true; onTriggered: if (!cashewStampProc.running) cashewStampProc.running = true }
+  Process {
+    id: cashewStampProc
+    command: ["python3", root.txdbBin, "cashew-stamp"]
+    stdout: StdioCollector { id: cashewStampOut }
+    onExited: function (exitCode) {
+      var s = (cashewStampOut.text || "").trim()
+      if (s === "" || s === root.cashewStamp) return
+      var first = root.cashewStamp === ""
+      root.cashewStamp = s
+      if (!first) { cashewSyncTimer.interval = 3000; cashewSyncTimer.restart() }
+    }
+  }
+  // A click checks first; Cashew opens only when rows really still wait (after an import it does not).
+  property bool cashewSyncClicked: false
   function cashewSyncClick() {
-    if (root.cashewSync.path) {
+    root.cashewSyncClicked = true
+    root.cashewSyncNow()
+  }
+  function cashewSyncAfterClick() {
+    root.cashewSyncClicked = false
+    if (root.cashewSync.error) return
+    if (root.cashewSync.pending > 0 && root.cashewSync.path) {
       Quickshell.execDetached(["wl-copy", root.cashewSync.path])
       Quickshell.execDetached(["xdg-open", "https://budget-track.web.app/"])
       root.cashewGuessNotify("Cashew: import the sync file", "Path copied: " + root.cashewSync.path
         + "\nIn Cashew: Settings, Backup, Import. Use the only open Cashew tab and refresh it when it asks.")
-    } else root.cashewSyncNow()
+    } else {
+      root.cashewGuessNotify("Cashew is up to date", root.cashewSync.waitingCategory > 0
+        ? root.cashewSync.waitingCategory + " rows still need a category." : "Nothing to import.")
+    }
   }
   Timer { id: cashewSyncTimer; interval: 8000; onTriggered: root.cashewSyncNow() }
-  Timer { interval: 120000; running: true; repeat: true; onTriggered: root.cashewSyncNow() }
-  onTransactionsChanged: cashewSyncTimer.restart()
+  Timer { interval: 300000; running: true; repeat: true; onTriggered: root.cashewSyncNow() }   // a safety net
+  onTransactionsChanged: { cashewSyncTimer.interval = 8000; cashewSyncTimer.restart() }
   Process {
     id: cashewSyncProc
     command: ["python3", root.txdbBin, "cashew-sync"]
@@ -442,6 +469,7 @@ Panel {
       if (!r.error && r.direct && r.written > 0)
         root.cashewGuessNotify("Cashew: " + r.written + (r.written === 1 ? " row" : " rows") + " written straight in",
           "Zen was closed, so the rows went straight into Cashew's storage. Backup: " + r.backup)
+      if (root.cashewSyncClicked) root.cashewSyncAfterClick()
       if (!r.error && r.pending > 0 && r.pending !== before)
         root.cashewGuessNotify("Cashew: " + r.pending + (r.pending === 1 ? " row waits" : " rows wait"),
           "The sync file is ready: click the sync badge next to Cashew, then import it in Cashew.")
@@ -3533,7 +3561,12 @@ Panel {
                   color: root.cashewSync.error ? root.debitColor : (cashewSyncBadge.waiting ? root.pendingColor : root.creditColor)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.body
-                  RotationAnimation on rotation { running: cashewSyncProc.running; from: 0; to: 360; duration: 900; loops: Animation.Infinite }
+                  width: Style.space(16)
+                  height: Style.space(16)
+                  horizontalAlignment: Text.AlignHCenter
+                  verticalAlignment: Text.AlignVCenter
+                  // spins while a check runs and always finishes its turn, so the icon is never left tilted
+                  RotationAnimation on rotation { running: cashewSyncProc.running; from: 0; to: 360; duration: 900; loops: Animation.Infinite; alwaysRunToEnd: true }
                 }
                 Text {
                   visible: cashewSyncBadge.waiting
