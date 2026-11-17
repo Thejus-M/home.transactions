@@ -407,8 +407,9 @@ Panel {
   property var cashewFileIds: []
   property int cashewFileAdded: 0
   property bool cashewImportWaiting: false
+  property int cashewFileBase: 0
   function cashewFixStart() {
-    if (root.cashewFixing || cashewFixProc.running || root.cashewSending || !root.cashewVerifyGate()) return
+    if (root.cashewFixing || cashewFixProc.running || root.cashewSending || root.cashewSendPaused || !root.cashewVerifyGate()) return
     var keep = ({})
     root.cashewShown.forEach(function (i) { keep[i] = true })
     var chosen = root.cashewDrafts.filter(function (d, i) { return keep[i] && d.include !== false && d.inCashew !== true })
@@ -437,6 +438,7 @@ Panel {
       root.cashewFixing = false
       root.cashewFileIds = r.ids
       root.cashewFileAdded = r.added
+      root.cashewFileBase = r.base
       if (r.path !== "" && r.added > 0) {
         root.cashewImportWaiting = true
         cashewImportWaitProc.command = ["python3", root.txdbBin, "cashew-wait", String(r.added), "--timeout", "1800"]
@@ -462,6 +464,32 @@ Panel {
       root.cashewImportWaiting = false
       if (exitCode !== 0) {
         root.cashewFixMessage = "The import was not seen in 30 minutes. Import the file, then press Create the Cashew file again: rows already in Cashew are left out."
+        return
+      }
+      // Cashew web asks for a refresh after an import; until then the tab holds the old database and can
+      // still write it back. So the rows must still be there 30 s later.
+      root.cashewImportWaiting = true
+      root.cashewFixMessage = "Import seen. Refresh the Cashew tab when it asks; checking again in 30 s that the rows stay."
+      cashewImportRecheck.restart()
+    }
+  }
+  Timer {
+    id: cashewImportRecheck
+    interval: 30000
+    onTriggered: if (root.cashewImportWaiting) cashewImportCountProc.running = true
+  }
+  Process {
+    id: cashewImportCountProc
+    command: ["python3", root.txdbBin, "cashew-count"]
+    stdout: StdioCollector { id: cashewImportCountOut }
+    onExited: function (exitCode) {
+      if (!root.cashewImportWaiting) return
+      root.cashewImportWaiting = false
+      var n = parseInt((cashewImportCountOut.text || "").trim(), 10)
+      if (!(n >= root.cashewFileBase + root.cashewFileAdded)) {
+        root.cashewFixMessage = "The import did not stay: Cashew has " + (isNaN(n) ? "?" : n) + " rows, it should have "
+          + (root.cashewFileBase + root.cashewFileAdded) + ". Another Cashew tab probably wrote its old data back. Close all Cashew tabs but one, refresh it, and import the file again."
+        root.cashewGuessNotify("Cashew: the import did not stay", root.cashewFixMessage)
         return
       }
       var done = ({})
@@ -910,6 +938,11 @@ Panel {
   // rows the send adds when it next saves or closes.
   function cashewSendAll() {
     if (root.cashewSending || root.cashewSendPaused || cashewTabsProc.running || !root.cashewVerifyGate()) return
+    if (root.cashewImportWaiting || cashewFixProc.running) {
+      // The file replaces the whole database when imported: rows a link adds now would be erased by it.
+      root.cashewSendNote = "Not started: a Cashew file is waiting for its import. Import it first (or make a new file later): importing it after a link would erase what the link added."
+      return
+    }
     root.cashewSendPhase = ""
     root.cashewSendNote = "Checking that no Cashew tab is open in Zen…"
     cashewTabsProc.running = true

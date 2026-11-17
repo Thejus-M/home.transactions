@@ -224,7 +224,8 @@ def main(argv: list[str]) -> int:
             else:
                 folder = cashew_file.default_dir()
                 folder.mkdir(parents=True, exist_ok=True)
-                out = folder / f"cashew-import-{datetime.now().strftime('%Y%m%d-%H%M%S')}.sqlite"
+                # .sql like Cashew's own export (Cashew's import warns on other names)
+                out = folder / f"cashew-import-{datetime.now().strftime('%Y%m%d-%H%M%S')}.sql"
             result = cashew_file.build(base, out, drafts, dry_run="--dry-run" in args)
         except (ValueError, OSError, sqlite3.Error) as e:
             print(json.dumps({"error": str(e)}))
