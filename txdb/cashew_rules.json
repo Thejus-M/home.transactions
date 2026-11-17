@@ -316,7 +316,7 @@
   "sign": "debit"
  },
  {
-  "match": "surcharge waiver",
+  "match": "surcharge waiver|fuel surcharge",
   "category": "Cashback & Rewards",
   "subcategory": "Refund",
   "sign": "credit"

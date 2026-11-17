@@ -139,6 +139,15 @@ class IngestTests(Base):
         self.assertEqual(ingest.known_ids(self.conn, aid), {"t-s1"})
         self.assertEqual([r[0] for r in self.conn.execute("SELECT transaction_id FROM tracked")], ["t-s1"])
 
+    def test_unsettled_outside_the_read_stays(self):
+        aid = ingest.ensure_account(self.conn, "ICICI", "credit", "4002")
+        ingest.replace_unsettled(self.conn, aid, [row("old", "2026-11-11", -2688.0, "BISTRO"),
+                                                  row("fuel", "2026-11-14", -467.78, "FUEL")])
+        # the next read covers 12 Nov on: the fuel spend settled at another amount, the bistro was not in view
+        ingest.upsert_rows(self.conn, aid, [row("fuel2", "2026-11-14", -472.46, "FUEL")])
+        ingest.replace_unsettled(self.conn, aid, [], since="2026-11-12")
+        self.assertEqual(ingest.known_ids(self.conn, aid), {"t-old", "t-fuel2"})
+
     def test_balance_none_keeps_previous(self):
         ingest.set_balance(self.conn, self.aid, 100.5)
         ingest.set_balance(self.conn, self.aid, None)

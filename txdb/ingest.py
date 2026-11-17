@@ -113,7 +113,7 @@ def replace_window(conn: sqlite3.Connection, aid: str, rows: list[dict], start: 
     return len(ids - known)
 
 
-def replace_unsettled(conn: sqlite3.Connection, aid: str, rows: list[dict]) -> None:
+def replace_unsettled(conn: sqlite3.Connection, aid: str, rows: list[dict], since: str | None = None) -> None:
     """Card spends not yet settled are a snapshot: replaced on every fetch.
     When one has since settled (same date, amount and description), a
     tracked flag on it moves to the settled row."""
@@ -121,8 +121,9 @@ def replace_unsettled(conn: sqlite3.Connection, aid: str, rows: list[dict]) -> N
     ts = now()
     ids = {r["id"] for r in rows}
     with write(conn):
+        # since: the first date the read covered; an older pending row was not in view, so it stays
         gone = conn.execute("SELECT id, date, amount_paise, merchant FROM transactions "
-                            "WHERE account_id = ? AND status = 'unsettled'", (aid,)).fetchall()
+                            "WHERE account_id = ? AND status = 'unsettled' AND date >= ?", (aid, since or "")).fetchall()
         for old in gone:
             if old["id"] in ids:
                 continue
