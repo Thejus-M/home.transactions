@@ -1582,6 +1582,8 @@ Panel {
   property int writeEpoch: 0
   // the last data refresh failed: the panel shows older data (said in the RECENT title and once as a notification)
   property string snapshotError: ""
+  // BILLS starts folded to its totals line, so search and the transactions are in view when the panel opens
+  property bool billsFolded: true
   function setSnapshotError(msg) {
     if (msg && !root.snapshotError)
       Quickshell.execDetached([Quickshell.env("OMARCHY_PATH") + "/bin/omarchy-notification-send", "--app-name",
@@ -3148,8 +3150,14 @@ Panel {
             // names on one left edge.
             anchors.leftMargin: Style.spacing.rowPaddingX
             anchors.verticalCenter: parent.verticalCenter
-            text: "BILLS"
+            text: root.billsFolded ? "BILLS  ▸" : "BILLS  ▾"
             foreground: root.foreground
+            MouseArea {
+              anchors.fill: parent
+              anchors.margins: -Style.space(4)
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.billsFolded = !root.billsFolded
+            }
           }
 
           Row {
@@ -3190,7 +3198,7 @@ Panel {
           readonly property var total: root.creditTotal
           readonly property bool _hot: limitHover.hovered || limitHeader.activeFocus
 
-          visible: root.tab === "bank" && root.creditLimits.length > 0
+          visible: root.tab === "bank" && root.creditLimits.length > 0 && !root.billsFolded
           width: parent.width
           implicitHeight: limitTotalLabel.implicitHeight + Style.space(5) + limitTotalTrack.height
             + Style.space(4) + (limitTotalKey.visible ? limitTotalKey.implicitHeight + Style.space(5) : 0)
@@ -3502,7 +3510,7 @@ Panel {
         }
 
         Column {
-          visible: root.tab === "bank" && root.cardOverviewList.length > 0
+          visible: root.tab === "bank" && root.cardOverviewList.length > 0 && !root.billsFolded
           width: parent.width
           spacing: Style.spacing.xxs
 
