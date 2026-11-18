@@ -286,6 +286,8 @@ Panel {
   // Today (local ISO date). Refreshed when the popup opens, so "30d" and
   // "This month" do not go stale in a shell that runs for days.
   property string todayIso: Model.todayIso()
+  // "today" moves at midnight even while the panel stays open (Today/Yesterday labels, 30-day filter, month)
+  Timer { interval: 60000; running: true; repeat: true; onTriggered: if (Model.todayIso() !== root.todayIso) root.todayIso = Model.todayIso() }
   // The inline filter panel under the RECENT header is open.
   property bool filterOpen: false
   function setFilterPart(part, value) {
@@ -1311,7 +1313,7 @@ Panel {
     onTriggered: root.cashewRebuildLinks()
   }
 
-  readonly property var groupedTransactions: Model.groupByDate(Model.collapseTransfers(root.filteredTransactions, store.transfers))
+  readonly property var groupedTransactions: Model.groupByDate(Model.collapseTransfers(root.filteredTransactions, store.transfers), root.todayIso)
   // Flat, one-row-per-entry version of groupedTransactions for txnList (the
   // virtualized ListView below) — see Model.flattenGroups.
   // Only the newest rowLimit rows get a delegate: every row costs ~100 QML
@@ -1365,7 +1367,7 @@ Panel {
   // "Whole picture" stats — read the full, unfiltered transaction list
   // (post-tracked-override, pre-account-filter/search) so they stay
   // stable regardless of which chip is selected or what's searched.
-  readonly property var monthSummary: Model.monthSummary(root.transactions)
+  readonly property var monthSummary: Model.monthSummary(root.transactions, root.todayIso)
   readonly property var accountBalances: store.accountBalances
 
   // Credit/debit colors — single source of truth; TransactionCard derives
@@ -2226,7 +2228,7 @@ Panel {
     // Fires a desktop notification for each unpaid card, at most once per
     // card per calendar day. Runs after every snapshot.
     function checkBillReminders() {
-      var today = new Date().toISOString().slice(0, 10)
+      var today = Model.todayIso()           // the local date (toISOString is UTC: wrong before 05:30 IST)
       var overrides = Object.assign({}, billOverrides)
       var changed = false
       var last4s = Object.keys(cardOverviews)

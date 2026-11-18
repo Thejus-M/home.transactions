@@ -100,21 +100,26 @@ function formatFullDate(dateIso) {
 // "4 Oct" (older) — named manually (not toLocaleDateString) since
 // Intl/ICU locale data isn't guaranteed available in Quickshell's JS
 // engine.
-function formatRelativeDate(dateIso) {
-  var parts = dateIso.split("-")
-  var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
-  var today = new Date()
-  today.setHours(0, 0, 0, 0)
-  d.setHours(0, 0, 0, 0)
-
-  var diffDays = Math.round((today - d) / 86400000)
+function formatRelativeDate(dateIso, todayIso) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateIso || ""))
+  if (!m) return String(dateIso || "")
+  var diffDays = _daysBefore(dateIso, todayIso)
   var dayMonth = formatDate(dateIso)
-
   if (diffDays === 0) return "Today"
   if (diffDays === 1) return "Yesterday"
-  if (diffDays > 1 && diffDays < 7) return _WEEKDAY_NAMES[d.getDay()] + ", " + dayMonth
+  if (diffDays > 1 && diffDays < 7) return _WEEKDAY_NAMES[_localDate(dateIso).getDay()] + ", " + dayMonth
   return dayMonth
 }
+
+// local Date of "YYYY-MM-DD" (midnight), and how many days `iso` lies before `todayIso` (today when omitted)
+function _localDate(iso) {
+  var p = String(iso || "").slice(0, 10).split("-")
+  return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]))
+}
+function _daysBefore(iso, todayIso) {
+  return Math.round((_localDate(todayIso || todayIso_()) - _localDate(iso)) / 86400000)
+}
+function todayIso_() { return todayIso() }
 
 var _MONTH_FULL_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -124,20 +129,15 @@ var _MONTH_FULL_NAMES = [
 // "Today, October 5" / "Yesterday, October 4" / "Saturday, October 3"
 // (within the past week) / "October 2" eventually — used for RECENT's
 // date-group headers (one per calendar day), not per-row.
-function dateGroupLabel(dateIso) {
-  var parts = dateIso.split("-")
-  var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
-  var today = new Date()
-  today.setHours(0, 0, 0, 0)
-  d.setHours(0, 0, 0, 0)
-
-  var diffDays = Math.round((today - d) / 86400000)
-  var monthDay = formatDate(dateIso)
-
-  if (diffDays === 0) return "Today, " + monthDay
-  if (diffDays === 1) return "Yesterday, " + monthDay
-  if (diffDays > 1 && diffDays < 7) return _WEEKDAY_NAMES[d.getDay()] + ", " + monthDay
-  return monthDay
+// The weekday is always shown: "Today · Wednesday, 18-Nov", "Yesterday · Tuesday, 17-Nov",
+// "Saturday, 14-Nov". `todayIso` comes from the panel (it moves at midnight); omitted = now.
+function dateGroupLabel(dateIso, todayIso) {
+  if (!/^\d{4}-\d{2}-\d{2}/.test(String(dateIso || ""))) return String(dateIso || "No date")
+  var diffDays = _daysBefore(dateIso, todayIso)
+  var day = _WEEKDAY_NAMES[_localDate(dateIso).getDay()] + ", " + formatDate(dateIso)
+  if (diffDays === 0) return "Today · " + day
+  if (diffDays === 1) return "Yesterday · " + day
+  return day
 }
 
 // Buckets `transactions` into one entry per calendar date:
@@ -193,14 +193,14 @@ function collapseTransfers(rows, transferList) {
   return out
 }
 
-function groupByDate(transactions) {
+function groupByDate(transactions, todayIso) {
   var order = []
   var byDate = {}
   for (var i = 0; i < transactions.length; i++) {
     var t = transactions[i]
     var bucket = byDate[t.date]
     if (!bucket) {
-      bucket = { date: t.date, label: dateGroupLabel(t.date), rows: [], total: 0, currency: t.currency }
+      bucket = { date: t.date, label: dateGroupLabel(t.date, todayIso), rows: [], total: 0, currency: t.currency }
       byDate[t.date] = bucket
       order.push(bucket)
     }
@@ -1069,7 +1069,7 @@ function accountBank(accountId) {
 // (income - spent). Reads the full, unfiltered transaction list — this is
 // a "whole picture" stat, not scoped to whatever account chip is selected.
 function monthSummary(transactions, referenceDateIso) {
-  var ym = (referenceDateIso || new Date().toISOString().slice(0, 10)).slice(0, 7)
+  var ym = (referenceDateIso || todayIso()).slice(0, 7)          // local date, not UTC
   var spent = 0
   var income = 0
   var refunded = 0
