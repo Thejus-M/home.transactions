@@ -475,7 +475,7 @@ def main(argv: list[str]) -> int:
                 mine = [d for d in _w if not d.get("inCashew") and d.get("account") == b["account"] and str(d.get("date")) <= b["date"]]
                 b["waitingPaise"] = sum(round(float(d.get("amount") or 0) * 100) for d in mine)
                 b["waitingRows"] = len(mine)
-            BUILD_VERSION = 4                      # part of the memo key: a code change makes the file again
+            BUILD_VERSION = 5                      # part of the memo key: a code change makes the file again
             key = [BUILD_VERSION, sorted(str(d.get("id")) + "|" + str(d.get("category")) + "|" + str(d.get("amount")) + "|"
                           + str(d.get("notes")) + "|" + str(d.get("title")) for d in ready),
                    hashlib.sha1("".join(sorted(str(d["id"]) + str(d.get("notes")) for d in every)).encode()).hexdigest(),
@@ -500,10 +500,13 @@ def main(argv: list[str]) -> int:
             # which untracked rows Cashew already has
             from . import cashew_dedupe
             cdb = sqlite3.connect(f"{base.as_uri()}?mode=ro", uri=True)
-            probe = [dict(d) for d in items]
+            probe = [dict(d, include=True) for d in every]      # all rows claim their Cashew rows (see cashew_file)
             cashew_dedupe.mark(probe, cdb)
+            item_ids = {d["id"] for d in items}
+            probe = [d for d in probe if d["id"] in item_ids]
             cdb.close()
             in_cashew = [d["id"] for d in probe if d.get("inCashew")]
+            untracked_missing = sum(1 for d in probe if not d.get("inCashew") and d["id"] not in tracked_ids)
             # widget edits (name, note, bill, category) of rows Cashew has, not yet sent (txdb/cashew_edits.py)
             from . import cashew_edits
             _e = [dict(d, include=True) for d in every]
@@ -514,7 +517,8 @@ def main(argv: list[str]) -> int:
         except (ValueError, OSError, sqlite3.Error) as e:
             print(json.dumps({"error": str(e)}))
             return 1
-        print(json.dumps({"pending": r["added"] + len(edited) + max(0, r.get("notesUpdated", 0) - len(edited)), "edits": len(edited), "editedIds": edited, "rows": r["added"], "transfers": r["transfers"],
+        print(json.dumps({"pending": max(r["added"], untracked_missing) + len(edited) + max(0, r.get("notesUpdated", 0) - len(edited)),
+                          "untracked": untracked_missing, "edits": len(edited), "editedIds": edited, "rows": r["added"], "transfers": r["transfers"],
                           "notes": r.get("notesUpdated", 0), "corrections": r.get("corrections", []),
                           "waitingCategory": sum(1 for d in _w if not d.get("inCashew")),   # only rows Cashew lacks
                           "inCashewIds": [i for i in in_cashew if i not in tracked_ids],

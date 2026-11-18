@@ -63,7 +63,7 @@ class Chips(unittest.TestCase):
         self.assertEqual((fix["tone"], fix["badge"]), ("pending", "fix"))
         pend = c({"pending": 12, "rows": 10, "notes": 2, "transfers": 1, "corrections": [{}], "waitingCategory": 3})
         self.assertEqual((pend["tone"], pend["badge"]), ("pending", "12"))
-        self.assertEqual(pend["tooltip"], "10 new rows wait for Cashew (1 transfers), 2 notes for rows Cashew has, "
+        self.assertEqual(pend["tooltip"], "10 rows not in Cashew yet (1 transfers), 2 notes for rows Cashew has, "
                                           "1 balance corrections. Click: send them to Cashew and sync (no window).\n3 more need a category first.")
         ok = c({"pending": 0, "waitingCategory": 0})
         self.assertEqual((ok["tone"], ok["badge"], ok["tooltip"]), ("ok", "", "Cashew is up to date. Nothing to sync."))

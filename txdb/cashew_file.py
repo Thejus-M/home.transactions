@@ -65,7 +65,13 @@ def build(base: Path | str, out: Path | str, drafts: list[dict], dry_run: bool =
         base_count = conn.execute("SELECT count(*) FROM transactions").fetchone()[0]
         idx = Index(conn)
         chosen = [dict(d) for d in drafts if d.get("include", True) and not d.get("inCashew")]
-        already = cashew_dedupe.mark(chosen, conn)["found"]          # the window's view can be minutes old
+        # every widget row (tracked ones too) claims its own Cashew row first: else a new payment can take the
+        # Cashew row of an older, same-amount payment to the same payee a few days earlier
+        pool = {str(d.get("id")): dict(d) for d in (note_drafts or [])}
+        for d in chosen:
+            pool[str(d.get("id"))] = d
+        cashew_dedupe.mark(list(pool.values()), conn)
+        already = sum(1 for d in chosen if d.get("inCashew"))          # the window's view can be minutes old
         chosen = [d for d in chosen if not d.get("inCashew")]
         template = conn.execute("SELECT * FROM transactions WHERE method_added = 4 ORDER BY date_time_modified DESC LIMIT 1"
                                 ).fetchone() or conn.execute("SELECT * FROM transactions LIMIT 1").fetchone()
