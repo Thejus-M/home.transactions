@@ -1561,12 +1561,17 @@ Panel {
   // reader) that really does need a full reload.
   property int selfWriteCredits: 0
   property bool _lastWriteOptimistic: false
+  // +1 per finished write. A snapshot remembers the value it started with; if a write finished while it ran,
+  // its data is from before that write and would undo it on screen: it is dropped and read again.
+  property int writeEpoch: 0
+  property int snapshotEpoch: -1
 
   function refreshData() {
     if (snapshotProc.running || txdbWriteProc.running || txdbQueue.length > 0) {
       refreshPending = true
       return
     }
+    root.snapshotEpoch = root.writeEpoch
     snapshotProc.running = true
   }
 
@@ -1593,6 +1598,7 @@ Panel {
     id: txdbWriteProc
     stderr: StdioCollector { id: writeErr }
     onExited: function (exitCode) {
+      root.writeEpoch++
       if (exitCode !== 0) {
         console.warn("txdb write failed (" + exitCode + "): " + command.slice(2).join(" "))
         // No touch is coming for this one (txdb/db.py only touches .changed
@@ -1607,6 +1613,9 @@ Panel {
           "--app-name", "home.transactions", "Could not save: " + failed[0],
           (writeErr.text || "").trim().split("\n").pop() || ("exit " + exitCode)
         ])
+        // the database did not change, so the next snapshot text equals the last one; forget it, or the
+        // snapshot is skipped and the optimistic change stays on screen
+        store.lastSnapshotText = ""
         root.refreshData()
       } else if (command.slice(2)[0] === "txn-category") {
         // A category chosen in the main list is in the state file now. The Cashew window
@@ -1741,6 +1750,7 @@ Panel {
     function applySnapshot(text) {
       // An identical snapshot (a touch with no real change) would only
       // re-assign every array and re-run every row binding.
+      if (root.snapshotEpoch !== root.writeEpoch) { root.refreshPending = true; return }   // a write ran meanwhile
       if (text === store.lastSnapshotText) return
       var snap
       try { snap = JSON.parse(text) } catch (e) { console.warn("txdb snapshot unreadable: " + e); return }
