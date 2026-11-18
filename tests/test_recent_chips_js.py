@@ -66,7 +66,7 @@ class Chips(unittest.TestCase):
         self.assertEqual(pend["tooltip"], "10 new rows wait for Cashew (1 transfers), 2 notes for rows Cashew has, "
                                           "1 balance corrections. Click: send them to Cashew and sync (no window).\n3 more need a category first.")
         ok = c({"pending": 0, "waitingCategory": 0})
-        self.assertEqual((ok["tone"], ok["badge"], ok["tooltip"]), ("ok", "", "Cashew is up to date. Click to sync with Cashew."))
+        self.assertEqual((ok["tone"], ok["badge"], ok["tooltip"]), ("ok", "", "Cashew is up to date. Nothing to sync."))
         busy = c({"pending": -1}, True)
         self.assertEqual((busy["tone"], busy["spin"], busy["tooltip"]), ("busy", True, "Checking…"))
         self.assertEqual(self.js("cashewOpenTooltip(3)"), "Send 3 transactions to Cashew")

@@ -468,6 +468,8 @@ Panel {
   property string cashewChromiumResult: ""
   function cashewSyncClick() {
     if (cashewChromiumProc.running) return
+    // the tick: nothing waits, so a click does nothing (a sync runs only when there is something to send)
+    if (!root.cashewSync.error && !root.cashewSync.recatWaiting && root.cashewSync.pending === 0) return
     root.cashewChromiumLine = ""
     root.cashewChromiumResult = ""
     cashewChromiumProc.running = true
@@ -3649,7 +3651,7 @@ Panel {
                   id: cashewSyncMouse
                   anchors.fill: parent
                   hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
+                  cursorShape: cashewCtl.st.tone === "ok" ? Qt.ArrowCursor : Qt.PointingHandCursor   // the tick is not a button
                   onClicked: root.cashewSyncClick()
                 }
                 ToolTip.visible: cashewSyncMouse.containsMouse

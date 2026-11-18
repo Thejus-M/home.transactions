@@ -1317,7 +1317,7 @@ function cashewControl(sync, running) {
       + ". Click: send them to Cashew and sync (no window)." + (wc > 0 ? "\n" + wc + " more need a category first." : "")
   } else if (s.pending === 0) {
     r.glyph = "\u{F012C}"; r.tone = "ok"
-    r.tooltip = "Cashew is up to date" + (wc > 0 ? " (" + wc + " rows need a category)" : "") + ". Click to sync with Cashew."
+    r.tooltip = "Cashew is up to date" + (wc > 0 ? " (" + wc + " rows need a category)" : "") + ". Nothing to sync."
   }
   return r
 }
