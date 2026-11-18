@@ -549,7 +549,7 @@ def live_run(ch: Chromium, stmts: list[str]) -> int:
 
 
 def live_push(ch: Chromium, drafts: list[dict], note_drafts: list[dict] | None = None,
-              backups: Path | None = None) -> dict:
+              backups: Path | None = None, extra: list[str] | None = None) -> dict:
     """Build the update on the live data and apply only the difference. Returns the build result plus
     {statements, before, after, backup}. Raises ValueError and changes nothing on any doubt."""
     from . import cashew_diff, cashew_file
@@ -560,14 +560,16 @@ def live_push(ch: Chromium, drafts: list[dict], note_drafts: list[dict] | None =
         new = Path(tmp) / "new.sqlite"
         r = cashew_file.build(base, new, drafts, note_drafts=note_drafts or [], balances=[])
         result = dict(r, statements=0, before=before, after=before, backup="")
-        if r.get("changes", r["added"]) == 0:
-            return result
-        b, n = sqlite3.connect(base), sqlite3.connect(new)
-        try:
-            stmts = cashew_diff.statements(b, n)
-        finally:
-            b.close()
-            n.close()
+        stmts = []
+        if r.get("changes", r["added"]) > 0:
+            b, n = sqlite3.connect(base), sqlite3.connect(new)
+            try:
+                stmts = cashew_diff.statements(b, n)
+            finally:
+                b.close()
+                n.close()
+        # everything in one go: the new rows, note lines and the widget edits run in ONE transaction, one save
+        stmts = stmts + list(extra or [])
         if not stmts:
             return result
         bdir = backups or backup_dir()
@@ -686,11 +688,14 @@ def sync_window(profile: Path = PROFILE, log=print, wait: float = 45.0, keep_ope
         log(f"database: {_count_live(ch)} transactions in Cashew")
         if os.environ.get("TXDB_CASHEW_SYNC_ONLY") != "1":
             log(f"{len(ready)} rows are ready to send")
-            r = live_push(ch, ready, note_drafts=every_rows)
-            out["added"] = r["added"]
-            log(f"sent {r['added']} rows and {r.get('notesUpdated', 0)} notes ({r['statements']} statements)"
-                + (f", backup {r['backup']}" if r["backup"] else ""))
-            out.update(_edits_and_tracking(ch, log))
+            from . import cashew_edits
+            edit_stmts, memo, changed = _plan_edits(ch)
+            r = live_push(ch, ready, note_drafts=every_rows, extra=edit_stmts)
+            cashew_edits.save(memo)
+            out.update(added=r["added"], updated=len(changed))
+            log(f"in one go: {r['added']} new rows, {r.get('notesUpdated', 0)} note lines, {len(changed)} edited rows "
+                f"({r['statements']} statements, one transaction)" + (f", backup {r['backup']}" if r["backup"] else ""))
+            out["tracked"] = _track(ch, log)
         else:
             log("only syncing: no rows are sent (TXDB_CASHEW_SYNC_ONLY=1)")
         time.sleep(2)
@@ -725,30 +730,54 @@ def _count_live(ch: Chromium) -> int:
     return ch.eval("%s.exec('select count(*) from transactions')[0].values[0][0]" % _LIVE_DB)
 
 
-def _edits_and_tracking(ch: Chromium, log=print) -> dict:
-    """After the new rows: carry widget edits of rows Cashew already has into the page (cashew_edits), then
-    mark tracked every widget row Cashew now has (sent, matched, scheduled or subscription payments)."""
-    from . import cashew, cashew_dedupe, cashew_edits, cli
-    from .db import connect
-    with tempfile.TemporaryDirectory(prefix="cashew-edits-") as tmp:
-        live = Path(tmp) / "live.sqlite"
-        live.write_bytes(live_export(ch))
-        c = sqlite3.connect(live)
-        ro = cashew.open_readonly(Path(cli.DB_PATH))
-        drafts = [dict(d, include=True) for d in cashew.drafts(ro, cashew.load_state(), all_rows=True)]
-        tracked = {r[0] for r in ro.execute("SELECT transaction_id FROM tracked")}
-        ro.close()
-        cashew_dedupe.mark(drafts, c)
-        stmts, memo, changed = cashew_edits.plan(drafts, c, cashew_edits.load())
+def _live_marked(ch: Chromium):
+    """(widget drafts marked against the live page data, tracked ids, open live connection, temp dir)."""
+    from . import cashew, cashew_dedupe, cli
+    tmp = tempfile.TemporaryDirectory(prefix="cashew-live-")
+    live = Path(tmp.name) / "live.sqlite"
+    live.write_bytes(live_export(ch))
+    c = sqlite3.connect(live)
+    ro = cashew.open_readonly(Path(cli.DB_PATH))
+    drafts = [dict(d, include=True) for d in cashew.drafts(ro, cashew.load_state(), all_rows=True)]
+    tracked = {r[0] for r in ro.execute("SELECT transaction_id FROM tracked")}
+    ro.close()
+    cashew_dedupe.mark(drafts, c)
+    return drafts, tracked, c, tmp
+
+
+def _plan_edits(ch: Chromium):
+    """The UPDATEs for widget edits of rows Cashew already has (cashew_edits): (statements, memo, ids)."""
+    from . import cashew_edits
+    drafts, _, c, tmp = _live_marked(ch)
+    try:
+        return cashew_edits.plan(drafts, c, cashew_edits.load())
+    finally:
         c.close()
-    if stmts:
-        live_run(ch, stmts)
-    cashew_edits.save(memo)
-    log(f"updated {len(changed)} rows edited in the widget")
+        tmp.cleanup()
+
+
+def _track(ch: Chromium, log=print) -> int:
+    """Mark tracked every widget row Cashew now has (sent, matched, scheduled or subscription payments)."""
+    from . import cli
+    from .db import connect
+    drafts, tracked, c, tmp = _live_marked(ch)
+    c.close()
+    tmp.cleanup()
     ids = [d["id"] for d in drafts if d.get("inCashew") and d["id"] not in tracked]
     if ids:
         conn = connect()
         cli._set_tracked(conn, ids, True)
         conn.close()
     log(f"marked {len(ids)} rows as tracked")
-    return {"updated": len(changed), "tracked": len(ids)}
+    return len(ids)
+
+
+def _edits_and_tracking(ch: Chromium, log=print) -> dict:
+    """Edits and tracking as separate steps (kept for scripts; the sync uses one transaction)."""
+    from . import cashew_edits
+    stmts, memo, changed = _plan_edits(ch)
+    if stmts:
+        live_run(ch, stmts)
+    cashew_edits.save(memo)
+    log(f"updated {len(changed)} rows edited in the widget")
+    return {"updated": len(changed), "tracked": _track(ch, log)}
