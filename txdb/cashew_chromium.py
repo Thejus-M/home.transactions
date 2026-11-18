@@ -79,7 +79,8 @@ class Chromium:
             subprocess.run(["hyprctl", "eval", 'hl.window_rule({ match = { class = "%s" }, float = true, pin = true, '
                             'size = { 580, 900 }, move = { "(monitor_w-4)", "(monitor_h-4)" }, '
                             'opacity = "0.01 override 0.01 override", no_focus = true, no_initial_focus = true, '
-                            'no_anim = true, no_shadow = true, no_border = true, border_size = 0 })'
+                            'no_anim = true, no_shadow = true, no_border = true, border_size = 0, '
+                            'suppress_event = "activate activatefocus" })'
                             % HIDDEN_CLASS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
             mode += [f"--class={HIDDEN_CLASS}", "--disable-backgrounding-occluded-windows",
                      "--disable-renderer-backgrounding", "--disable-background-timer-throttling"]   # draw although unseen
@@ -90,12 +91,41 @@ class Chromium:
             pass_fds=(3, 4), preexec_fn=child, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         os.close(r1)
         os.close(w2)
+        if hidden:
+            self._guard_focus()
         self._out, self._in = w1, r2
         self._buf, self._n, self.events = b"", 0, []
         pages = [t for t in self.call("Target.getTargets")["targetInfos"] if t["type"] == "page"]
         target = pages[0]["targetId"] if visible and pages else self.call("Target.createTarget", {"url": "about:blank"})["targetId"]
         self.sid = self.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
         self.block_app = block_app
+
+    def _guard_focus(self):
+        """A watchdog for the hidden window: if it (or its Google popup) ever gets the keyboard focus, give
+        the focus straight back to the window the person was using."""
+        import threading
+
+        def active():
+            try:
+                return json.loads(subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True,
+                                                 timeout=3).stdout or "{}")
+            except (OSError, ValueError, subprocess.SubprocessError):
+                return {}
+        first = active()
+        self._home = first.get("address") if first.get("class") != HIDDEN_CLASS else None
+
+        def watch():
+            while self.proc.poll() is None:
+                w = active()
+                if w.get("class") == HIDDEN_CLASS:
+                    if self._home:
+                        subprocess.run(["hyprctl", "dispatch", 'hl.dsp.focus({ window = "address:%s" })' % self._home],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                    self.focus_stolen = getattr(self, "focus_stolen", 0) + 1
+                elif w.get("address"):
+                    self._home = w["address"]          # the person moved on: follow their window
+                time.sleep(0.15)
+        threading.Thread(target=watch, daemon=True).start()
 
     def _send(self, method, params=None, sid=None) -> int:
         self._n += 1
@@ -685,6 +715,8 @@ def sync_window(profile: Path = PROFILE, log=print, wait: float = 45.0, keep_ope
     finally:
         if not keep_open:
             ch.close()
+            if getattr(ch, "focus_stolen", 0):
+                log(f"the hidden window took focus {ch.focus_stolen} times; it was given back each time")
             log("closed the hidden Cashew window")
     return out
 
