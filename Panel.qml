@@ -3869,13 +3869,13 @@ Panel {
             // selectionMode here too, this stays a live tab stop with
             // selectedCount still > 0 even after selection mode is turned
             // back off, as long as something stays selected.
-            visible: root.selectionMode && root.selectedCount > 0
+            visible: false                 // tracked = in Cashew: the sync sets it
             label: "Track (" + root.selectedCount + ")"
             onTriggered: root.trackSelected(true)
           }
 
           TextAction {
-            visible: root.selectionMode && root.selectedCount > 0
+            visible: false
             label: "Untrack (" + root.selectedCount + ")"
             onTriggered: root.trackSelected(false)
           }
@@ -11932,7 +11932,7 @@ Panel {
 
     HoverHandler { id: xHover }
 
-    function toggleTracked() { store.setTrackedMany(xc.legsList, !xc.transfer.tracked) }
+    function toggleTracked() {}       // tracked = in Cashew: the sync sets it
 
     activeFocusOnTab: true
     Keys.onReturnPressed: xc.toggleTracked()
@@ -12193,6 +12193,7 @@ Panel {
         width: parent.width
         spacing: Style.space(10)
         TextAction {
+          visible: false                   // tracked = in Cashew: the sync sets it
           label: xc.transfer.oneSided ? (xc.transfer.tracked ? "Untrack" : "Track") : (xc.transfer.tracked ? "Untrack both" : "Track both")
           onTriggered: xc.toggleTracked()
         }
@@ -12295,12 +12296,10 @@ Panel {
     }
 
     activeFocusOnTab: !card.editing
-    Keys.onReturnPressed: if (!card.editing) store.setTracked(card.txn.id, !card.txn.tracked)
-    Keys.onEnterPressed: if (!card.editing) store.setTracked(card.txn.id, !card.txn.tracked)
+    // tracked = in Cashew: the sync sets it, never a key or a click (2026-11-18)
     Keys.onSpacePressed: {
       if (card.editing) return
       if (root.selectionMode && card.selectable) root.toggleSelected(card.txn.id)
-      else store.setTracked(card.txn.id, !card.txn.tracked)
     }
     // F2 for rename — Enter/Space already toggles tracked, so rename
     // needs its own key (F2 is the standard rename shortcut elsewhere;
@@ -12335,8 +12334,7 @@ Panel {
         id: cardMouse
         anchors.fill: parent
         enabled: !card.editing
-        cursorShape: Qt.PointingHandCursor
-        onClicked: store.setTracked(card.txn.id, !card.txn.tracked)
+        cursorShape: Qt.ArrowCursor
       }
 
       Rectangle {
@@ -13687,8 +13685,7 @@ Panel {
 
         MouseArea {
           anchors.fill: parent
-          cursorShape: Qt.PointingHandCursor
-          onClicked: store.setTracked(card.txn.id, !card.txn.tracked)
+          cursorShape: Qt.ArrowCursor
         }
       }
     } }  // Column, Component

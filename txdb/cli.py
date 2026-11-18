@@ -506,6 +506,22 @@ def main(argv: list[str]) -> int:
             probe = [d for d in probe if d["id"] in item_ids]
             cdb.close()
             in_cashew = [d["id"] for d in probe if d.get("inCashew")]
+            # tracked = in Cashew (2026-11-18): every row Cashew has is tracked, every row it lacks is not
+            if "--dry-run" not in args:
+                every_probe = [dict(d, include=True) for d in every]
+                cdb = sqlite3.connect(f"{base.as_uri()}?mode=ro", uri=True)
+                cashew_dedupe.mark(every_probe, cdb)
+                cdb.close()
+                has = {d["id"] for d in every_probe if d.get("inCashew")}
+                lacks = {d["id"] for d in every_probe if not d.get("inCashew")}
+                add, drop = has - tracked_ids, tracked_ids & lacks
+                if add or drop:
+                    from .db import connect as _connect
+                    wc = _connect()
+                    _set_tracked(wc, sorted(add), True)
+                    _set_tracked(wc, sorted(drop), False)
+                    wc.close()
+                    tracked_ids = (tracked_ids | add) - drop
             untracked_missing = sum(1 for d in probe if not d.get("inCashew") and d["id"] not in tracked_ids)
             # widget edits (name, note, bill, category) of rows Cashew has, not yet sent (txdb/cashew_edits.py)
             from . import cashew_edits
