@@ -430,6 +430,11 @@ Panel {
   // already has are marked as tracked when "After adding: mark as tracked" is on.
   property var cashewSync: ({ pending: -1, transfers: 0, waitingCategory: 0, inCashewIds: [], editedIds: [], path: "", error: "" })
   // rows Cashew has that were edited in the widget since the last sync: their mark says "needs sync"
+  readonly property var cashewPendingIds: {
+    var m = {}
+    ;(root.cashewSync.pendingIds || []).forEach(function (i) { m[i] = true })
+    return m
+  }
   readonly property var cashewEditedIds: {
     var m = {}
     ;(root.cashewSync.editedIds || []).forEach(function (i) { m[i] = true })
@@ -540,7 +545,7 @@ Panel {
       try { r = JSON.parse((cashewSyncOut.text || "").trim().split("\n").pop()) } catch (e) { r = { error: "no result" } }
       var before = root.cashewSync.pending
       root.cashewSync = r.error ? Object.assign({}, root.cashewSync, { error: String(r.error).slice(0, 60) })
-        : { pending: r.pending, rows: r.rows || 0, notes: r.notes || 0, edits: r.edits || 0, untracked: r.untracked || 0, editedIds: r.editedIds || [], corrections: r.corrections || [],
+        : { pending: r.pending, rows: r.rows || 0, notes: r.notes || 0, edits: r.edits || 0, untracked: r.untracked || 0, editedIds: r.editedIds || [], pendingIds: r.pendingIds || [], corrections: r.corrections || [],
             transfers: r.transfers, waitingCategory: r.waitingCategory, inCashewIds: r.inCashewIds || [], path: r.path || "",
             recatWaiting: r.recatWaiting || "", error: "" }
       // the options come from the state file through the script: this runs even when the Cashew window
@@ -3490,8 +3495,20 @@ Panel {
             anchors.left: parent.left
             anchors.leftMargin: Style.spacing.rowPaddingX
             anchors.verticalCenter: parent.verticalCenter
-            text: root.untrackedCount > 0 ? ("RECENT  ·  " + root.untrackedCount + " TO TRACK") : "RECENT"
+            // the same number as the sync badge: the rows that need a sync (cashew-sync pendingIds + edits)
+            readonly property int toSync: root.cashewSync.pending >= 0 ? root.cashewSync.pending : root.untrackedCount
+            text: toSync > 0 ? ("RECENT  ·  " + toSync + " TO SYNC") : "RECENT"
             foreground: root.foreground
+            // a click shows exactly those rows, old ones too (the list shows only the newest rows)
+            MouseArea {
+              anchors.fill: parent
+              enabled: recentHeader.toSync > 0
+              cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+              onClicked: {
+                root.filter = Object.assign({}, root.filter, { tracked: root.filter.tracked === "untracked" ? "any" : "untracked" })
+                root.rowLimit = 1000
+              }
+            }
           }
 
           Row {
@@ -12477,11 +12494,11 @@ Panel {
           // Cashew already has this payment (same amount and account, the date up to 4 days off)
           Item {
             id: inCashewSlot
-            visible: card.txn.inCashew === true
+            visible: card.txn.inCashew === true || !!root.cashewPendingIds[card.txn.id]
             width: Style.space(16)
             height: Style.space(20)
             anchors.verticalCenter: parent.verticalCenter
-            readonly property var mark: Model.cashewMark(card.txn, !!root.cashewEditedIds[card.txn.id])
+            readonly property var mark: Model.cashewMark(card.txn, !!root.cashewEditedIds[card.txn.id], !!root.cashewPendingIds[card.txn.id])
             Text {
               anchors.centerIn: parent
               textFormat: Text.PlainText

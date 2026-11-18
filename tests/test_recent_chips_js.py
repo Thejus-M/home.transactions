@@ -72,7 +72,9 @@ class Chips(unittest.TestCase):
         self.assertEqual(self.js("cashewOpenTooltip(3)"), "Send 3 transactions to Cashew")
 
     def test_cashew_mark(self):
-        m = lambda t, e: self.js("cashewMark(input.t, input.e)", t=t, e=e)
+        m = lambda t, e: self.js("cashewMark(input.t, input.e, false)", t=t, e=e)
+        p = self.js("cashewMark(input.t, false, true)", t={"inCashew": False, "status": "unsettled", "category": "Food"})
+        self.assertEqual((p["tone"], p["tooltip"]), ("pending", "Not in Cashew yet: press sync (goes once the bank settles it)"))
         self.assertEqual(m({"inCashew": False}, False)["glyph"], "")
         self.assertEqual((m({"inCashew": True}, False)["tone"], m({"inCashew": True}, False)["tooltip"]), ("ok", "In Cashew"))
         e = m({"inCashew": True}, True)

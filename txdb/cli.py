@@ -522,7 +522,11 @@ def main(argv: list[str]) -> int:
                     _set_tracked(wc, sorted(drop), False)
                     wc.close()
                     tracked_ids = (tracked_ids | add) - drop
-            untracked_missing = sum(1 for d in probe if not d.get("inCashew") and d["id"] not in tracked_ids)
+            # the rows that need a sync, by id: untracked rows Cashew lacks, plus edited rows; a transfer pair counts
+            # once (one card in the widget). The badge is the size of this list, and each of these rows is marked.
+            need = [d for d in probe if not d.get("inCashew") and d["id"] not in tracked_ids]
+            pending_ids = [d["id"] for d in need]
+            untracked_missing = len({d.get("pairId") or d["id"] for d in need})
             # widget edits (name, note, bill, category) of rows Cashew has, not yet sent (txdb/cashew_edits.py)
             from . import cashew_edits
             _e = [dict(d, include=True) for d in every]
@@ -533,7 +537,7 @@ def main(argv: list[str]) -> int:
         except (ValueError, OSError, sqlite3.Error) as e:
             print(json.dumps({"error": str(e)}))
             return 1
-        print(json.dumps({"pending": max(r["added"], untracked_missing) + len(edited) + max(0, r.get("notesUpdated", 0) - len(edited)),
+        print(json.dumps({"pending": untracked_missing + len(set(edited) - set(pending_ids)), "pendingIds": pending_ids,
                           "untracked": untracked_missing, "edits": len(edited), "editedIds": edited, "rows": r["added"], "transfers": r["transfers"],
                           "notes": r.get("notesUpdated", 0), "corrections": r.get("corrections", []),
                           "waitingCategory": sum(1 for d in _w if not d.get("inCashew")),   # only rows Cashew lacks
