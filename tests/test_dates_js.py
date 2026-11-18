@@ -38,5 +38,13 @@ class Dates(unittest.TestCase):
         self.assertEqual(self.js(f"monthSummary({rows}, '2026-12-01').spent"), 100)
 
 
+class TransfersUnderFilters(unittest.TestCase):
+    def test_one_leg_through_a_filter_still_folds(self):
+        rows = ("[{id:'h',date:'2026-09-30',amount:-500,currency:'INR',merchant:'X',transferId:'h>s'},"
+                "{id:'s',date:'2026-09-30',amount:500,currency:'INR',merchant:'X',transferId:'h>s'}]")
+        got = Dates().js(f"(function(){{var all={rows}; return collapseTransfers(all.filter(function(t){{return t.amount>0}}), [], all)}})()")
+        self.assertEqual((len(got), got[0].get("isTransfer")), (1, True))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -245,10 +245,20 @@ Panel {
   property bool selectionMode: false
   // Only rows that are shown: a row hidden by a filter after it was ticked
   // must not be tracked by "Track (N)" behind the user's back.
-  readonly property var selectedRows: filteredTransactions.filter(function (t) { return !!root.selectedIds[t.id] })
+  // "shown" = drawn in the list (the filter AND the row limit): rows past "Show older" are not selected
+  readonly property var shownTxnIds: {
+    var m = {}
+    ;(root.flatTransactionRows || []).forEach(function (r) {
+      if (r.id) m[r.id] = true
+      ;["out", "in", "real"].forEach(function (k) { if (r[k] && r[k].id) m[r[k].id] = true })
+    })
+    return m
+  }
+  readonly property var shownTransactions: filteredTransactions.filter(function (t) { return !!root.shownTxnIds[t.id] })
+  readonly property var selectedRows: shownTransactions.filter(function (t) { return !!root.selectedIds[t.id] })
   readonly property int selectedCount: selectedRows.length
-  readonly property bool allVisibleSelected: filteredTransactions.length > 0
-    && filteredTransactions.every(function (t) { return !!root.selectedIds[t.id] })
+  readonly property bool allVisibleSelected: shownTransactions.length > 0
+    && shownTransactions.every(function (t) { return !!root.selectedIds[t.id] })
   function toggleSelected(id) {
     var map = Object.assign({}, selectedIds)
     if (map[id]) delete map[id]
@@ -260,7 +270,7 @@ Panel {
   function toggleSelectAll() {
     var on = !allVisibleSelected
     var map = Object.assign({}, selectedIds)
-    filteredTransactions.forEach(function (t) {
+    shownTransactions.forEach(function (t) {
       if (on) map[t.id] = true
       else delete map[t.id]
     })
@@ -1319,7 +1329,7 @@ Panel {
     onTriggered: root.cashewRebuildLinks()
   }
 
-  readonly property var groupedTransactions: Model.groupByDate(Model.collapseTransfers(root.filteredTransactions, store.transfers), root.todayIso)
+  readonly property var groupedTransactions: Model.groupByDate(Model.collapseTransfers(root.filteredTransactions, store.transfers, root.transactions), root.todayIso)
   // Flat, one-row-per-entry version of groupedTransactions for txnList (the
   // virtualized ListView below) — see Model.flattenGroups.
   // Only the newest rowLimit rows get a delegate: every row costs ~100 QML

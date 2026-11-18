@@ -153,9 +153,11 @@ function dateGroupLabel(dateIso, todayIso) {
 // away (an account filter, a search) that side stays an ordinary row. The
 // entry's amount is 0 so a day's net total is not thrown off by money that
 // only moved between your own accounts.
-function collapseTransfers(rows, transferList) {
+// allRows (optional): every row, so a pair still folds into one card when a filter (In/Out, search, amount)
+// let only one of its legs through.
+function collapseTransfers(rows, transferList, allRows) {
   var byId = {}
-  rows.forEach(function (t) { byId[t.id] = t })
+  ;(allRows || rows).forEach(function (t) { byId[t.id] = t })
   var info = {}
   ;(transferList || []).forEach(function (p) { info[p.id] = p })
   var seen = {}
