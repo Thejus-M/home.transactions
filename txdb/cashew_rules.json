@@ -1,6 +1,6 @@
 [
  {
-  "match": "\\bkiran krishnan\\b",
+  "match": "\\brent\\b",
   "category": "Housing",
   "subcategory": "Rent",
   "sign": "debit"

@@ -658,6 +658,7 @@ def sync_window(profile: Path = PROFILE, log=print, wait: float = 45.0, keep_ope
             out["added"] = r["added"]
             log(f"sent {r['added']} rows and {r.get('notesUpdated', 0)} notes ({r['statements']} statements)"
                 + (f", backup {r['backup']}" if r["backup"] else ""))
+            out.update(_edits_and_tracking(ch, log))
         else:
             log("only syncing: no rows are sent (TXDB_CASHEW_SYNC_ONLY=1)")
         time.sleep(2)
@@ -688,3 +689,32 @@ def sync_window(profile: Path = PROFILE, log=print, wait: float = 45.0, keep_ope
 
 def _count_live(ch: Chromium) -> int:
     return ch.eval("%s.exec('select count(*) from transactions')[0].values[0][0]" % _LIVE_DB)
+
+
+def _edits_and_tracking(ch: Chromium, log=print) -> dict:
+    """After the new rows: carry widget edits of rows Cashew already has into the page (cashew_edits), then
+    mark tracked every widget row Cashew now has (sent, matched, scheduled or subscription payments)."""
+    from . import cashew, cashew_dedupe, cashew_edits, cli
+    from .db import connect
+    with tempfile.TemporaryDirectory(prefix="cashew-edits-") as tmp:
+        live = Path(tmp) / "live.sqlite"
+        live.write_bytes(live_export(ch))
+        c = sqlite3.connect(live)
+        ro = cashew.open_readonly(Path(cli.DB_PATH))
+        drafts = [dict(d, include=True) for d in cashew.drafts(ro, cashew.load_state(), all_rows=True)]
+        tracked = {r[0] for r in ro.execute("SELECT transaction_id FROM tracked")}
+        ro.close()
+        cashew_dedupe.mark(drafts, c)
+        stmts, memo, changed = cashew_edits.plan(drafts, c, cashew_edits.load())
+        c.close()
+    if stmts:
+        live_run(ch, stmts)
+    cashew_edits.save(memo)
+    log(f"updated {len(changed)} rows edited in the widget")
+    ids = [d["id"] for d in drafts if d.get("inCashew") and d["id"] not in tracked]
+    if ids:
+        conn = connect()
+        cli._set_tracked(conn, ids, True)
+        conn.close()
+    log(f"marked {len(ids)} rows as tracked")
+    return {"updated": len(changed), "tracked": len(ids)}
