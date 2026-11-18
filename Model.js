@@ -1303,7 +1303,7 @@ function cashewControl(sync, running) {
     r.glyph = "!"; r.tone = "error"; r.tooltip = "Sync: " + s.error
   } else if (s.pending > 0) {
     r.tone = "pending"; r.badge = String(s.pending)
-    r.tooltip = (s.rows || 0) + " new rows wait for Cashew"
+    r.tooltip = (s.rows || 0) + " new rows" + (s.edits > 0 ? ", " + s.edits + " edited rows" : "") + " wait for Cashew"
       + (s.transfers > 0 ? " (" + s.transfers + " transfers)" : "")
       + ", " + (s.notes || 0) + " notes for rows Cashew has, " + corr + " balance corrections"
       + ". Click: send them to Cashew and sync (no window)." + (wc > 0 ? "\n" + wc + " more need a category first." : "")

@@ -504,10 +504,17 @@ def main(argv: list[str]) -> int:
             cashew_dedupe.mark(probe, cdb)
             cdb.close()
             in_cashew = [d["id"] for d in probe if d.get("inCashew")]
+            # widget edits (name, note, bill, category) of rows Cashew has, not yet sent (txdb/cashew_edits.py)
+            from . import cashew_edits
+            _e = [dict(d, include=True) for d in every]
+            cdb = sqlite3.connect(f"{base.as_uri()}?mode=ro", uri=True)
+            cashew_dedupe.mark(_e, cdb)
+            _st, _m, edited = cashew_edits.plan(_e, cdb, cashew_edits.load())
+            cdb.close()
         except (ValueError, OSError, sqlite3.Error) as e:
             print(json.dumps({"error": str(e)}))
             return 1
-        print(json.dumps({"pending": r.get("changes", r["added"]), "rows": r["added"], "transfers": r["transfers"],
+        print(json.dumps({"pending": r.get("changes", r["added"]) + len(edited), "edits": len(edited), "rows": r["added"], "transfers": r["transfers"],
                           "notes": r.get("notesUpdated", 0), "corrections": r.get("corrections", []),
                           "waitingCategory": sum(1 for d in _w if not d.get("inCashew")),   # only rows Cashew lacks
                           "inCashewIds": [i for i in in_cashew if i not in tracked_ids],

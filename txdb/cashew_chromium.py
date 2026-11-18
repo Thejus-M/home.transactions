@@ -69,6 +69,7 @@ class Chromium:
         def child():
             os.dup2(r1, 3)
             os.dup2(w2, 4)
+        self.hidden = hidden
         mode = ["--disable-popup-blocking"] if visible or hidden else ["--headless=new"]
         if hidden:
             # a normal window, out of sight: Hyprland puts this class on a special workspace, silently
@@ -423,7 +424,8 @@ def _login(ch: Chromium, log=print) -> bool:
             else:
                 raise RuntimeError("the Google login popup did not open")
             sid = ch.call("Target.attachToTarget", {"targetId": pops[0]["targetId"], "flatten": True})["sessionId"]
-            ch.call("Page.bringToFront", {}, sid)
+            if not ch.hidden:
+                ch.call("Page.bringToFront", {}, sid)
             # the popup window can be small: give its page a fixed size so the buttons fit, whatever the window
             ch.call("Emulation.setDeviceMetricsOverride", {"width": 600, "height": 800, "deviceScaleFactor": 1, "mobile": False}, sid)
             for _ in range(20):

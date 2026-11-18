@@ -522,7 +522,7 @@ Panel {
       try { r = JSON.parse((cashewSyncOut.text || "").trim().split("\n").pop()) } catch (e) { r = { error: "no result" } }
       var before = root.cashewSync.pending
       root.cashewSync = r.error ? Object.assign({}, root.cashewSync, { error: String(r.error).slice(0, 60) })
-        : { pending: r.pending, rows: r.rows || 0, notes: r.notes || 0, corrections: r.corrections || [],
+        : { pending: r.pending, rows: r.rows || 0, notes: r.notes || 0, edits: r.edits || 0, corrections: r.corrections || [],
             transfers: r.transfers, waitingCategory: r.waitingCategory, inCashewIds: r.inCashewIds || [], path: r.path || "",
             recatWaiting: r.recatWaiting || "", error: "" }
       // the options come from the state file through the script: this runs even when the Cashew window
