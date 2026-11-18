@@ -1,5 +1,11 @@
 [
  {
+  "match": "upilite|upi-lite-.*add money",
+  "category": "Balance Correction",
+  "subcategory": "",
+  "sign": "debit"
+ },
+ {
   "match": "\\brent\\b",
   "category": "Housing",
   "subcategory": "Rent",
@@ -23,7 +29,7 @@
   "sign": "credit"
  },
  {
-  "match": "\\b(iccl|groww)\\b.*\\b(upi auto|autopay|mandate)\\b",
+  "match": "\\b(iccl|groww)\\b.*\\b(upi auto|autopay|mandate)\\b|\\biccl grow",
   "category": "Investments",
   "subcategory": "Mutual Funds",
   "sign": "debit"

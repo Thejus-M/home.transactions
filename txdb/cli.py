@@ -216,7 +216,30 @@ def cashew_ready(conn, state: dict) -> tuple[list, list, list, list, set]:
     pending = {r[0] for r in conn.execute("SELECT id FROM transactions WHERE status = 'unsettled'")}
     # a pending card row can still settle at another amount under a new id: send it once it has settled
     ready = [d for d in items if d.get("include", True) and d not in waiting and d["id"] not in pending]
-    return ready, waiting, every, items, tracked_ids
+    return _upi_lite_legs(ready), waiting, every, items, tracked_ids
+
+
+UPI_LITE_WALLET = "Gpay UPI Lite"
+
+
+def _upi_lite_legs(ready: list) -> list:
+    """A UPI Lite top-up is a transfer from the bank into the Gpay UPI Lite wallet (chosen 2026-11-18): add
+    the wallet's in-leg so Cashew gets both sides."""
+    import re
+    out = []
+    for d in ready:
+        text = (str(d.get("title") or "") + " " + str(d.get("notes") or "") + " " + str(d.get("merchant") or "")).lower()
+        if d.get("kind") != "transfer" and str(d.get("amount") or "").startswith("-") and \
+                re.search(r"upilite|upi-lite-.*add money", text):
+            pair = "lite-" + str(d["id"])
+            d = dict(d, kind="transfer", pairId=pair, category="Balance Correction", subcategory="",
+                     title=f"{d.get('account')} → {UPI_LITE_WALLET}")
+            out.append(d)
+            out.append(dict(d, id=str(d["id"]) + "-lite", account=UPI_LITE_WALLET,
+                            amount=str(d["amount"]).lstrip("-"), synthetic=True))
+            continue
+        out.append(d)
+    return out
 
 
 def _recurring() -> dict:
