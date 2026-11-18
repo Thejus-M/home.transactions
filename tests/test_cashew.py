@@ -329,7 +329,7 @@ class CliTests(Base):
         self.assertIn("HDFC ₹", out["accountNames"])
         self.assertEqual(set(out["drafts"][0]), {
             "id", "include", "date", "title", "amount", "category", "subcategory", "account", "notes", "kind",
-            "bank", "last4", "accountId", "groupKey", "merchant", "pairId", "warn", "pending", "fromBill", "partnerTracked"})
+            "bank", "last4", "accountId", "groupKey", "merchant", "pairId", "warn", "pending", "fromBill", "partnerTracked", "person"})
         self.assertEqual(set(out["categories"][0]), {"name", "type", "subcategories", "icon", "color", "subIcons"})
         for c in out["categories"]:
             self.assertRegex(c["color"], r"^#[0-9A-Fa-f]{6}$")

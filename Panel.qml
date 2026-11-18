@@ -521,6 +521,16 @@ Panel {
   Timer { id: cashewSyncTimer; interval: 8000; onTriggered: root.cashewSyncNow() }
   Timer { interval: 300000; running: true; repeat: true; onTriggered: root.cashewSyncNow() }   // a safety net
   onTransactionsChanged: { cashewSyncTimer.interval = 8000; cashewSyncTimer.restart() }
+  // an edit (note, payee name, bill, category) can be waiting for Cashew: count it again soon, so the
+  // badge shows a number instead of the tick
+  function cashewRecountSoon() { cashewSyncTimer.interval = 3000; cashewSyncTimer.restart() }
+  onCashewStateChanged: root.cashewRecountSoon()
+  Connections {
+    target: store
+    function onTxnNotesChanged() { root.cashewRecountSoon() }
+    function onTransactionNameOverridesChanged() { root.cashewRecountSoon() }
+    function onReceiptsChanged() { root.cashewRecountSoon() }
+  }
   Process {
     id: cashewSyncProc
     command: ["python3", root.txdbBin, "cashew-sync", "--chromium"]
@@ -8948,7 +8958,9 @@ Panel {
       var key = d.groupKey
       var remember = cashewWin.pickRemember && d.kind !== "transfer" && category !== "Uncategorized"
       var next = Model.cashewApplyCategory(root.cashewDrafts, idx, category, sub, remember)
-      var st = remember ? Model.cashewRememberCategory(root.cashewState, key, category, sub) : null
+      // a person is paid for many things: the answer stays on this row, never on the whole payee
+      var st = remember && !d.person ? Model.cashewRememberCategory(root.cashewState, key, category, sub) : null
+      if (remember && d.person) st = Model.cashewPinCategory(root.cashewState, d.id, category, sub)
       // A category set on this row's own bill beats the payee-wide answer, so remember it on the row too.
       if (d.fromBill && category !== "Uncategorized") st = Model.cashewPinCategory(st || root.cashewState, d.id, category, sub)
       var again = cashewWin.askActive

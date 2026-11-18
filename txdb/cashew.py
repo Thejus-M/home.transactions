@@ -321,6 +321,28 @@ def _person_upi(bank: str, merchant: str | None) -> bool:
     return bool(rx and rx.search(merchant or ""))
 
 
+_BUSINESS = re.compile(
+    r"\b(pvt|private|priv|ltd|limited|llp|stores?|mart|market|supermarket|hotel|restaurant|cafe|bakery|bakers|"
+    r"enterprises?|agenc(y|ies)|services|traders?|trading|ventures|technolog\w*|medical|medicals|pharma\w*|"
+    r"hospital\w*|clinic|fuels?|petro\w*|motors|textiles|jewel\w*|foods?|kitchen|bistro|tea|juice|shop|"
+    r"centre|center|solutions|industries|payments?|merchant|razorpay|paytm|bharatpe|phonepe|amazon|swiggy|"
+    r"zomato|flipkart|cred|club|bank|insurance|finance|college|school|academy|hostel|pg|rent(al|als)?|travels?|tours)\b", re.I)
+
+
+def is_person_payee(bank: str, merchant: str | None) -> bool:
+    """A UPI payment to or from a person (not a shop): an answer set on it should stay on that one row,
+    since the same person is paid for many different things (2026-11-18: one payee answer re-filed rent)."""
+    m = merchant or ""
+    if not re.search(r"\bupi\b|^upi[-/]", m, re.I):
+        return False
+    if bank == "HDFC":
+        parts = m.split("-")
+        name = parts[1] if len(parts) > 2 else m
+    else:
+        name = m
+    return not _BUSINESS.search(name) and (bank == "HDFC" or _person_upi(bank, m))
+
+
 def _valid_sub(cat: str, sub: str) -> bool:
     for c in load_categories():
         if c["name"] == cat:
@@ -681,7 +703,8 @@ def drafts(conn, state: dict | None = None, all_rows: bool = False, with_notes: 
         aid = r["account_id"]
         account = acct_over[aid] if aid in acct_over else ACCOUNT_MAP.get(aid, "")
         d = {
-            "id": r["id"], "include": include, "pending": r["status"] != "settled", "fromBill": from_bill, "partnerTracked": bool(leg and leg.get("partnerTracked")), "date": r["date"], "title": title,
+            "id": r["id"], "include": include, "pending": r["status"] != "settled", "fromBill": from_bill,
+            "person": is_person_payee(r["bank"], r["merchant"]), "partnerTracked": bool(leg and leg.get("partnerTracked")), "date": r["date"], "title": title,
             "amount": format_amount(amount_paise), "category": cat, "subcategory": sub,
             "account": account or "",
             "notes": build_notes(r["bank"], r["merchant"], r["note"], bill_note(conn, r["id"], title), notes_lead,
