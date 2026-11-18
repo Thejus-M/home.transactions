@@ -76,7 +76,7 @@ class Dedupe(unittest.TestCase):
         db.execute("CREATE TABLE t2 AS SELECT rowid AS transaction_pk, * , '' AS note FROM transactions")
         db.execute("DROP TABLE transactions"); db.execute("ALTER TABLE t2 RENAME TO transactions")
         d = lambda day, amt: [{"date": day, "amount": amt, "account": "Axis", "id": day}]
-        hit = d("2026-11-23", -1000); cashew_dedupe.mark(hit, db)               # 6 days from 2026-11-17 (paid row)
+        hit = d("2026-10-23", -1000); cashew_dedupe.mark(hit, db)               # 6 days from 2026-10-17 (a paid row)
         self.assertTrue(hit[0].get("inCashew"))
         miss = d("2026-11-04", -50); cashew_dedupe.mark(miss, db)               # Coffee is not recurring: 3 days ok,
         self.assertTrue(miss[0].get("inCashew"))

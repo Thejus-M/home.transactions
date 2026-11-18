@@ -213,7 +213,9 @@ def cashew_ready(conn, state: dict) -> tuple[list, list, list, list, set]:
     waiting = [d for d in items if d.get("include", True) and (d.get("askAi")
                or (d.get("kind") != "transfer" and d.get("category") in (None, "", cashew.UNCATEGORIZED[0])
                    and d.get("subcategory") != "Miscellaneous") or d.get("warn"))]
-    ready = [d for d in items if d.get("include", True) and d not in waiting]
+    pending = {r[0] for r in conn.execute("SELECT id FROM transactions WHERE status = 'unsettled'")}
+    # a pending card row can still settle at another amount under a new id: send it once it has settled
+    ready = [d for d in items if d.get("include", True) and d not in waiting and d["id"] not in pending]
     return ready, waiting, every, items, tracked_ids
 
 

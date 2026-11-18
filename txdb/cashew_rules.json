@@ -47,7 +47,7 @@
   "sign": "debit"
  },
  {
-  "match": "^dr\\.? |\\bdr\\.? [a-z]",
+  "match": "^dr\\.? (?!card)|\\bdr\\.? (?!card)[a-z]",
   "category": "Health",
   "subcategory": "Doctor",
   "sign": "debit"
@@ -107,7 +107,7 @@
   "sign": "debit"
  },
  {
-  "match": "\\b(uber|ola cabs|rapido|taxi|cab|autorickshaw|autorental|royal ?bison)\\b|(?<!upi )(?<!upi/)\\bauto\\b",
+  "match": "\\b(uber|ola cabs|rapido|taxi|cab|autorickshaw|autorental|royal ?bison)\\b|(?<!upi )(?<!upi/)\\bauto\\b(?! fuels?\\b)",
   "category": "Transport",
   "subcategory": "Cab & Auto",
   "sign": "debit"
@@ -232,7 +232,7 @@
   "sign": "debit"
  },
  {
-  "match": "\\b(hospital|clinic|diagnostic)",
+  "match": "\\b(hospitals?|clinics?|diagnostics?)\\b",
   "category": "Health",
   "subcategory": "Doctor",
   "sign": "debit"
@@ -328,7 +328,7 @@
   "sign": "credit"
  },
  {
-  "match": "\\b(margin ?free|kunnil|lulu|ramachandran|smart ?point|qmart|flow ?mart|fiow mart|shopprix|reliance|malabar produce|supermart|mini market)",
+  "match": "\\b(margin ?free|kunnil|lulu|smart ?point|qmart|flow ?mart|fiow mart|shopprix|reliance|malabar produce|supermart|mini market)",
   "category": "Groceries",
   "subcategory": "Provisions",
   "sign": "debit"

@@ -127,10 +127,13 @@ def replace_unsettled(conn: sqlite3.Connection, aid: str, rows: list[dict], sinc
         for old in gone:
             if old["id"] in ids:
                 continue
+            # the settled twin: same amount within a few days (the text often changes, e.g. "Upi-" added)
             settled = conn.execute(
-                "SELECT id FROM transactions WHERE account_id = ? AND status = 'settled' AND date = ? "
-                "AND amount_paise = ? AND merchant = ? LIMIT 1",
-                (aid, old["date"], old["amount_paise"], old["merchant"])).fetchone()
+                "SELECT id FROM transactions WHERE account_id = ? AND status = 'settled' AND amount_paise = ? "
+                "AND abs(julianday(date) - julianday(?)) <= 4 "
+                "AND id NOT IN (SELECT transaction_id FROM tracked) ORDER BY abs(julianday(date) - julianday(?)), "
+                "(merchant = ?) DESC LIMIT 1",
+                (aid, old["amount_paise"], old["date"], old["date"], old["merchant"])).fetchone()
             if settled:
                 conn.execute("UPDATE OR IGNORE tracked SET transaction_id = ? WHERE transaction_id = ?",
                              (settled[0], old["id"]))

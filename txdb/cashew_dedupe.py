@@ -16,12 +16,18 @@ def _key(day: str, amount, account: str) -> tuple[str, int, str]:
     return day, round(float(amount) * 100), account
 
 
+def _has(conn: sqlite3.Connection, column: str) -> bool:
+    return column in {r[1] for r in conn.execute("PRAGMA table_info(transactions)")}
+
+
 def cashew_rows(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
     """({(day, paise, account name): [(transaction pk, note), ...]} oldest first, the account names)."""
     wallets = {r[0]: r[1] for r in conn.execute("SELECT wallet_pk, name FROM wallets")}
     rows: dict = {}
     for pk, created, amount, wallet, note in conn.execute(
-            "SELECT transaction_pk, date_created, amount, wallet_fk, note FROM transactions ORDER BY date_created, transaction_pk"):
+            "SELECT transaction_pk, date_created, amount, wallet_fk, note FROM transactions "
+            + ("WHERE coalesce(paid, 1) = 1 " if _has(conn, "paid") else "")      # a forecast (unpaid) is not a payment
+            + "ORDER BY date_created, transaction_pk"):
         if created is None or amount is None:
             continue
         day = datetime.fromtimestamp(int(created)).strftime("%Y-%m-%d")
