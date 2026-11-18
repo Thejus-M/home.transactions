@@ -428,7 +428,13 @@ Panel {
   // ready rows that Cashew does not have yet are written into one file, cashew-sync.sql. The badge next to the
   // Cashew chip shows how many wait; a click copies the file path and opens Cashew for the import. Rows Cashew
   // already has are marked as tracked when "After adding: mark as tracked" is on.
-  property var cashewSync: ({ pending: -1, transfers: 0, waitingCategory: 0, inCashewIds: [], path: "", error: "" })
+  property var cashewSync: ({ pending: -1, transfers: 0, waitingCategory: 0, inCashewIds: [], editedIds: [], path: "", error: "" })
+  // rows Cashew has that were edited in the widget since the last sync: their mark says "needs sync"
+  readonly property var cashewEditedIds: {
+    var m = {}
+    ;(root.cashewSync.editedIds || []).forEach(function (i) { m[i] = true })
+    return m
+  }
   readonly property string cashewSyncLabel: root.cashewSync.recatWaiting ? "Import the recategorise file first"
     : root.cashewSync.error ? "Sync: " + root.cashewSync.error
     : root.cashewSync.pending < 0 ? "Sync: checking…"
@@ -522,7 +528,7 @@ Panel {
       try { r = JSON.parse((cashewSyncOut.text || "").trim().split("\n").pop()) } catch (e) { r = { error: "no result" } }
       var before = root.cashewSync.pending
       root.cashewSync = r.error ? Object.assign({}, root.cashewSync, { error: String(r.error).slice(0, 60) })
-        : { pending: r.pending, rows: r.rows || 0, notes: r.notes || 0, edits: r.edits || 0, corrections: r.corrections || [],
+        : { pending: r.pending, rows: r.rows || 0, notes: r.notes || 0, edits: r.edits || 0, editedIds: r.editedIds || [], corrections: r.corrections || [],
             transfers: r.transfers, waitingCategory: r.waitingCategory, inCashewIds: r.inCashewIds || [], path: r.path || "",
             recatWaiting: r.recatWaiting || "", error: "" }
       // the options come from the state file through the script: this runs even when the Cashew window
@@ -12463,17 +12469,18 @@ Panel {
             width: Style.space(16)
             height: Style.space(20)
             anchors.verticalCenter: parent.verticalCenter
+            readonly property var mark: Model.cashewMark(card.txn, !!root.cashewEditedIds[card.txn.id])
             Text {
               anchors.centerIn: parent
               textFormat: Text.PlainText
-              text: "󰸞"
-              color: Util.alpha(root.creditColor, inCashewHover.hovered ? 1 : 0.7)
+              text: inCashewSlot.mark.glyph
+              color: Util.alpha(inCashewSlot.mark.tone === "pending" ? root.pendingColor : root.creditColor, inCashewHover.hovered ? 1 : 0.8)
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
             }
             HoverHandler { id: inCashewHover }
             ToolTip.visible: inCashewHover.hovered
-            ToolTip.text: card.txn.inCashewDays ? "In Cashew (" + card.txn.inCashewDays + (card.txn.inCashewDays === 1 ? " day" : " days") + " off)" : "In Cashew"
+            ToolTip.text: inCashewSlot.mark.tooltip
             ToolTip.delay: 300
           }
           Item {

@@ -514,7 +514,7 @@ def main(argv: list[str]) -> int:
         except (ValueError, OSError, sqlite3.Error) as e:
             print(json.dumps({"error": str(e)}))
             return 1
-        print(json.dumps({"pending": r.get("changes", r["added"]) + len(edited), "edits": len(edited), "rows": r["added"], "transfers": r["transfers"],
+        print(json.dumps({"pending": r["added"] + len(edited) + max(0, r.get("notesUpdated", 0) - len(edited)), "edits": len(edited), "editedIds": edited, "rows": r["added"], "transfers": r["transfers"],
                           "notes": r.get("notesUpdated", 0), "corrections": r.get("corrections", []),
                           "waitingCategory": sum(1 for d in _w if not d.get("inCashew")),   # only rows Cashew lacks
                           "inCashewIds": [i for i in in_cashew if i not in tracked_ids],

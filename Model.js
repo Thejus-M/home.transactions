@@ -1258,6 +1258,14 @@ function recurringSummary(list) {
 
 // ---- the chip line of RECENT: Recurring / Receipts tabs and the Cashew control
 
+// The mark of a row Cashew has: a check, or a sync mark when it was edited in the widget since the last sync.
+function cashewMark(txn, edited) {
+  if (!txn || txn.inCashew !== true) return { glyph: "", tone: "", tooltip: "" }
+  if (edited) return { glyph: "\u{F04E6}", tone: "pending", tooltip: "Edited: press sync to send the change to Cashew" }
+  var d = txn.inCashewDays
+  return { glyph: "\u{F0E1E}", tone: "ok", tooltip: d ? "In Cashew (" + d + (d === 1 ? " day" : " days") + " off)" : "In Cashew" }
+}
+
 // The tab after a press: the pressed one, or "" (closed) when it was already open.
 function drawerToggle(current, pressed) {
   if (pressed !== "recurring" && pressed !== "receipts") return ""

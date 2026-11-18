@@ -71,6 +71,13 @@ class Chips(unittest.TestCase):
         self.assertEqual((busy["tone"], busy["spin"], busy["tooltip"]), ("busy", True, "Checking…"))
         self.assertEqual(self.js("cashewOpenTooltip(3)"), "Send 3 transactions to Cashew")
 
+    def test_cashew_mark(self):
+        m = lambda t, e: self.js("cashewMark(input.t, input.e)", t=t, e=e)
+        self.assertEqual(m({"inCashew": False}, False)["glyph"], "")
+        self.assertEqual((m({"inCashew": True}, False)["tone"], m({"inCashew": True}, False)["tooltip"]), ("ok", "In Cashew"))
+        e = m({"inCashew": True}, True)
+        self.assertEqual((e["tone"], e["glyph"]), ("pending", "\U000F04E6"))
+
     def test_empty_drawer_texts(self):
         e = lambda t, **k: self.js("drawerEmptyText(input.t, input.k)", t=t, k=k)
         self.assertEqual(e("receipts", toLink=0, filed=0), "No receipts to link")
