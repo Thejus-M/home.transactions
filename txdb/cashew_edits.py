@@ -58,8 +58,8 @@ def plan(drafts: list[dict], conn: sqlite3.Connection, memo: dict, now: int | No
             continue
         cur = _values(d)
         old = memo.get(d["id"])
-        memo[d["id"]] = cur
-        if old is None or old == cur:
+        memo[d["id"]] = dict(cur, pk=pk, pending=bool(d.get("pending")))
+        if old is None or {k: old.get(k, "") for k in FIELDS} == cur:
             continue                                   # first sight, or no edit since the last sync
         row = conn.execute("SELECT type FROM transactions WHERE transaction_pk = ?", (pk,)).fetchone()
         if row is None or row[0] in (1, 2):
@@ -81,3 +81,20 @@ def plan(drafts: list[dict], conn: sqlite3.Connection, memo: dict, now: int | No
             stmts.append(f"UPDATE transactions SET {', '.join(sets)} WHERE transaction_pk = {_q(pk)}")
             changed.append(d["id"])
     return stmts, memo, changed
+
+
+def vanished(memo: dict, widget_ids: set) -> tuple[list[str], dict]:
+    """Pending card rows sent to Cashew that are gone from the widget (they settled under another id, often at
+    another amount): (statements that delete their Cashew rows with a delete log, the memo without them).
+    The settled row is sent as a new row by the same sync."""
+    import uuid
+    now = int(time.time())
+    stmts, keep = [], {}
+    for i, v in memo.items():
+        if i not in widget_ids and isinstance(v, dict) and v.get("pending") and v.get("pk"):
+            stmts.append(f"INSERT INTO delete_logs (delete_log_pk, entry_pk, type, date_time_modified) "
+                         f"VALUES ({_q(str(uuid.uuid4()))}, {_q(v['pk'])}, 4, {now})")
+            stmts.append(f"DELETE FROM transactions WHERE transaction_pk = {_q(v['pk'])} AND (type IS NULL OR type NOT IN (1, 2))")
+            continue
+        keep[i] = v
+    return stmts, keep

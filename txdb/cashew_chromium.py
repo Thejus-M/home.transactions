@@ -579,8 +579,9 @@ def live_push(ch: Chromium, drafts: list[dict], note_drafts: list[dict] | None =
         for f in sorted(bdir.glob("*.sqlite"))[:-KEEP_BACKUPS]:
             f.unlink(missing_ok=True)
         after = live_run(ch, stmts)
-        if after != before + r["added"]:
-            raise ValueError(f"row count {after} is not {before} + {r['added']}; backup in {bfile}")
+        removed = sum(1 for x in (extra or []) if x.startswith("DELETE FROM transactions"))
+        if after != before + r["added"] - removed:
+            raise ValueError(f"row count {after} is not {before} + {r['added']} - {removed}; backup in {bfile}")
         result.update(statements=len(stmts), after=after, backup=str(bfile))
         return result
 
@@ -750,7 +751,9 @@ def _plan_edits(ch: Chromium):
     from . import cashew_edits
     drafts, _, c, tmp = _live_marked(ch)
     try:
-        return cashew_edits.plan(drafts, c, cashew_edits.load())
+        stmts, memo, changed = cashew_edits.plan(drafts, c, cashew_edits.load())
+        gone, memo = cashew_edits.vanished(memo, {d["id"] for d in drafts})
+        return gone + stmts, memo, changed
     finally:
         c.close()
         tmp.cleanup()
@@ -768,6 +771,14 @@ def _track(ch: Chromium, log=print) -> int:
         conn = connect()
         cli._set_tracked(conn, ids, True)
         conn.close()
+    # remember the rows just sent (their Cashew pk, pending or not), so a later edit or settle is followed
+    from . import cashew_edits
+    memo = cashew_edits.load()
+    for d in drafts:
+        if d.get("inCashew") and d.get("cashewPk") and d["id"] not in memo:
+            memo[d["id"]] = dict({k: str(d.get(k) or "") for k in cashew_edits.FIELDS}, pk=d["cashewPk"],
+                                 pending=bool(d.get("pending")))
+    cashew_edits.save(memo)
     log(f"marked {len(ids)} rows as tracked")
     return len(ids)
 

@@ -40,5 +40,15 @@ class Edits(unittest.TestCase):
         self.assertEqual(st, [])
 
 
+class Vanished(unittest.TestCase):
+    def test_a_settled_pending_row_leaves_cashew(self):
+        memo = {"p1": {"title": "x", "pk": "c1", "pending": True}, "s1": {"title": "y", "pk": "c2", "pending": False},
+                "p2": {"title": "z", "pk": "c3", "pending": True}}
+        st, keep = cashew_edits.vanished(memo, {"p2", "s1"})
+        self.assertEqual(sorted(keep), ["p2", "s1"])
+        self.assertEqual(len(st), 2)
+        self.assertIn("DELETE FROM transactions WHERE transaction_pk = 'c1'", st[1])
+
+
 if __name__ == "__main__":
     unittest.main()

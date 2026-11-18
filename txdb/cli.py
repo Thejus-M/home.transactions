@@ -213,9 +213,10 @@ def cashew_ready(conn, state: dict) -> tuple[list, list, list, list, set]:
     waiting = [d for d in items if d.get("include", True) and (d.get("askAi")
                or (d.get("kind") != "transfer" and d.get("category") in (None, "", cashew.UNCATEGORIZED[0])
                    and d.get("subcategory") != "Miscellaneous") or d.get("warn"))]
-    pending = {r[0] for r in conn.execute("SELECT id FROM transactions WHERE status = 'unsettled'")}
-    # a pending card row can still settle at another amount under a new id: send it once it has settled
-    ready = [d for d in items if d.get("include", True) and d not in waiting and d["id"] not in pending]
+    # one click sends everything (2026-11-18): rows waiting for a category go with their current category (an
+    # edit later updates Cashew), pending card rows go too (cashew_chromium removes one from Cashew when it
+    # settles under another id)
+    ready = [d for d in items if d.get("include", True)]
     return _upi_lite_legs(ready), waiting, every, items, tracked_ids
 
 
@@ -475,7 +476,7 @@ def main(argv: list[str]) -> int:
                 mine = [d for d in _w if not d.get("inCashew") and d.get("account") == b["account"] and str(d.get("date")) <= b["date"]]
                 b["waitingPaise"] = sum(round(float(d.get("amount") or 0) * 100) for d in mine)
                 b["waitingRows"] = len(mine)
-            BUILD_VERSION = 5                      # part of the memo key: a code change makes the file again
+            BUILD_VERSION = 6                      # part of the memo key: a code change makes the file again
             key = [BUILD_VERSION, sorted(str(d.get("id")) + "|" + str(d.get("category")) + "|" + str(d.get("amount")) + "|"
                           + str(d.get("notes")) + "|" + str(d.get("title")) for d in ready),
                    hashlib.sha1("".join(sorted(str(d["id"]) + str(d.get("notes")) for d in every)).encode()).hexdigest(),
