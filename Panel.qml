@@ -492,6 +492,7 @@ Panel {
     onExited: function (exitCode) {
       var r
       try { r = JSON.parse((cashewChromiumOut.text || "").trim().split("\n").pop()) } catch (e) { r = { error: root.cashewChromiumLine || "no result" } }
+      if (!r || typeof r !== "object") r = { error: "no result" }
       if (r.error || !r.signedIn) {
         root.cashewChromiumResult = "Last sync failed: " + (r.error || root.cashewChromiumLine)
         root.cashewGuessNotify("Cashew sync failed", r.error || root.cashewChromiumLine)
@@ -545,6 +546,7 @@ Panel {
     onExited: function (exitCode) {
       var r
       try { r = JSON.parse((cashewSyncOut.text || "").trim().split("\n").pop()) } catch (e) { r = { error: "no result" } }
+      if (!r || typeof r !== "object") r = { error: "no result" }
       var before = root.cashewSync.pending
       root.cashewSync = r.error ? Object.assign({}, root.cashewSync, { error: String(r.error).slice(0, 60) })
         : { pending: r.pending, rows: r.rows || 0, notes: r.notes || 0, edits: r.edits || 0, untracked: r.untracked || 0, editedIds: r.editedIds || [], pendingIds: r.pendingIds || [], corrections: r.corrections || [],
@@ -621,6 +623,7 @@ Panel {
       onRead: function (line) {
         var m
         try { m = JSON.parse(line) } catch (e) { return }
+        if (!m || typeof m !== "object") return
         if (m.added !== undefined && root.cashewImportWaiting)
           root.cashewFixMessage = "Waiting for the import in Cashew: " + Math.max(0, m.added) + " of " + root.cashewFileAdded + " rows there."
       }
@@ -899,6 +902,7 @@ Panel {
     root.cashewGuessRaw = Model.cashewGuessRawPush(root.cashewGuessRaw, line, 200)
     var m
     try { m = JSON.parse(line) } catch (e) { return }
+        if (!m || typeof m !== "object") return
     if (m.error) root.cashewGuessError = String(m.error)
     if (m.progress) { root.cashewGuessProgress = m.progress; return }
     if (m.finished) {
@@ -1120,6 +1124,7 @@ Panel {
     onExited: function (exitCode) {
       var r
       try { r = JSON.parse(cashewTabsOut.text) } catch (e) { r = { open: -1, reason: "the check printed no result" } }
+      if (!r || typeof r !== "object") r = { error: "no result" }
       if (r.open > 0) {
         var where = (r.tabs || []).slice(0, 3).map(function (t) { return "window " + t.window + " tab " + t.tab }).join(", ")
         root.cashewSendNote = "Not started: " + r.open + (r.open === 1 ? " Cashew tab is" : " Cashew tabs are") + " open in Zen ("
@@ -1224,6 +1229,7 @@ Panel {
     if (!root.cashewSending) return
     var m
     try { m = JSON.parse(line) } catch (e) { return }
+        if (!m || typeof m !== "object") return
     if (m.ready) { root.cashewSendOpen(); root.cashewSendPhase = "wait" }
     if (m.added !== undefined) root.cashewSendAdded = Math.max(0, Number(m.added) || 0)
     root.cashewSendSay()
@@ -2496,7 +2502,7 @@ Panel {
     watchChanges: true
     printErrors: false
     onLoaded: {
-      try { root.axisFetchStatus = JSON.parse(text() || "{}") } catch (e) { root.axisFetchStatus = {} }
+      try { root.axisFetchStatus = JSON.parse(text() || "{}") || {} } catch (e) { root.axisFetchStatus = {} }
     }
     onLoadFailed: root.axisFetchStatus = ({})
     onFileChanged: reload()
@@ -2533,7 +2539,7 @@ Panel {
     watchChanges: true
     onFileChanged: reload()
     onLoaded: {
-      try { root.iciciFetchStatus = JSON.parse(text() || "{}") } catch (e) { root.iciciFetchStatus = {} }
+      try { root.iciciFetchStatus = JSON.parse(text() || "{}") || {} } catch (e) { root.iciciFetchStatus = {} }
     }
     onLoadFailed: root.iciciFetchStatus = ({})
   }
@@ -2564,7 +2570,7 @@ Panel {
     watchChanges: true
     printErrors: false
     onLoaded: {
-      try { root.sbiFetchStatus = JSON.parse(text() || "{}") } catch (e) { root.sbiFetchStatus = {} }
+      try { root.sbiFetchStatus = JSON.parse(text() || "{}") || {} } catch (e) { root.sbiFetchStatus = {} }
     }
     onLoadFailed: root.sbiFetchStatus = ({})
     onFileChanged: reload()
@@ -2691,7 +2697,7 @@ Panel {
     watchChanges: true
     printErrors: false
     onLoaded: {
-      try { root.indmoneyFetchStatus = JSON.parse(text() || "{}") } catch (e) { root.indmoneyFetchStatus = {} }
+      try { root.indmoneyFetchStatus = JSON.parse(text() || "{}") || {} } catch (e) { root.indmoneyFetchStatus = {} }
     }
     onLoadFailed: root.indmoneyFetchStatus = ({})
     onFileChanged: reload()
@@ -2703,7 +2709,7 @@ Panel {
     watchChanges: true
     printErrors: false
     onLoaded: {
-      try { root.fetchStatus = JSON.parse(text() || "{}") } catch (e) { root.fetchStatus = {} }
+      try { root.fetchStatus = JSON.parse(text() || "{}") || {} } catch (e) { root.fetchStatus = {} }
     }
     onLoadFailed: root.fetchStatus = ({})
     onFileChanged: reload()
@@ -3517,8 +3523,9 @@ Panel {
               enabled: recentHeader.toSync > 0
               cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
               onClicked: {
-                root.filter = Object.assign({}, root.filter, { tracked: root.filter.tracked === "untracked" ? "any" : "untracked" })
-                root.rowLimit = 1000
+                var on = root.filter.tracked !== "untracked"
+                root.filter = Object.assign({}, root.filter, { tracked: on ? "untracked" : "any" })
+                root.rowLimit = on ? 1000 : 120
               }
             }
           }
@@ -11051,46 +11058,6 @@ Panel {
   }
 
   // "Add all to Cashew": the button (Stop while it runs; Continue / Stop after a timeout) and the status line.
-  component CashewSendControls: Column {
-    id: csc
-    property bool showNote: true
-    spacing: Style.space(6)
-    Flow {
-      width: csc.width
-      spacing: Style.space(6)
-      CashewBtn {
-        visible: !root.cashewSending && !root.cashewSendPaused
-        primary: true
-        enabled: root.cashewLinks.length > 0
-        label: root.cashewVerifyArmed ? "Unverified AI · click again" : "Add all to Cashew"
-        onClicked: root.cashewSendAll()
-      }
-      CashewBtn {
-        visible: root.cashewSendPaused
-        primary: true
-        label: root.cashewSendDone + 1 < root.cashewSendItems.length ? "Continue" : "Finish"
-        onClicked: root.cashewSendContinue()
-      }
-      CashewBtn {
-        visible: root.cashewSending || root.cashewSendPaused
-        active: root.cashewSending
-        label: "■ Stop"
-        onClicked: root.cashewSendStop()
-      }
-    }
-    Text {
-      visible: csc.showNote && root.cashewSendNote !== ""
-      width: csc.width
-      wrapMode: Text.Wrap
-      textFormat: Text.PlainText
-      text: root.cashewSendNote
-      color: root.cashewSendPaused ? root.pendingColor : (root.cashewSending ? Color.accent : Qt.darker(root.foreground, 1.2))
-      font.family: Style.font.family
-      font.pixelSize: Style.font.caption
-    }
-  }
-
-  // The model runs in progress, one line each: "✦ AI categories · 12 of 40". Nothing when none runs.
   component LlmStatus: Column {
     id: ls
     visible: root.llmLines.length > 0
@@ -11219,87 +11186,6 @@ Panel {
   }
 
   // One leg of a transfer card: [account chip] ---- [date] [note] ▾/▴ amount.
-  component CashewLeg: Item {
-    id: lg
-    property int idx: -1
-    property string cardDate: ""
-    property bool hot: false
-    readonly property var d: root.cashewDrafts[lg.idx] || ({})
-    readonly property bool credit: String(lg.d.amount || "").charAt(0) !== "-"
-    height: Style.space(26)
-
-    CashewChip {
-      id: lgAcct
-      anchors { left: parent.left; verticalCenter: parent.verticalCenter }
-      maxWidth: Style.space(150)
-      tint: "#455A64"
-      text: (lg.d.account || "") !== "" ? lg.d.account : "No account"
-      warn: (lg.d.account || "") === ""
-      onClicked: cashewWin.openPicker("account", lg.idx)
-    }
-    // Same right edge as a plain row: the amount stops where a row's amount stops,
-    // and the edit button sits where a row's buttons sit.
-    PanelActionButton {
-      id: lgEdit
-      anchors { right: parent.right; verticalCenter: parent.verticalCenter }
-      size: Style.space(24)
-      iconText: "✎"
-      tooltipText: "Edit note"
-      foreground: root.foreground
-      bordered: false
-      focusable: false
-      opacity: lg.hot ? 1.0 : 0.55
-      onClicked: cashewWin.openPicker("note", lg.idx)
-    }
-    CashewCell {
-      id: lgAmount
-      anchors { right: parent.right; rightMargin: Style.space(62); verticalCenter: parent.verticalCenter }
-      width: Style.space(120)
-      implicitHeight: Style.space(26)
-      kind: "amount"
-      alignRight: true
-      bold: true
-      pixelSize: Style.font.body + 1
-      value: lg.d.amount || ""
-      display: (lg.credit ? "▴ " : "▾ ") + Model.cashewMoney(lg.d.amount)
-      color: lg.credit ? root.creditColor : root.debitColor
-      onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, lg.idx, { amount: v }), true) }
-    }
-    CashewCell {
-      id: lgDate
-      visible: (lg.d.date || "") !== lg.cardDate        // only a leg dated differently shows its date
-      anchors { right: lgAmount.left; rightMargin: Style.space(8); verticalCenter: parent.verticalCenter }
-      width: Style.space(96)
-      alignRight: true
-      kind: "date"
-      value: lg.d.date || ""
-      color: cashewWin.muted
-      onCommit: function (v) { root.cashewEdit(Model.cashewPatch(root.cashewDrafts, lg.idx, { date: v }), true) }
-    }
-    // Between the account and the amount: the first line of the note, or a thin rule.
-    Item {
-      id: lgNoteBox
-      height: Style.space(22)
-      anchors { left: lgAcct.right; leftMargin: Style.space(10); right: lgDate.visible ? lgDate.left : lgAmount.left; rightMargin: Style.space(10); verticalCenter: parent.verticalCenter }
-    }
-    CashewNote {
-      id: lgNote
-      width: lgNoteBox.width
-      anchors { left: lgNoteBox.left; verticalCenter: lgNoteBox.verticalCenter }
-      text: lg.d.notes || ""
-      hot: lg.hot
-      onClicked: cashewWin.openPicker("note", lg.idx)
-    }
-    Rectangle {
-      visible: !lgNote.has && !lg.hot
-      anchors { left: lgNoteBox.left; right: lgNoteBox.right; verticalCenter: parent.verticalCenter }
-      height: 1
-      color: Util.alpha(root.foreground, 0.16)
-    }
-  }
-
-  // The note of a draft: a small note icon (plus the first line when there is room)
-  // only when a note exists; a muted "+ note" while the row is hovered otherwise.
   component CashewNote: Item {
     id: cn
     property string text: ""
@@ -13085,6 +12971,7 @@ Panel {
           onRead: function (line) {
             var m
             try { m = JSON.parse(line) } catch (e) { return }
+        if (!m || typeof m !== "object") return
             if (m.error) editPanel.aiMsg = String(m.error)
             if (m.results && m.results.length && m.results[0].category) editPanel.aiSuggest = m.results[0]
           }

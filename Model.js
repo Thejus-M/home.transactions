@@ -19,7 +19,7 @@
 function currencySymbol(currency) {
   if (currency === "INR") return "₹"
   if (currency === "USD") return "$"
-  return (currency || "") + " "
+  return currency ? currency + " " : ""
 }
 
 // Indian digit grouping: 1,00,000.00 / 12,68,339.40 — the last three
@@ -39,8 +39,9 @@ function formatGrouped(n) {
 }
 
 function formatAmount(t) {
-  var sign = t.amount < 0 ? "-" : "+"
-  return sign + currencySymbol(t.currency) + formatGrouped(t.amount)
+  var paise = Math.round(Number(t.amount) * 100) || 0           // float residue (0.3-0.1-0.2) is 0, not -0
+  var sign = paise < 0 ? "-" : (paise > 0 ? "+" : "")
+  return sign + currencySymbol(t.currency) + formatGrouped(paise / 100)
 }
 
 var _WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
@@ -2350,7 +2351,7 @@ function activeFilterChips(f, options) {
   if (f.bill !== "any") chips.push({ id: "bill", label: f.bill === "has" ? "Has bill" : "No bill" })
   if (f.refund && f.refund !== "any") chips.push({ id: "refund", label: f.refund === "linked" ? "Refunds" : "Needs refund link" })
   if (f.min !== null && f.min !== undefined && f.min > 0) chips.push({ id: "min", label: "≥ " + _amountText(f.min) })
-  if (f.max !== null && f.max !== undefined) chips.push({ id: "max", label: "≤ " + _amountText(f.max) })
+  if (f.max !== null && f.max !== undefined && f.max > 0) chips.push({ id: "max", label: "≤ " + _amountText(f.max) })
   if (f.month === "30d") chips.push({ id: "month", label: "Last 30 days" })
   else if (f.month) chips.push({ id: "month", label: monthLabel(f.month) })
   if (f.from || f.to) chips.push({ id: "period", label: periodLabel(f.from, f.to) })
@@ -2401,7 +2402,7 @@ function parseAmountInput(s) {
 function serializeFilter(f, drawer) {
   var o = {
     accounts: f.accounts.slice().sort(), dir: f.dir, tracked: f.tracked,
-    transfers: f.transfers, bill: f.bill, refund: f.refund, min: f.min, max: f.max
+    transfers: f.transfers, bill: f.bill, pending: f.pending || "any", refund: f.refund, min: f.min, max: f.max
   }
   if (drawer === "recurring" || drawer === "receipts") o.drawer = drawer   // the open tab under the chips
   return JSON.stringify(o)
@@ -2422,6 +2423,7 @@ function restoreFilter(json, options) {
   if (["only", "hide"].indexOf(data.transfers) !== -1) f.transfers = data.transfers
   if (["has", "none"].indexOf(data.bill) !== -1) f.bill = data.bill
   if (["linked", "needs"].indexOf(data.refund) !== -1) f.refund = data.refund
+  if (["only", "hide"].indexOf(data.pending) !== -1) f.pending = data.pending
   ;["min", "max"].forEach(function (k) {
     var v = data[k]
     if (typeof v === "number" && isFinite(v) && v > 0 && v <= _MAX_AMOUNT) f[k] = v
