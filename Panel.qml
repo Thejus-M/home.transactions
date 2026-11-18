@@ -1580,6 +1580,14 @@ Panel {
   // +1 per finished write. A snapshot remembers the value it started with; if a write finished while it ran,
   // its data is from before that write and would undo it on screen: it is dropped and read again.
   property int writeEpoch: 0
+  // the last data refresh failed: the panel shows older data (said in the RECENT title and once as a notification)
+  property string snapshotError: ""
+  function setSnapshotError(msg) {
+    if (msg && !root.snapshotError)
+      Quickshell.execDetached([Quickshell.env("OMARCHY_PATH") + "/bin/omarchy-notification-send", "--app-name",
+                               "home.transactions", "Transactions: data not refreshed", msg])
+    root.snapshotError = msg
+  }
   property int snapshotEpoch: -1
 
   function refreshData() {
@@ -1655,7 +1663,7 @@ Panel {
       onStreamFinished: store.applySnapshot(text)
     }
     onExited: function (exitCode) {
-      if (exitCode !== 0) console.warn("txdb snapshot failed (" + exitCode + ")")
+      if (exitCode !== 0) { console.warn("txdb snapshot failed (" + exitCode + ")"); root.setSnapshotError("the data refresh failed (exit " + exitCode + ")") }
       if (root.refreshPending) { root.refreshPending = false; root.refreshData() }
     }
   }
@@ -1769,7 +1777,8 @@ Panel {
       if (root.snapshotEpoch !== root.writeEpoch) { root.refreshPending = true; return }   // a write ran meanwhile
       if (text === store.lastSnapshotText) return
       var snap
-      try { snap = JSON.parse(text) } catch (e) { console.warn("txdb snapshot unreadable: " + e); return }
+      try { snap = JSON.parse(text) } catch (e) { console.warn("txdb snapshot unreadable: " + e); root.setSnapshotError("the data refresh printed no readable result"); return }
+      root.snapshotError = ""
       if (root.txdbQueue.length > 0 || txdbWriteProc.running) { root.refreshPending = true; return }
       store.lastSnapshotText = text
       var cards = {}
@@ -3525,7 +3534,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             // the same number as the sync badge: the rows that need a sync (cashew-sync pendingIds + edits)
             readonly property int toSync: root.cashewSync.pending >= 0 ? root.cashewSync.pending : root.untrackedCount
-            text: toSync > 0 ? ("RECENT  ·  " + toSync + " TO SYNC") : "RECENT"
+            text: (root.snapshotError ? "RECENT  ·  NOT REFRESHED" : (toSync > 0 ? ("RECENT  ·  " + toSync + " TO SYNC") : "RECENT"))
             foreground: root.foreground
             // a click shows exactly those rows, old ones too (the list shows only the newest rows)
             MouseArea {
