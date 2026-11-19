@@ -22,7 +22,7 @@ const ctx = {}; vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), ctx);
 const i = JSON.parse(fs.readFileSync(0, "utf8"));
 ctx.i = i;
-console.log(JSON.stringify(vm.runInContext("cashewBuildLinks(i.drafts, i.shown, i.max, i.cats, i.base)", ctx)));
+console.log(JSON.stringify(vm.runInContext("cashewBuildLinks(i.drafts, i.shown, i.max, i.cats, i.base, i.transfers)", ctx)));
 """
 
 
@@ -36,11 +36,12 @@ def d(i, **kw):
 
 @unittest.skipUnless(NODE, "node is not installed")
 class Parity(unittest.TestCase):
-    def both(self, drafts, max_chars=6000, base="app"):
+    def both(self, drafts, max_chars=6000, base="app", transfers="page"):
         cats = cashew.load_categories()
-        py = cashew.build_links(drafts, max_chars, base)
+        py = cashew.build_links(drafts, max_chars, base, transfers)
         out = subprocess.run([NODE, "-e", SCRIPT, str(ROOT / "Model.js")],
-                             input=json.dumps({"drafts": drafts, "shown": None, "max": max_chars, "cats": cats, "base": base}),
+                             input=json.dumps({"drafts": drafts, "shown": None, "max": max_chars, "cats": cats, "base": base,
+                                               "transfers": transfers}),
                              capture_output=True, text=True, check=True).stdout
         js = json.loads(out)
         self.assertEqual(len(js["links"]), len(py["links"]))
@@ -72,6 +73,31 @@ class Parity(unittest.TestCase):
         ]
         py = self.both(drafts)
         self.assertTrue(py["warnings"])
+
+    def test_silent_transfers_put_both_legs_in_the_bulk_link(self):
+        drafts = [
+            d(1),
+            d(2, title="Transfer to SBI", amount="-160.00", account="HDFC", category="Balance Correction", subcategory="",
+              kind="transfer", pairId="p1"),
+            d(3, title="Transfer from HDFC", amount="160.00", account="SBI", category="Balance Correction", subcategory="",
+              kind="transfer", pairId="p1"),
+            d(4, title="lonely", amount="815.00", category="Balance Correction", subcategory="", kind="transfer", pairId=""),
+        ]
+        page = self.both(drafts)
+        self.assertEqual(len(page["transfers"]), 1)
+        self.assertEqual(sum(l["count"] for l in page["links"]), 2)            # the pair has its own page
+        silent = self.both(drafts, transfers="silent")
+        self.assertEqual(silent["transfers"], [])                              # no page to save
+        entries = [e for l in silent["links"] for e in json.loads(l["json"])["transactions"]]
+        legs = [e for e in entries if e["title"].startswith("Transfer ")]
+        self.assertEqual([(e["amount"], e["account"], e["category"], e["categoryPolarity"]) for e in legs],
+                         [("-160.00", "HDFC", "Balance Correction", "false"), ("160.00", "SBI", "Balance Correction", "false")])
+        self.assertEqual(len(entries), 4)
+        self.assertEqual(silent["warnings"], page["warnings"])                 # the lone leg still warns
+        self.assertEqual(len([w for w in silent["warnings"] if "without partner" in w]), 1)
+        for max_chars in (600, 900):                                           # a pair is never split across two links
+            for l in self.both(drafts, max_chars, transfers="silent")["links"]:
+                self.assertIn(len({"d0002", "d0003"} & set(l["ids"])), (0, 2))
 
     def test_transfer_pages_and_bases(self):
         def leg(i, out, **kw):

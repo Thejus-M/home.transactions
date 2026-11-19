@@ -710,9 +710,22 @@ def _transfer(out_leg: dict, in_leg: dict, base: str) -> dict:
             "ids": [out_leg.get("id"), in_leg.get("id")]}
 
 
-def build_links(draft_list: list[dict], max_chars: int = DEFAULT_MAX_CHARS, base: str = "app") -> dict:
+def normalize_transfers(mode) -> str:
+    """"silent" -> both legs in the bulk link, anything else -> "page" (one addTransferRoute page per pair)."""
+    return "silent" if mode == "silent" else "page"
+
+
+def build_links(draft_list: list[dict], max_chars: int = DEFAULT_MAX_CHARS, base: str = "app",
+                transfers: str = "page") -> dict:
     """{"links": [{url, count, chars, ids, json}], "transfers": [{url, pairId, title, date, amount,
-    accountFrom, accountTo, ids}], "warnings": [..]}. `base` is "app" or "web"."""
+    accountFrom, accountTo, ids}], "warnings": [..]}. `base` is "app" or "web".
+
+    `transfers`: "page" gives every paired transfer its own addTransferRoute link (Cashew opens the transfer
+    page filled in; you tap Save). "silent" sends both legs in the bulk link as two "Balance Correction" entries
+    (money out of one account, money into the other): no page, no tap, the balances are the same. Cashew does not
+    link the two entries to each other (its own transfer does); its author says that link only eases later edits
+    (jameskokoska/Cashew issue 596). A link cannot set it."""
+    silent = normalize_transfers(transfers) == "silent"
     types, warnings = _types(), []
     root = normalize_base(base)
     # `viaFile` rows (txdb/cashew_fix.py) are written into Cashew's database, not sent. Nothing sets the mark
@@ -721,12 +734,12 @@ def build_links(draft_list: list[dict], max_chars: int = DEFAULT_MAX_CHARS, base
     inc.sort(key=lambda d: (str(d.get("date") or ""), str(d.get("id") or "")))
     paired = _pair_legs(inc)
     leg_ids = {id(x) for pair in paired.values() for x in pair}
-    bulk = [d for d in inc if id(d) not in leg_ids]
+    bulk = inc if silent else [d for d in inc if id(d) not in leg_ids]
     entries = {id(d): _entry(d, warnings, types) for d in bulk}
     for d in inc:
         if d.get("kind") == "transfer" and id(d) not in leg_ids:
             warnings.append(f"transfer leg without partner: {d.get('title')} ({d.get('date')})")
-    transfer_list = [_transfer(o, i, root) for o, i in sorted(
+    transfer_list = [] if silent else [_transfer(o, i, root) for o, i in sorted(
         paired.values(), key=lambda p: (str(p[0].get("date") or ""), str(p[0].get("id") or "")))]
     units: list[list[dict]] = []
     by_pair: dict[str, list[dict]] = {}

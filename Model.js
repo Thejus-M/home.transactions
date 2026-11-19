@@ -2878,7 +2878,11 @@ function _cashewTransfer(o, i, root) {
 }
 
 // `base`: "app" (default) or "web". Returns {links, transfers, warnings}.
-function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
+// `transferMode`: "page" (default) gives every paired transfer its own addTransferRoute link (Cashew opens
+// the transfer page; you tap Save). "silent" sends both legs in the bulk link as two "Balance Correction"
+// entries: no page, no tap, same balances; Cashew does not link the two entries to each other.
+function cashewBuildLinks(drafts, shown, maxChars, categories, base, transferMode) {
+  var silent = transferMode === "silent"
   var max = maxChars || 6000
   var root = base === "web" ? CASHEW_WEB_BASE : CASHEW_APP_BASE
   var prefix = root + "addTransaction?JSON="
@@ -2903,7 +2907,7 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
   var legSet = []
   var pairList = []
   Object.keys(paired).forEach(function (pid) { pairList.push(paired[pid]); legSet.push(paired[pid][0], paired[pid][1]) })
-  var bulk = inc.filter(function (d) { return legSet.indexOf(d) < 0 })
+  var bulk = silent ? inc : inc.filter(function (d) { return legSet.indexOf(d) < 0 })
 
   var entryOf = function (d) {
     var label = (d.title || d.id) + " (" + (d.date === undefined || d.date === null ? "" : d.date) + ")"
@@ -2946,7 +2950,7 @@ function cashewBuildLinks(drafts, shown, maxChars, categories, base) {
     if (d.kind === "transfer" && legSet.indexOf(d) < 0)
       warnings.push("transfer leg without partner: " + d.title + " (" + d.date + ")")
   })
-  var transfers = pairList.sort(function (p, q) { return cmp(p[0], q[0]) }).map(function (p) {
+  var transfers = silent ? [] : pairList.sort(function (p, q) { return cmp(p[0], q[0]) }).map(function (p) {
     return _cashewTransfer(p[0], p[1], root)
   })
 

@@ -161,7 +161,7 @@ def _cashew(cmd: str, args: list[str]) -> int:
         src = args[0] if args else "-"
         payload = json.loads(sys.stdin.read() if src == "-" else Path(src).read_text(encoding="utf-8"))
         out(cashew.build_links(payload.get("drafts") or [], int(payload.get("maxChars") or cashew.DEFAULT_MAX_CHARS),
-                               payload.get("base") or "app"))
+                               payload.get("base") or "app", payload.get("transfers") or "page"))
         return 0
     if not Path(DB_PATH).exists():
         print(f"No database at {DB_PATH}", file=sys.stderr)
@@ -174,7 +174,9 @@ def _cashew(cmd: str, args: list[str]) -> int:
         out({"categories": cashew.load_categories(), "accountNames": cashew.account_names(state),
              "drafts": items, "state": state})
         return 0
-    result = cashew.build_links(items, base=state.get("base") or "app")
+    # the widget's default is "silent"; only a saved "page" asks for the transfer pages
+    result = cashew.build_links(items, base=state.get("base") or "app",
+                                transfers="page" if state.get("transfers") == "page" else "silent")
     for link in result["links"]:
         print(link["url"])
     if result["transfers"]:
